@@ -1,0 +1,29 @@
+PollPower Smart Contracts
+Copyright (c) 2026 PollPower / Garrett Lobb
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this code except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+Trademark notice:
+    The "PollPower" name and logo are trademarks of PollPower and are
+    NOT licensed under Apache 2.0. Use of the marks for derivative or
+    competing services requires separate written permission. The Apache
+    2.0 license grants you the right to use, modify, and distribute the
+    contract code; it does not grant any rights to the trademarks.
+
+Contract addresses on Midnight Preview:
+    EBT v5            5cbc10a7a8f43a86fab8a8a015823b973be887b41bf6e2b03b51eb2dccff3b0e
+    EBT v5.1          e3514ab0c5dca1a61700ac96f12f80157ea41474642161ce91cdd62dc0a1291d
+    Multisig v5       182a7a8b8163d2bd98e4ff2e1c9dec7ef788e8503f46db46be311d74a2d8a7ce
+    Multisig v6       f7192a504e186e6a418bcb3f42291ee1a3c032b8c0724c4fab54cc3f62745c3a
+    Producer Reg v1   c6730596dd7770dd69bd5051a769e8c42d34dc99c47228f751cae38f00b2ff1d
+    Community Poll    a6a494880b3d646be22f31f891c1b1ba4df0142cbc7ddc008d9be6812f0b74be

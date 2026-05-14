@@ -1,0 +1,27 @@
+# Compact compiler outputs (regenerable from source)
+build/
+managed/
+*/build/
+*/managed/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temp / drafts
+*.tmp
+~$*
+_drafts/
+
+# Never commit
+*.env
+.env*
+!.env.example
+*.key
+*.pem
+deployment.json

@@ -1,0 +1,411 @@
+// SPDX-License-Identifier: MIT
+// PollPower EBT Token v4
+//
+// Major reframe from v3.1:
+//   - 1 EBT = 1 kWh strict, in BOTH directions:
+//     * production: 1 kWh consumed -> 1 EBT minted (split across recipients)
+//     * redemption: 1 EBT burned -> consumerRateCents KES paid from pool
+//   - Each settle event mints 1 EBT total, distributed proportionally across
+//     producer + operations + solarDividend + globalDAO. (Shopkeeper allocation
+//     deferred to v5 — for v4, that bps share folds into globalDAO.)
+//   - Allocation policy stored as basis points (bps) in ledger state. 10000 bps = 100%.
+//   - Recipient addresses are ledger state, not call parameters. Settlement authority
+//     can't redirect funds without an on-chain setMarginPolicy or setRecipient call.
+//   - Per-batch entry rates DEPRECATED: single owner-settable consumerRateCents
+//     applies to all redemptions. No FIFO needed.
+//
+// Default policy at v4 launch (basis points, 10000 = 100%):
+//   producer:      8696 bps  (28.00 / 32.20)
+//   operations:     870 bps  ( 2.80 / 32.20)
+//   solarDividend:  186 bps  ( 0.60 / 32.20)
+//   globalDAO:      248 bps  ( 0.80 / 32.20  -- old shopkeeper + dao combined)
+//   ----                     -----------
+//   total:        10000 bps  (32.20 / 32.20)
+//
+// Why: the pricing of energy AND the distribution of value are both protocol
+// invariants worth pinning on chain. Anyone can verify in real-time that:
+//   * the consumer paid the rate we said
+//   * the producer earned the rate we said
+//   * the margin flows where we said it would
+// without trusting the off-chain backend.
+//
+// v5 plan: re-introduce per-station shopkeeper allocation by either splitting
+// settle into a two-call pattern (settle -> distributeMargin) or by other
+// optimizations to fit station resolution under the block size limit.
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Structs
+// =============================================================================
+
+struct AttestationStatus {
+  active: Boolean,
+  attestedAt: Field,
+  revokedAt: Field,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+}
+
+struct ReissuanceEntry {
+  producer: Either<ZswapCoinPublicKey, ContractAddress>,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  reissuedAt: Field,
+}
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+export ledger _initialized: Boolean;
+export ledger _owner: Either<ZswapCoinPublicKey, ContractAddress>;
+export ledger settlementAuthority: Either<ZswapCoinPublicKey, ContractAddress>;
+export ledger poolAuthority: Either<ZswapCoinPublicKey, ContractAddress>;
+
+// Token state. 1_000_000 base units = 1 EBT = 1 kWh.
+export ledger _balances: Map<Either<ZswapCoinPublicKey, ContractAddress>, Uint<128>>;
+export ledger _totalSupply: Uint<128>;
+
+// Meter registry.
+export ledger registeredMeters: Map<Bytes<32>, Boolean>;
+
+// Producer attestation registry: hash(producer || meterHash) -> AttestationStatus.
+export ledger producerAttestations: Map<Bytes<32>, AttestationStatus>;
+
+// Reissuance audit log.
+export ledger reissuanceCount: Counter;
+export ledger reissuanceLog: Map<Field, ReissuanceEntry>;
+
+// Counters.
+export ledger settlementCount: Counter;
+export ledger meterCount: Counter;
+
+// ─── Margin policy ─────────────────────────────────────────────────────────
+// All bps values sum to exactly 10000.
+export ledger producerBps: Uint<16>;       // default 8696
+export ledger operationsBps: Uint<16>;     // default  870
+export ledger solarDividendBps: Uint<16>;  // default  186
+export ledger globalDAOBps: Uint<16>;      // default  248
+
+// ─── Pricing ───────────────────────────────────────────────────────────────
+// consumerRateCents: KES cents per EBT (== KES cents per kWh, since 1 EBT = 1 kWh).
+// Owner can update to track Kenya Power tariff over time. All redemptions use
+// this rate at the time of redemption.
+export ledger consumerRateCents: Uint<32>;  // default 3220 = 32.20 KES
+
+// ─── Recipient addresses ───────────────────────────────────────────────────
+export ledger operationsRecipient: Either<ZswapCoinPublicKey, ContractAddress>;
+export ledger solarDividendPool: Either<ZswapCoinPublicKey, ContractAddress>;
+export ledger globalDAOPool: Either<ZswapCoinPublicKey, ContractAddress>;
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+circuit assertInitialized(): [] {
+  assert(_initialized, "Not initialized");
+}
+
+circuit assertOnlyOwner(): [] {
+  assertInitialized();
+  assert(_owner.is_left, "Owner is contract address; not supported");
+  const caller = ownPublicKey();
+  assert(caller == _owner.left, "Only owner");
+}
+
+circuit assertOnlySettlementAuthority(): [] {
+  assertInitialized();
+  assert(settlementAuthority.is_left, "Authority is contract address; not supported");
+  const caller = ownPublicKey();
+  assert(caller == settlementAuthority.left, "Only settlement authority");
+}
+
+// Returns the AttestationStatus for a precomputed key, or default-zero inactive.
+circuit getAttestation(attKey: Bytes<32>): AttestationStatus {
+  if (!producerAttestations.member(disclose(attKey))) {
+    return AttestationStatus {
+      active: false,
+      attestedAt: 0,
+      revokedAt: 0,
+      reasonCode: 0,
+      evidenceHash: default<Bytes<32>>,
+    };
+  }
+  return producerAttestations.lookup(disclose(attKey));
+}
+
+// Mint helper: increments balance + totalSupply. Caller already authority-checked.
+// We always do the ledger op even when amount==0 (it's a no-op); avoiding the
+// `if (amount > 0)` branch keeps the witness-value-disclosure simple.
+circuit _mint(
+  to: Either<ZswapCoinPublicKey, ContractAddress>,
+  amount: Uint<128>
+): [] {
+  const current = _balances.member(disclose(to)) ? _balances.lookup(disclose(to)) : 0;
+  const next = (current + amount) as Uint<128>;
+  _balances.insert(disclose(to), disclose(next));
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+}
+
+// Burn helper.
+circuit _burn(
+  fromAcc: Either<ZswapCoinPublicKey, ContractAddress>,
+  amount: Uint<128>
+): [] {
+  const current = _balances.member(disclose(fromAcc)) ? _balances.lookup(disclose(fromAcc)) : 0;
+  assert(current >= amount, "Insufficient balance");
+  const next = (current - amount) as Uint<128>;
+  _balances.insert(disclose(fromAcc), disclose(next));
+  _totalSupply = disclose((_totalSupply - amount) as Uint<128>);
+}
+
+// =============================================================================
+// Lifecycle
+// =============================================================================
+
+export circuit initialize(): [] {
+  assert(!_initialized, "Already initialized");
+  const callerKey = ownPublicKey();
+  const callerAcc = Either<ZswapCoinPublicKey, ContractAddress> {
+    is_left: true,
+    left: callerKey,
+    right: default<ContractAddress>,
+  };
+  _initialized = disclose(true);
+  _owner = disclose(callerAcc);
+  settlementAuthority = disclose(callerAcc);
+  poolAuthority = disclose(callerAcc);
+  // Recipients all start as the deployer. They are NOT settable post-deploy in
+  // v4; redeploy is required to change them. Treat the deployer as the
+  // "recipient steward" who holds these slices on behalf of the network until
+  // a v5 contract with proper recipient management ships.
+  operationsRecipient = disclose(callerAcc);
+  solarDividendPool = disclose(callerAcc);
+  globalDAOPool = disclose(callerAcc);
+  // Default margin policy: 28.00/2.80/0.60/0.80 over 32.20 consumer rate
+  producerBps = disclose(8696 as Uint<16>);
+  operationsBps = disclose(870 as Uint<16>);
+  solarDividendBps = disclose(186 as Uint<16>);
+  globalDAOBps = disclose(248 as Uint<16>);
+  consumerRateCents = disclose(3220 as Uint<32>);
+}
+
+export circuit setSettlementAuthority(
+  newAuth: Either<ZswapCoinPublicKey, ContractAddress>
+): [] {
+  assertOnlyOwner();
+  settlementAuthority = disclose(newAuth);
+}
+
+export circuit setPoolAuthority(
+  newAuth: Either<ZswapCoinPublicKey, ContractAddress>
+): [] {
+  assertOnlyOwner();
+  poolAuthority = disclose(newAuth);
+}
+
+export circuit transferOwnership(
+  newOwner: Either<ZswapCoinPublicKey, ContractAddress>
+): [] {
+  assertOnlyOwner();
+  _owner = disclose(newOwner);
+}
+
+// =============================================================================
+// Configuration
+// =============================================================================
+//
+// For v4, ALL recipient addresses, margin bps policy, AND consumer rate are
+// baked in by initialize() and not modifiable post-deploy. Changing any of
+// them requires a fresh contract deploy.
+//
+// This is a deliberate constraint to fit Midnight's deploy block size limit
+// for the v4 reframe. v5 will reintroduce these setters either via a 2-call
+// settle pattern that frees up budget, or via a separate "governance" contract
+// that gates this contract's upgradeability.
+//
+// Practical implication: when Kenya Power adjusts its tariff, PollPower
+// redeploys this contract with a new consumerRateCents in initialize(). The
+// previous contract remains on chain forever as a historical record. Same
+// migration story we used moving v1 -> v3 -> v3.1 -> v4.
+
+// =============================================================================
+// Meter management
+// =============================================================================
+
+export circuit registerMeter(meterKeyHash: Bytes<32>): [] {
+  assertOnlySettlementAuthority();
+  if (!registeredMeters.member(disclose(meterKeyHash))) {
+    meterCount.increment(1);
+  }
+  registeredMeters.insert(disclose(meterKeyHash), disclose(true));
+}
+
+export circuit deregisterMeter(meterKeyHash: Bytes<32>): [] {
+  assertOnlySettlementAuthority();
+  assert(registeredMeters.member(disclose(meterKeyHash)), "Meter not registered");
+  registeredMeters.insert(disclose(meterKeyHash), disclose(false));
+}
+
+// =============================================================================
+// Producer attestation
+// =============================================================================
+
+export circuit attestProducerOwnership(
+  attestationKey: Bytes<32>,
+  meterKeyHash: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>
+): [] {
+  assertOnlySettlementAuthority();
+  assert(registeredMeters.member(disclose(meterKeyHash)), "Meter not registered");
+  assert(registeredMeters.lookup(disclose(meterKeyHash)), "Meter deregistered");
+
+  const status = AttestationStatus {
+    active: true,
+    attestedAt: 0,
+    revokedAt: 0,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(status));
+}
+
+export circuit revokeProducerOwnership(
+  attestationKey: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>
+): [] {
+  assertOnlySettlementAuthority();
+  assert(producerAttestations.member(disclose(attestationKey)), "No such attestation");
+  const current = producerAttestations.lookup(disclose(attestationKey));
+  assert(current.active, "Already revoked");
+
+  const revoked = AttestationStatus {
+    active: false,
+    attestedAt: current.attestedAt,
+    revokedAt: 0,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(revoked));
+}
+
+// =============================================================================
+// Settle: mint 1 EBT total, split across 4 recipients
+// =============================================================================
+//
+// Compact lacks native division on Uint<N>, so the per-recipient slice amounts
+// are computed off-chain by the settlement authority and passed in. The contract
+// verifies sumAll == amount; per-slice proportionality vs on-chain bps is the
+// settlement authority's responsibility (and anyone can audit chain state to
+// catch deviations).
+
+export circuit settle(
+  producer: Either<ZswapCoinPublicKey, ContractAddress>,
+  amount: Uint<128>,
+  meterKeyHash: Bytes<32>,
+  attestationKey: Bytes<32>,
+  // Pre-computed slice amounts (backend computes; contract verifies sumAll):
+  producerAmt: Uint<128>,
+  opsAmt: Uint<128>,
+  divAmt: Uint<128>,
+  daoAmt: Uint<128>,
+  escrowId: Uint<128>
+): [] {
+  assertOnlySettlementAuthority();
+  assert(amount > 0, "Must consume > 0");
+  assert(registeredMeters.member(disclose(meterKeyHash)), "Meter not registered");
+  assert(registeredMeters.lookup(disclose(meterKeyHash)), "Meter deregistered");
+
+  // Producer must have an active attestation.
+  const att = getAttestation(attestationKey);
+  assert(att.active, "Producer not attested for this meter");
+
+  // Slices must sum to total.
+  const sumAll = (producerAmt + opsAmt + divAmt + daoAmt) as Uint<128>;
+  assert(sumAll == amount, "slice sum mismatch");
+
+  _mint(operationsRecipient, opsAmt);
+  _mint(solarDividendPool, divAmt);
+  _mint(globalDAOPool, daoAmt);
+  _mint(producer, producerAmt);
+
+  settlementCount.increment(1);
+}
+
+// =============================================================================
+// Manual reissuance (admin-signed make-whole valve)
+// =============================================================================
+
+export circuit manualReissue(
+  producer: Either<ZswapCoinPublicKey, ContractAddress>,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>
+): [] {
+  assertOnlySettlementAuthority();
+  assert(amount > 0, "Must reissue > 0");
+
+  _mint(producer, amount);
+
+  const seq = reissuanceCount.read() as Field;
+  const entry = ReissuanceEntry {
+    producer: producer,
+    amount: amount,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+    reissuedAt: 0,
+  };
+  reissuanceLog.insert(disclose(seq), disclose(entry));
+  reissuanceCount.increment(1);
+}
+
+// =============================================================================
+// Redemption (burn — backend computes KES off-chain at consumerRateCents)
+// =============================================================================
+
+export circuit redeemForKes(
+  holder: Either<ZswapCoinPublicKey, ContractAddress>,
+  amount: Uint<128>
+): [] {
+  assertInitialized();
+  assert(holder.is_left, "Holder must be a public key");
+  const caller = ownPublicKey();
+  assert(caller == holder.left, "Only holder may redeem");
+
+  assert(amount > 0, "Must redeem > 0");
+  _burn(holder, amount);
+}
+
+// =============================================================================
+// Reads
+// =============================================================================
+
+export circuit balanceOf(
+  account: Either<ZswapCoinPublicKey, ContractAddress>
+): Uint<128> {
+  return _balances.member(disclose(account))
+    ? _balances.lookup(disclose(account))
+    : 0;
+}
+
+export circuit totalSupply(): Uint<128> {
+  return _totalSupply;
+}
+
+export circuit getSettlementCount(): Uint<64> {
+  return settlementCount.read();
+}
+
+export circuit getMeterCount(): Uint<64> {
+  return meterCount.read();
+}
+
+export circuit getReissuanceCount(): Uint<64> {
+  return reissuanceCount.read();
+}

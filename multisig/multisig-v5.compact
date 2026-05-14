@@ -1,0 +1,340 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPowerMultiSig — governance audit ledger and admin coordination tool.
+//
+// Author: PollPower
+// Date:   2026-05-06
+// See README.md and the PollPower White Paper v10.0 for design context.
+//
+// =============================================================================
+// IMPORTANT: WHAT THIS CONTRACT IS, AND IS NOT
+// =============================================================================
+//
+// This contract is an ON-CHAIN AUDIT LEDGER for PollPower's M-of-N admin
+// governance decisions. It is NOT a transaction-authorization gate.
+//
+// Why the distinction matters:
+//
+// Compact (the Midnight smart contract language) does not currently support
+// contract-to-contract calls. This is documented in OpenZeppelin's
+// AccessControl.compact:
+//   "Compact currently does not support contract-to-contract calls which
+//    means if a contract is granted a role, the contract cannot directly
+//    call the protected circuit."
+//
+// This means a separate multi-sig CONTRACT cannot "own" the EBT contract
+// in the way a Gnosis Safe owns an Ethereum contract today. The actual
+// authorization for owner-only EBT operations must happen at the
+// transaction-signing layer (Cardano native multi-sig scripts) OR inside
+// the EBT contract itself.
+//
+// What this contract DOES provide:
+//   1. On-chain record of which admins approved which actions, and when.
+//   2. Replay-protected nonce so action hashes can't be reused.
+//   3. Self-governance for the admin set (add/remove admins, change threshold).
+//   4. Public, auditable proof that PollPower's governance is multi-party.
+//
+// What it does NOT provide (limitations of current Compact):
+//   1. Cryptographic gating of cross-contract calls.
+//   2. Direct authorization of EBT v5+ owner operations from this contract.
+//
+// Production architecture:
+//   - The EBT contract's `_owner` is a Cardano native multi-sig script
+//     address (3-of-5 Tangem ring pubkeys). This is the real authorization
+//     boundary.
+//   - This Compact contract runs IN PARALLEL as the public on-chain audit
+//     trail. Each owner action is paired with a propose()-by-each-admin
+//     and a final execute() call here, so anyone auditing PollPower
+//     governance can see who approved what.
+//
+// When Compact contract-to-contract calls ship (likely v0.23+):
+//   - This contract will be upgraded to actually gate EBT operations.
+//   - The audit-only role will become an authorization role.
+//   - The same admin keys and threshold continue working.
+//
+// =============================================================================
+// Threat model and hardware
+// =============================================================================
+//
+// Threat model:
+//   - Single founder being coerced or removed should not compromise the network.
+//   - Any individual key being lost should not lock governance.
+//   - Threshold of M admins must approve before owner-level actions execute.
+//
+// Hardware:
+//   Each admin holds a Tangem Ring (CC EAL6+ certified secure element).
+//   Their private key never leaves the ring. Their pubkey is registered
+//   in `_admins` at deploy time AND in the Cardano native multi-sig script.
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+// Capacity of the admin set. We deploy with 5 admins, but hold a max-7
+// to allow for adding 2 more without redeploying. Chosen for the pilot;
+// post-pilot may want larger N (e.g., 9 for federation governance).
+//
+// NOTE: this is a logical maximum; the actual admin set size is given by
+// _admins.size(). New admins can be added up to MAX_ADMINS via addAdmin().
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+// Set of admin pubkeys that may participate in governance.
+// Type ZswapCoinPublicKey is a 32-byte public key.
+export ledger _admins: Set<ZswapCoinPublicKey>;
+
+// Required threshold M of N. Must be 1 <= _threshold <= _admins.size().
+// Initial deploy: 3 (threshold 3-of-5 admins).
+export ledger _threshold: Uint<8>;
+
+// Globally monotonic nonce. Each successful execute() increments it.
+// Action hashes include the nonce, preventing replay.
+export ledger _nonce: Counter;
+
+// Pending approvals: actionHash -> set of admin pubkeys who approved.
+// Cleared on execute() to prevent re-execution.
+export ledger _approvals: Map<Bytes<32>, Set<ZswapCoinPublicKey>>;
+
+// Initialization guard.
+export ledger _initialized: Boolean;
+
+// =============================================================================
+// Initialization
+// =============================================================================
+
+// Deploy-time setup. Caller must be the deployer; runs exactly once.
+// Pass in the 5 (or up to 7) initial admin pubkeys and the threshold.
+//
+// Reasonable production values: admins.size()==5, threshold==3.
+export circuit initialize(
+  admin1: ZswapCoinPublicKey,
+  admin2: ZswapCoinPublicKey,
+  admin3: ZswapCoinPublicKey,
+  admin4: ZswapCoinPublicKey,
+  admin5: ZswapCoinPublicKey,
+  threshold: Uint<8>
+): [] {
+  assert(!_initialized, "Already initialized");
+  assert(threshold > 0 as Uint<8>, "Threshold must be > 0");
+  assert(threshold <= 5 as Uint<8>, "Threshold must be <= initial admin count");
+
+  _admins.insert(disclose(admin1));
+  _admins.insert(disclose(admin2));
+  _admins.insert(disclose(admin3));
+  _admins.insert(disclose(admin4));
+  _admins.insert(disclose(admin5));
+
+  _threshold = disclose(threshold);
+  _initialized = disclose(true);
+}
+
+// =============================================================================
+// Internal helpers (pure circuits — no state writes)
+// =============================================================================
+
+// Returns the caller's public key wrapped in a ZswapCoinPublicKey struct.
+// Used by every circuit that needs to check "is the caller an admin?"
+// NOTE: not `pure` because ownPublicKey() is a native witness.
+circuit getCallerKey(): ZswapCoinPublicKey {
+  return ZswapCoinPublicKey {
+    bytes: ownPublicKey().bytes,
+  };
+}
+
+// Asserts the caller is one of the registered admins.
+circuit assertCallerIsAdmin(): [] {
+  const caller = getCallerKey();
+  assert(_admins.member(disclose(caller)), "Caller is not an admin");
+}
+
+// Returns the number of approvals recorded for a given action hash.
+// Returns 0 if no approvals recorded.
+// NOTE: not `pure` because it reads ledger state.
+circuit approvalCount(actionHash: Bytes<32>): Uint<64> {
+  if (_approvals.member(disclose(actionHash))) {
+    return _approvals.lookup(actionHash).size();
+  }
+  return 0 as Uint<64>;
+}
+
+// =============================================================================
+// Read circuits (no state changes; useful for off-chain query)
+// =============================================================================
+
+// Returns true if the given account is a registered admin.
+export circuit isAdmin(account: ZswapCoinPublicKey): Boolean {
+  return _admins.member(disclose(account));
+}
+
+// Returns the current threshold.
+export circuit getThreshold(): Uint<8> {
+  return _threshold;
+}
+
+// Returns the current admin count.
+export circuit getAdminCount(): Uint<64> {
+  return _admins.size();
+}
+
+// Returns the current nonce. Off-chain, action hashes must include
+// (nonce + 1) to be valid for the next execute() call.
+export circuit getNonce(): Uint<64> {
+  return _nonce.read();
+}
+
+// Returns true if the action has reached threshold approval.
+export circuit isApproved(actionHash: Bytes<32>): Boolean {
+  return approvalCount(actionHash) >= (_threshold as Uint<64>);
+}
+
+// Returns how many admins have approved the action so far.
+export circuit getApprovalCount(actionHash: Bytes<32>): Uint<64> {
+  return approvalCount(actionHash);
+}
+
+// =============================================================================
+// Propose (each admin calls separately to record their approval)
+// =============================================================================
+
+// An admin signals approval for the given action hash.
+// The action hash is computed off-chain as:
+//   hash(target, methodSelector, params, nonce + 1)
+// where (nonce + 1) is the next execute()'s nonce.
+//
+// The admin app should display the action details before the user taps their
+// ring. Tapping signs and submits the propose() tx. Compact ownPublicKey()
+// then resolves to the admin's key, which we check against _admins.
+//
+// Idempotent per-admin: calling propose() twice from the same admin is
+// silently a no-op (Set.insert of an existing element).
+export circuit propose(actionHash: Bytes<32>): [] {
+  assertCallerIsAdmin();
+  const caller = getCallerKey();
+
+  // Initialize the approval set for this action if needed.
+  if (!_approvals.member(disclose(actionHash))) {
+    _approvals.insertDefault(disclose(actionHash));
+  }
+
+  _approvals.lookup(actionHash).insert(disclose(caller));
+}
+
+// Allows an admin to retract their approval before execute() is called.
+// Useful if an admin notices the action is incorrect after approving.
+// Has no effect once execute() runs (approvals are cleared then).
+export circuit retract(actionHash: Bytes<32>): [] {
+  assertCallerIsAdmin();
+  const caller = getCallerKey();
+
+  if (_approvals.member(disclose(actionHash))) {
+    _approvals.lookup(actionHash).remove(disclose(caller));
+  }
+}
+
+// =============================================================================
+// Execute (anyone can call; verifies threshold reached then forwards)
+// =============================================================================
+
+// Once threshold approvals are collected, ANY caller (admin or not) may
+// call execute() to forward the action to its target.
+//
+// Why allow non-admins to call execute? Two reasons:
+//   1. Saves an admin a transaction. The Mth admin's propose() doesn't
+//      have to also be the executor.
+//   2. Decouples approval from execution timing. An admin app can collect
+//      approvals async, then execute when ready.
+//
+// Replay protection: increment _nonce and clear approvals before forwarding.
+// Even if the same actionHash is replayed, the nonce check off-chain (and
+// in the action hash itself) prevents reuse.
+//
+// IMPORTANT: This circuit does NOT actually call the target contract from
+// inside Compact. Cross-contract calls in Midnight are orchestrated at the
+// transaction-construction layer, not inside circuits.
+//
+// The pattern we use:
+//   1. Off-chain, the admin app collects M propose() calls.
+//   2. Off-chain, the app constructs a Midnight transaction containing TWO
+//      contract calls: this contract's execute() AND the target contract's
+//      method (e.g., EBT.setSettlementAuthority(newAuth)).
+//   3. The target contract's owner check verifies that THIS multi-sig
+//      contract was called in the same transaction with isApproved() == true.
+//
+// The target contract (EBT v5) verifies authorization by:
+//   - Reading this contract's _approvals[actionHash] state via cross-contract
+//     read (Midnight supports this), OR
+//   - Trusting an off-chain proof that links the transaction's authorization
+//     to this contract's state.
+//
+// Since Compact's exact cross-contract semantics are still being clarified,
+// this implementation simply records that the action was executed (clears
+// approvals + increments nonce) and emits an event log. The target contract
+// is responsible for verifying authorization by reading our state.
+
+export circuit execute(actionHash: Bytes<32>): [] {
+  assert(_initialized, "Not initialized");
+  assert(approvalCount(actionHash) >= (_threshold as Uint<64>),
+         "Insufficient approvals");
+
+  _approvals.remove(disclose(actionHash));
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// Self-governance (admins manage their own membership and threshold)
+// =============================================================================
+
+// Adds a new admin. Requires threshold approval via execute() workflow.
+// Off-chain: admins compute actionHash = hash("addAdmin", newAdmin, nonce+1)
+//            then propose() it; once threshold reached, call execute() which
+//            advances nonce, then in same tx call addAdminInternal().
+//
+// For the v5 deploy, this circuit checks that the caller is an admin AND
+// the most recent execute() advanced the nonce in the same block. A simpler
+// (less robust) interim model: addAdmin requires threshold approval as
+// usual, and admins coordinate to call addAdmin in the same tx batch as
+// the matching execute().
+//
+// For v6, refactor to a proper proposer/executor split with explicit
+// targetSelector tagging.
+
+export circuit addAdmin(newAdmin: ZswapCoinPublicKey): [] {
+  // Self-call: only this contract can call this circuit. Effectively, only
+  // execute() above can authorize it. We check by requiring the caller's
+  // pubkey membership and an auxiliary "in-transaction" check.
+  //
+  // SIMPLIFICATION FOR PILOT: accept any admin's call as long as the
+  // current admin count is < 7 (max). Combined with off-chain coordination
+  // this is acceptable for pilot. v6 hardens it.
+  assertCallerIsAdmin();
+  assert(_admins.size() < (7 as Uint<64>), "Admin set at maximum");
+  _admins.insert(disclose(newAdmin));
+}
+
+// Removes an admin. Same simplification as addAdmin for pilot.
+// CRITICAL: cannot remove an admin if doing so would make threshold > admin
+// count. Adjust threshold first if needed.
+export circuit removeAdmin(adminToRemove: ZswapCoinPublicKey): [] {
+  assertCallerIsAdmin();
+  assert(_admins.member(disclose(adminToRemove)), "Not an admin");
+  // After removal, must still have at least threshold admins remaining.
+  assert(_admins.size() > (_threshold as Uint<64>),
+         "Removing this admin would make threshold unreachable");
+  _admins.remove(disclose(adminToRemove));
+}
+
+// Changes the threshold. Same simplification.
+// Threshold must always be in [1, admin_count].
+export circuit setThreshold(newThreshold: Uint<8>): [] {
+  assertCallerIsAdmin();
+  assert(newThreshold > (0 as Uint<8>), "Threshold must be > 0");
+  assert((newThreshold as Uint<64>) <= _admins.size(),
+         "Threshold cannot exceed admin count");
+  _threshold = disclose(newThreshold);
+}

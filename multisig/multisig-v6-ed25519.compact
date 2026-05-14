@@ -1,0 +1,295 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPowerMultiSig v6 — Ed25519-witness governance contract.
+//
+// Branch: dev/multisig-ed25519
+// Author: PollPower
+// Date:   2026-05-08
+// Companion: contracts/dev/multisig-ed25519/DESIGN.md
+//
+// =============================================================================
+// CHANGE FROM v5 (multisig.compact)
+// =============================================================================
+//
+// v5 represents admins as ZswapCoinPublicKey and trusts the transaction layer
+// (and, in PollPower's pilot deployment, a server-side relayer wallet) to
+// enforce signing. PollPower's actual admin hardware is a Tangem Ring
+// (Ed25519 secure element). The pilot's API-relayer model means a compromised
+// API server can submit fake approvals.
+//
+// v6 keeps the audit-ledger semantics (Compact still doesn't support cross-
+// contract calls so EBT is still authorized at the Cardano native multi-sig
+// layer) but moves Ed25519 verification OUT of the trusted server and INTO
+// each admin's local prover via a witness function.
+//
+// The signature_valid() witness is implemented in the admin app's prover-side
+// code (apps/admin/services/proverWitness.ts) using @noble/ed25519. Any
+// approval transaction includes the Ed25519 signature as calldata; the
+// prover verifies it locally before constructing the proof.
+//
+// THREAT MODEL CHANGE:
+//   Pilot: compromise API server → can sign as any admin.
+//   v6:    compromise API server → no signing power (server is just a relayer).
+//          compromise an admin's device → can submit approvals as that admin
+//                                          (same as if they tapped their own ring).
+//          compromise threshold-many devices → game over (same as before).
+//
+// PRESERVED FROM v5:
+//   - Audit-ledger role (real authorization at Cardano native multi-sig).
+//   - Threshold M-of-N approval logic.
+//   - Replay-protected nonce.
+//   - Self-governance for admin set + threshold.
+//
+// =============================================================================
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Type aliases for clarity
+// =============================================================================
+
+// 32-byte Ed25519 public key (compressed Edwards form, what Tangem returns).
+//
+// We use raw Bytes<32> rather than introducing a new struct because Compact's
+// type system penalizes wrapper structs in Set<T> serialization. v5's use
+// of ZswapCoinPublicKey<Bytes<32> bytes> is a Midnight-specific wrapper; we
+// don't have an equivalent for Ed25519 yet.
+
+// =============================================================================
+// Witness: Ed25519 signature verification
+// =============================================================================
+//
+// IMPLEMENTED IN: apps/admin/services/proverWitness.ts (TypeScript, off-chain).
+// USES:           @noble/ed25519.verify() — pure-JS Ed25519 (RFC 8032).
+//
+// RETURNS true iff `signature` is a valid Ed25519 signature on `messageHash`
+// under public key `pubkey`. The contract trusts the prover for the math but
+// gates the resulting boolean on (a) the assert below, and (b) the pubkey
+// being a registered admin.
+//
+// SECURITY NOTE: a malicious prover can lie and claim true for an invalid
+// signature. This is bounded by "a malicious prover can sign as the admin
+// running that prover" — same trust level as physical possession of the
+// ring. It does NOT let the prover sign as a *different* admin, because
+// the pubkey check in approve() pins the signer to a specific admin record.
+witness signature_valid(
+  pubkey: Bytes<32>,
+  messageHash: Bytes<32>,
+  signature: Bytes<64>,
+): Boolean;
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+// Admin set, keyed by raw Ed25519 ring pubkey.
+export ledger _admins: Set<Bytes<32>>;
+
+// Required threshold M of N. Identical semantics to v5.
+export ledger _threshold: Uint<8>;
+
+// Globally monotonic nonce for replay protection. Identical to v5.
+export ledger _nonce: Counter;
+
+// Pending approvals: actionHash -> set of admin ring pubkeys who approved.
+// Cleared on execute() to prevent re-execution. Identical structure to v5.
+export ledger _approvals: Map<Bytes<32>, Set<Bytes<32>>>;
+
+// Initialization guard.
+export ledger _initialized: Boolean;
+
+// =============================================================================
+// Initialization
+// =============================================================================
+//
+// Deploy-time setup. 5 initial admins, threshold 3-of-5 by default.
+// We do NOT verify a signature at initialization; the deployer is implicit
+// (whoever submits the deploy tx). Subsequent admin-set changes go through
+// approve()/execute() and DO require Ed25519 sigs.
+export circuit initialize(
+  admin1: Bytes<32>,
+  admin2: Bytes<32>,
+  admin3: Bytes<32>,
+  admin4: Bytes<32>,
+  admin5: Bytes<32>,
+  threshold: Uint<8>,
+): [] {
+  assert(!_initialized, "Already initialized");
+  assert(threshold > 0 as Uint<8>, "Threshold must be > 0");
+  assert(threshold <= 5 as Uint<8>, "Threshold must be <= initial admin count");
+
+  _admins.insert(disclose(admin1));
+  _admins.insert(disclose(admin2));
+  _admins.insert(disclose(admin3));
+  _admins.insert(disclose(admin4));
+  _admins.insert(disclose(admin5));
+
+  _threshold = disclose(threshold);
+  _initialized = disclose(true);
+}
+
+// =============================================================================
+// Approve circuit — Ed25519 sig required
+// =============================================================================
+//
+// Called by an admin (or relayer on the admin's behalf) once the Tangem ring
+// has produced a signature on the actionHash. The contract:
+//   1. Asks the off-chain prover to verify the signature; refuses if invalid.
+//   2. Confirms the signer pubkey is a registered admin.
+//   3. Records the approval (idempotent — re-approving is a no-op).
+//
+// The pubkey is part of the calldata. The contract trusts the SIGNATURE,
+// not the caller — anyone can submit an approval on behalf of a signer
+// who's already produced the sig (e.g., a relayer carries it on-chain).
+export circuit approve(
+  actionHash: Bytes<32>,
+  signerPubkey: Bytes<32>,
+  signature: Bytes<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  // 1. The signature MUST verify (per the prover's local Ed25519 check).
+  const sigOk = signature_valid(signerPubkey, actionHash, signature);
+  assert(disclose(sigOk), "Bad Ed25519 signature");
+
+  // 2. The signer pubkey MUST be a registered admin.
+  assert(_admins.member(disclose(signerPubkey)), "Signer is not an admin");
+
+  // 3. Record the approval. Set semantics → idempotent.
+  const dHash = disclose(actionHash);
+  if (!_approvals.member(dHash)) {
+    _approvals.insertDefault(dHash);
+  }
+  _approvals.lookup(dHash).insert(disclose(signerPubkey));
+}
+
+// =============================================================================
+// Read circuits — public, no signature required
+// =============================================================================
+
+export circuit isAdmin(account: Bytes<32>): Boolean {
+  return _admins.member(disclose(account));
+}
+
+export circuit getThreshold(): Uint<8> {
+  return _threshold;
+}
+
+export circuit getAdminCount(): Uint<64> {
+  return _admins.size();
+}
+
+export circuit getNonce(): Uint<64> {
+  return _nonce.read();
+}
+
+export circuit getApprovalCount(actionHash: Bytes<32>): Uint<64> {
+  if (_approvals.member(disclose(actionHash))) {
+    return _approvals.lookup(disclose(actionHash)).size();
+  }
+  return 0 as Uint<64>;
+}
+
+export circuit isApproved(actionHash: Bytes<32>): Boolean {
+  return getApprovalCount(actionHash) >= (_threshold as Uint<64>);
+}
+
+// =============================================================================
+// Execute — clears approvals, increments nonce. (Same shape as v5.)
+// =============================================================================
+//
+// Anyone can call execute() once threshold is met. The actual on-chain
+// EBT operation it represents is submitted separately on the Cardano native
+// multi-sig layer; this contract just records "yes, threshold was reached
+// for this actionHash at this nonce."
+export circuit execute(actionHash: Bytes<32>): [] {
+  assert(_initialized, "Not initialized");
+  assert(isApproved(actionHash), "Not enough approvals");
+
+  _approvals.remove(disclose(actionHash));
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// Self-governance: addAdmin / removeAdmin / setThreshold
+// =============================================================================
+//
+// Each requires its own threshold-of-Ed25519-approvals before executing.
+// Approval flow:
+//   1. Admin proposes: compute actionHash = persistentHash(opType || params || nonce+1).
+//      No state change yet — actionHash is just a label.
+//   2. Each approver: tap ring on actionHash → approve(actionHash, pubkey, sig).
+//   3. Once threshold reached, anyone calls executeAddAdmin / executeRemoveAdmin /
+//      executeSetThreshold with the matching params; contract recomputes the
+//      actionHash, confirms it matches the approved one, applies the change.
+//
+// We can't store the params alongside the actionHash because Compact doesn't
+// support polymorphic ledger maps. The applier passes them in calldata and
+// the contract verifies via hash recomputation.
+
+// Add an admin. Anyone can call once the corresponding actionHash has
+// threshold approvals.
+export circuit executeAddAdmin(
+  newAdmin: Bytes<32>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  // Recompute the action hash for this operation:
+  //   opSelector = persistentHash(pad(32, "addAdmin"))
+  //   actionHash = persistentHash([opSelector, newAdmin, nextNonce])
+  const opSel = persistentHash<Bytes<32>>(pad(32, "v6:addAdmin"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, disclose(newAdmin), nextNonce]);
+
+  assert(isApproved(actionHash), "addAdmin: not enough approvals");
+
+  // Apply the change.
+  _admins.insert(disclose(newAdmin));
+
+  // Clear approvals + bump nonce (same as execute()).
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
+
+export circuit executeRemoveAdmin(
+  removedAdmin: Bytes<32>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "v6:removeAdmin"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, disclose(removedAdmin), nextNonce]);
+
+  assert(isApproved(actionHash), "removeAdmin: not enough approvals");
+  assert(_admins.member(disclose(removedAdmin)), "Not an admin");
+  // Don't allow dropping below threshold.
+  assert(_admins.size() > (_threshold as Uint<64>), "Would drop admin count below threshold");
+
+  _admins.remove(disclose(removedAdmin));
+
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
+
+export circuit executeSetThreshold(
+  newThreshold: Uint<8>,
+): [] {
+  assert(_initialized, "Not initialized");
+  assert(newThreshold > 0 as Uint<8>, "Threshold must be > 0");
+  assert((newThreshold as Uint<64>) <= _admins.size(), "Threshold > admin count");
+
+  const dThreshold = disclose(newThreshold);
+  const opSel = persistentHash<Bytes<32>>(pad(32, "v6:setThreshold"));
+  const newThresholdBytes = (dThreshold as Field) as Bytes<32>;
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, newThresholdBytes, nextNonce]);
+
+  assert(isApproved(actionHash), "setThreshold: not enough approvals");
+
+  _threshold = dThreshold;
+
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}

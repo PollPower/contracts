@@ -1,0 +1,402 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPower EBT v5.1 — stateless attestation settlement
+//
+// Branch: dev/ebt-v5.1-stateless-attestation
+// Author: PollPower
+// Date:   2026-05-09
+// Companion: contracts/dev/ebt-v5.1-stateless/DESIGN.md
+//             docs/.../v10.0-draft/Addendum_H_Stateless_Attestation_Architecture.md
+//
+// =============================================================================
+// CHANGES FROM V5
+// =============================================================================
+//
+// v5 holds an internal `_registeredMeters: Map<Bytes<32>, Boolean>` and gates
+// `settle()` on `_registeredMeters.lookup(meterHash)`. Owner controls the
+// registry via `registerMeter()/deregisterMeter()`. Single-key compromise of
+// the owner enables fake meter registration → fabricated settlement.
+//
+// v5.1 removes the internal meter list entirely. settle() instead verifies:
+//
+//   1. A HAT-signed attestation over the session payload (proves the
+//      reading came from authentic hardware).
+//   2. A Meter Authority-signed attestation over the HAT pubkey (proves
+//      the HAT is currently approved by the council-blessed authority).
+//
+// The Meter Authority pubkey is stored in v5.1 state, single-pubkey size,
+// rotated only via owner ceremony. The HAT pubkey set lives off chain in
+// the Meter Authority Service's database.
+//
+// State is constant size regardless of meter count. Meter additions/
+// rotations don't write to v5.1 state at all.
+//
+// PRESERVED FROM V5:
+//   - Public balances Map (Path A consumer/producer apps continue working)
+//   - 4-recipient settle slice (producer/ops/dividend/dao with bps margins)
+//   - Owner-only privileged operations
+//   - Counter for total settlements
+//
+// REMOVED FROM V5:
+//   - _registeredMeters
+//   - registerMeter / deregisterMeter circuits
+//   - Meter-presence assertion inside settle()
+//
+// ADDED IN V5.1:
+//   - meterAuthorityPubkey (single Bytes<32> in state)
+//   - setMeterAuthority circuit (owner-gated; ceremony-driven)
+//   - settle() takes attestation params; verifies via off-chain witnesses
+//
+// =============================================================================
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Witnesses (off-chain Ed25519 verification)
+// =============================================================================
+//
+// Same pattern as the v6 multisig and ProducerRegistry contracts: signature
+// verification happens in the prover via @noble/ed25519, gated by an
+// in-circuit assert on the result. Trust level: a malicious prover can lie
+// about their OWN sigs, but cannot forge sigs they don't have private keys
+// for. The pubkey check pins each verification to a specific key.
+
+witness signature_valid(
+  pubkey: Bytes<32>,
+  messageHash: Bytes<32>,
+  signature: Bytes<64>,
+): Boolean;
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+export ledger _initialized: Boolean;
+
+// Owner — controls privileged operations (rate setting, authority rotation).
+// Same shape as v5; multi-sig governance can wrap this same as today.
+export ledger _owner: Either<ZswapCoinPublicKey, ContractAddress>;
+
+// Meter Authority pubkey. Settle() verifies attestations against this key.
+// Rotated via setMeterAuthority (owner-only).
+export ledger _meterAuthorityPubkey: Bytes<32>;
+
+// Public balances. Same shape as v5.
+export ledger _balances: Map<Bytes<32>, Uint<128>>;
+
+// Total minted EBT. Same shape as v5.
+export ledger _totalSupply: Uint<128>;
+
+// Settlement counter (audit trail).
+export ledger settlementCount: Counter;
+
+// Replay protection — settled session IDs (prevents double-settle of same
+// session). Set<Bytes<32>> grows over time but each entry is small (32B).
+// At thousands of sessions per producer per year this is the dominant
+// growth term, but it's far smaller than v5's per-meter state.
+export ledger _settledSessions: Set<Bytes<32>>;
+
+// Margin policy — same defaults as v5 (bps out of 10000).
+//   producer 8696 / ops 870 / dividend 186 / dao 248 = 10000
+export ledger _bpsProducer: Uint<16>;
+export ledger _bpsOperations: Uint<16>;
+export ledger _bpsDividend: Uint<16>;
+export ledger _bpsDao: Uint<16>;
+
+export ledger _operationsRecipient: Bytes<32>;
+export ledger _dividendRecipient: Bytes<32>;
+export ledger _daoRecipient: Bytes<32>;
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+circuit assertInitialized(): [] {
+  assert(_initialized, "Not initialized");
+}
+
+circuit assertOnlyOwner(): [] {
+  assertInitialized();
+  assert(_owner.is_left, "Owner is contract address; not supported");
+  const caller = ownPublicKey();
+  assert(caller == _owner.left, "Only owner");
+}
+
+// =============================================================================
+// Initialization
+// =============================================================================
+
+export circuit initialize(
+  meterAuthorityPubkey: Bytes<32>,
+  operationsRecipient: Bytes<32>,
+  dividendRecipient: Bytes<32>,
+  daoRecipient: Bytes<32>,
+): [] {
+  assert(!_initialized, "Already initialized");
+  const callerKey = ownPublicKey();
+  const callerAcc = Either<ZswapCoinPublicKey, ContractAddress> {
+    is_left: true,
+    left: callerKey,
+    right: default<ContractAddress>,
+  };
+
+  _initialized = disclose(true);
+  _owner = disclose(callerAcc);
+  _meterAuthorityPubkey = disclose(meterAuthorityPubkey);
+
+  // Defaults match v5.
+  _bpsProducer = 8696 as Uint<16>;
+  _bpsOperations = 870 as Uint<16>;
+  _bpsDividend = 186 as Uint<16>;
+  _bpsDao = 248 as Uint<16>;
+
+  _operationsRecipient = disclose(operationsRecipient);
+  _dividendRecipient = disclose(dividendRecipient);
+  _daoRecipient = disclose(daoRecipient);
+}
+
+// =============================================================================
+// Owner-only — rotate meter authority
+// =============================================================================
+//
+// In production this should be wrapped by a multi-sig ceremony (the
+// existing PollPowerMultiSig v6 pattern). For pilot: owner-direct.
+
+export circuit setMeterAuthority(newAuthorityPubkey: Bytes<32>): [] {
+  assertOnlyOwner();
+  _meterAuthorityPubkey = disclose(newAuthorityPubkey);
+}
+
+// =============================================================================
+// Settlement — the core change in v5.1
+// =============================================================================
+//
+// Verifies two signatures, in order:
+//   1. authoritySig: Meter Authority signed (hatPubkey || expiresAt)
+//      (proves the HAT is currently approved)
+//   2. hatSig:       HAT signed (sessionPayloadHash)
+//      (proves the reading came from authentic hardware)
+//
+// sessionPayloadHash = persistentHash<Vector<3, Bytes<32>>>([
+//   sessionID,
+//   meterID (== HAT pubkey for now, simplifying),
+//   amount-encoded-as-bytes32
+// ])
+//
+// authorityMessageHash = persistentHash<Vector<2, Bytes<32>>>([
+//   hatPubkey,
+//   expiresAtEncoded
+// ])
+//
+// Replay protection: sessionID added to _settledSessions; subsequent settle()
+// for the same session is rejected.
+
+export circuit settle(
+  // Session payload (caller provides)
+  sessionID: Bytes<32>,
+  hatPubkey: Bytes<32>,
+  amount: Uint<128>,
+  expiresAt: Uint<64>,
+  // Recipient
+  producer: Bytes<32>,
+  // Pre-computed slice amounts
+  producerAmt: Uint<128>,
+  opsAmt: Uint<128>,
+  divAmt: Uint<128>,
+  daoAmt: Uint<128>,
+  // Signatures
+  hatSig: Bytes<64>,
+  authoritySig: Bytes<64>,
+): [] {
+  assertInitialized();
+
+  // Ownership check is removed. Anyone can submit a settle() if they have
+  // the requisite valid signatures. This is the core trust shift: no
+  // privileged caller, just cryptographic proof of HAT + Authority approval.
+
+  assert(amount > 0 as Uint<128>, "Amount must be positive");
+
+  // Freshness check: use Compact's kernel.blockTimeLte primitive (anchored
+  // to the chain's actual block time, not a caller-supplied clock). The
+  // earlier draft of this contract took `currentTime` as a circuit param,
+  // which was unsound — a malicious caller could pass currentTime=0 and
+  // bypass any expiry. blockTimeLte(expiresAt) returns true iff the block
+  // time is <= expiresAt, i.e. the attestation is still fresh.
+  const fresh = blockTimeLte(disclose(expiresAt));
+  assert(disclose(fresh), "Authority attestation expired");
+
+  assert(!_settledSessions.member(disclose(sessionID)), "Session already settled");
+
+  // -------------------------------------------------------------------
+  // BPS POLICY ENFORCEMENT
+  // -------------------------------------------------------------------
+  // Slice amounts must (a) sum to total amount, AND (b) match the
+  // bps-policy stored in state. Cross-multiplication trick because
+  // Compact lacks integer division on Uint<N>:
+  //
+  //   slice_i * BPS_TOTAL <= amount * bps_i < (slice_i + 1) * BPS_TOTAL
+  //
+  // With the sum constraint (sumAll == amount), this pins each slice
+  // to floor(amount * bps_i / BPS_TOTAL) or floor() + 1 — the off-chain
+  // computation must use either truncating-division-and-give-remainder-
+  // to-producer (the v5 convention) or any other slicing whose individual
+  // amounts fall within ±1 base unit of the bps-derived value.
+  //
+  // This closes a v5 gap: in v5 a malicious settlement-relayer could
+  // skew slices arbitrarily (e.g., 100% producer, 0% ops). v5.1's
+  // permissionless settle() makes this exploitable by any caller with a
+  // valid HAT sig + Authority attestation, so the policy MUST be
+  // enforced at the contract layer.
+  const sumAll = (producerAmt + opsAmt + divAmt + daoAmt) as Uint<128>;
+  assert(sumAll == amount, "slice sum mismatch");
+
+  // Lift all operands to Field for the cross-mult check (Field is large
+  // enough to hold (Uint<128> * Uint<16>) without overflow; Uint<128>
+  // arithmetic by itself is not).
+  const bpsTotal = 10000 as Field;
+  const bpsProducer = (_bpsProducer as Field);
+  const bpsOps      = (_bpsOperations as Field);
+  const bpsDiv      = (_bpsDividend as Field);
+  const bpsDao      = (_bpsDao as Field);
+  const amountF     = (amount as Field);
+  const producerF   = (producerAmt as Field);
+  const opsF        = (opsAmt as Field);
+  const divF        = (divAmt as Field);
+  const daoF        = (daoAmt as Field);
+
+  // For each slice: slice * BPS_TOTAL must be in
+  //   (amount * bps_i - BPS_TOTAL,  amount * bps_i + BPS_TOTAL)
+  // i.e. |slice * BPS_TOTAL - amount * bps_i| < BPS_TOTAL.
+  // Implementation note: Compact's Field type doesn't expose <,> directly,
+  // so we range-check via two separate Uint comparisons after casting
+  // products back. Since each product fits in Uint<160> at most
+  // (Uint<128> * Uint<16>), we cast to Uint<160> for the comparisons.
+  const producerCross = (producerF * bpsTotal) as Uint<160>;
+  const producerTarget = (amountF * bpsProducer) as Uint<160>;
+  assert(
+    producerCross + (bpsTotal as Uint<160>) > producerTarget
+      && producerCross < producerTarget + (bpsTotal as Uint<160>),
+    "producer slice off-policy"
+  );
+
+  const opsCross = (opsF * bpsTotal) as Uint<160>;
+  const opsTarget = (amountF * bpsOps) as Uint<160>;
+  assert(
+    opsCross + (bpsTotal as Uint<160>) > opsTarget
+      && opsCross < opsTarget + (bpsTotal as Uint<160>),
+    "ops slice off-policy"
+  );
+
+  const divCross = (divF * bpsTotal) as Uint<160>;
+  const divTarget = (amountF * bpsDiv) as Uint<160>;
+  assert(
+    divCross + (bpsTotal as Uint<160>) > divTarget
+      && divCross < divTarget + (bpsTotal as Uint<160>),
+    "dividend slice off-policy"
+  );
+
+  const daoCross = (daoF * bpsTotal) as Uint<160>;
+  const daoTarget = (amountF * bpsDao) as Uint<160>;
+  assert(
+    daoCross + (bpsTotal as Uint<160>) > daoTarget
+      && daoCross < daoTarget + (bpsTotal as Uint<160>),
+    "dao slice off-policy"
+  );
+
+  // 1. Verify Meter Authority attestation over (hatPubkey, expiresAt).
+  const expiresAtBytes = (disclose(expiresAt) as Field) as Bytes<32>;
+  const authorityMessageHash = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(hatPubkey),
+    expiresAtBytes,
+  ]);
+  const authorityOk = signature_valid(
+    _meterAuthorityPubkey,
+    authorityMessageHash,
+    authoritySig,
+  );
+  assert(disclose(authorityOk), "Bad authority signature");
+
+  // 2. Verify HAT signature over the session payload.
+  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
+  const sessionPayloadHash = persistentHash<Vector<3, Bytes<32>>>([
+    disclose(sessionID),
+    disclose(hatPubkey),
+    amountBytes,
+  ]);
+  const hatOk = signature_valid(disclose(hatPubkey), sessionPayloadHash, hatSig);
+  assert(disclose(hatOk), "Bad HAT signature");
+
+  // 3. Apply the mint to public balance map.
+  const dProducer = disclose(producer);
+  const dOps = _operationsRecipient;
+  const dDiv = _dividendRecipient;
+  const dDao = _daoRecipient;
+
+  if (!_balances.member(dProducer)) {
+    _balances.insert(dProducer, disclose(producerAmt));
+  } else {
+    const cur = _balances.lookup(dProducer);
+    _balances.insert(dProducer, (cur + disclose(producerAmt)) as Uint<128>);
+  }
+
+  if (!_balances.member(dOps)) {
+    _balances.insert(dOps, disclose(opsAmt));
+  } else {
+    const cur = _balances.lookup(dOps);
+    _balances.insert(dOps, (cur + disclose(opsAmt)) as Uint<128>);
+  }
+
+  if (!_balances.member(dDiv)) {
+    _balances.insert(dDiv, disclose(divAmt));
+  } else {
+    const cur = _balances.lookup(dDiv);
+    _balances.insert(dDiv, (cur + disclose(divAmt)) as Uint<128>);
+  }
+
+  if (!_balances.member(dDao)) {
+    _balances.insert(dDao, disclose(daoAmt));
+  } else {
+    const cur = _balances.lookup(dDao);
+    _balances.insert(dDao, (cur + disclose(daoAmt)) as Uint<128>);
+  }
+
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+  _settledSessions.insert(disclose(sessionID));
+  settlementCount.increment(1);
+}
+
+// =============================================================================
+// Read circuits
+// =============================================================================
+
+export circuit balanceOf(account: Bytes<32>): Uint<128> {
+  if (!_balances.member(disclose(account))) return 0 as Uint<128>;
+  return _balances.lookup(disclose(account));
+}
+
+export circuit totalSupply(): Uint<128> {
+  return _totalSupply;
+}
+
+export circuit getMeterAuthority(): Bytes<32> {
+  return _meterAuthorityPubkey;
+}
+
+export circuit getSettlementCount(): Uint<64> {
+  return settlementCount.read();
+}
+
+export circuit isSessionSettled(sessionID: Bytes<32>): Boolean {
+  return _settledSessions.member(disclose(sessionID));
+}
+
+export circuit getMarginPolicy(): Vector<4, Uint<16>> {
+  return [
+    _bpsProducer,
+    _bpsOperations,
+    _bpsDividend,
+    _bpsDao,
+  ];
+}
