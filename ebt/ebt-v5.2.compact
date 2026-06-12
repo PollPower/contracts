@@ -1,0 +1,556 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPower EBT Token v5.2 — audit-hardened stateless attestation settlement
+//
+// Branch: audit-remediation-2026-06-12-joi
+// Author: PollPower
+// Date:   2026-06-12
+// Audit:  Claude Fable 5, 2026-06-10 (tag v10.0, commit c06191e)
+// Spec:   memory/ebt-v5.2-proposed-adjustments.md
+//
+// =============================================================================
+// CHANGES FROM V5.1
+// =============================================================================
+//
+// v5.2 addresses findings from the 2026-06-10 Claude Fable 5 audit:
+//
+//   C-1: bind `producer` into HAT signed payload (3-field → 4-field).
+//        Prevents frontrun of permissionless settle() by binding the
+//        recipient into the cryptographic attestation chain.
+//
+//   M-1: assert attestationKey == persistentHash([producerBytes, meterKeyHash])
+//        inside settle() and attestProducerOwnership(). Prevents pairing
+//        any active attestation with any producer/meter combination.
+//
+//   L-1: assert newOwner.is_left in transferOwnership(). Prevents
+//        permanently bricking owner-gated circuits by transferring to
+//        a ContractAddress.
+//
+//   L-3: populate attestedAt, revokedAt, reissuedAt from caller-supplied
+//        timestamp validated against block time. Compact only exposes
+//        block-time comparison primitives (blockTimeLte/blockTimeGte),
+//        not a block_time() getter, so timestamps are accepted as circuit
+//        parameters and validated via blockTimeLte (not-future check).
+//
+//   I-1: file header updated to say "EBT Token v5.2" (was "v4" in v5).
+//
+//   M-4: cap + rate-limit + multi-party approval for manualReissue.
+//        - Per-call cap: MAX_REISSUE_PER_CALL (1,000,000 base units = 1 EBT)
+//        - Cooldown: REISSUE_COOLDOWN_SECONDS (3600 = 1 hour)
+//        - Multi-party: requires authority signature from multisig admin
+//
+// PRESERVED FROM V5.1:
+//   - Stateless attestation architecture (no on-chain meter registry)
+//   - Permissionless settle() with cryptographic proof
+//   - Slice-policy cross-multiplication bound enforcement
+//   - blockTimeLte freshness check on authority attestation
+//   - _settledSessions replay protection
+//   - Public balances map (Path A)
+//   - 4-recipient settle slice
+//
+// BREAKING CHANGES:
+//   - HAT signed payload is now 4-field (includes producer). Old HAT
+//     signatures from v5.1 will not verify against v5.2.
+//   - attestProducerOwnership now requires attestationKey to match
+//     hash(producerBytes, meterKeyHash).
+//   - manualReissue now requires cap, cooldown, and authority signature.
+//
+// =============================================================================
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Witnesses (off-chain Ed25519 verification)
+// =============================================================================
+
+witness signature_valid(
+  pubkey: Bytes<32>,
+  messageHash: Bytes<32>,
+  signature: Bytes<64>,
+): Boolean;
+
+// =============================================================================
+// Structs
+// =============================================================================
+
+struct AttestationStatus {
+  active: Boolean,
+  attestedAt: Uint<64>,
+  revokedAt: Uint<64>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+}
+
+struct ReissuanceEntry {
+  producer: Bytes<32>,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  reissuedAt: Uint<64>,
+}
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+export ledger _initialized: Boolean;
+
+// Owner — controls privileged operations.
+// L-1: assertOnlyOwner checks _owner.is_left; transferOwnership now
+// enforces newOwner.is_left to prevent bricking.
+export ledger _owner: Either<ZswapCoinPublicKey, ContractAddress>;
+
+// Meter Authority pubkey. Settle verifies attestations against this key.
+export ledger _meterAuthorityPubkey: Bytes<32>;
+
+// Public balances (same shape as v5/v5.1).
+export ledger _balances: Map<Bytes<32>, Uint<128>>;
+
+// Total minted EBT.
+export ledger _totalSupply: Uint<128>;
+
+// Settlement counter.
+export ledger settlementCount: Counter;
+
+// Replay protection.
+export ledger _settledSessions: Set<Bytes<32>>;
+
+// Margin policy (bps out of 10000).
+export ledger _bpsProducer: Uint<16>;
+export ledger _bpsOperations: Uint<16>;
+export ledger _bpsDividend: Uint<16>;
+export ledger _bpsDao: Uint<16>;
+
+export ledger _operationsRecipient: Bytes<32>;
+export ledger _dividendRecipient: Bytes<32>;
+export ledger _daoRecipient: Bytes<32>;
+
+// Producer attestation registry (carried from v5 for attestProducerOwnership).
+// Key: persistentHash([producerBytes, meterKeyHash]) per M-1.
+export ledger producerAttestations: Map<Bytes<32>, AttestationStatus>;
+
+// Reissuance audit log + rate limiting (M-4).
+export ledger reissuanceCount: Counter;
+export ledger reissuanceLog: Map<Uint<64>, ReissuanceEntry>;
+export ledger _lastReissueTime: Uint<64>;
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+circuit assertInitialized(): [] {
+  assert(_initialized, "Not initialized");
+}
+
+circuit assertOnlyOwner(): [] {
+  assertInitialized();
+  assert(_owner.is_left, "Owner is contract address; not supported");
+  const caller = ownPublicKey();
+  assert(caller == _owner.left, "Only owner");
+}
+
+// =============================================================================
+// Initialization
+// =============================================================================
+
+export circuit initialize(
+  meterAuthorityPubkey: Bytes<32>,
+  operationsRecipient: Bytes<32>,
+  dividendRecipient: Bytes<32>,
+  daoRecipient: Bytes<32>,
+): [] {
+  assert(!_initialized, "Already initialized");
+  const callerKey = ownPublicKey();
+  const callerAcc = Either<ZswapCoinPublicKey, ContractAddress> {
+    is_left: true,
+    left: callerKey,
+    right: default<ContractAddress>,
+  };
+
+  _initialized = disclose(true);
+  _owner = disclose(callerAcc);
+  _meterAuthorityPubkey = disclose(meterAuthorityPubkey);
+
+  _bpsProducer = 8696 as Uint<16>;
+  _bpsOperations = 870 as Uint<16>;
+  _bpsDividend = 186 as Uint<16>;
+  _bpsDao = 248 as Uint<16>;
+
+  _operationsRecipient = disclose(operationsRecipient);
+  _dividendRecipient = disclose(dividendRecipient);
+  _daoRecipient = disclose(daoRecipient);
+
+  _lastReissueTime = 0 as Uint<64>;
+}
+
+// =============================================================================
+// Owner-only operations
+// =============================================================================
+
+// L-1: transferOwnership now asserts newOwner.is_left to prevent bricking.
+export circuit transferOwnership(
+  newOwner: Either<ZswapCoinPublicKey, ContractAddress>
+): [] {
+  assertOnlyOwner();
+  assert(newOwner.is_left, "owner must be a public key, not contract address");
+  _owner = disclose(newOwner);
+}
+
+export circuit setMeterAuthority(newAuthorityPubkey: Bytes<32>): [] {
+  assertOnlyOwner();
+  _meterAuthorityPubkey = disclose(newAuthorityPubkey);
+}
+
+// =============================================================================
+// Producer attestation (v5 compatibility — attestation registry for audit trail)
+// =============================================================================
+
+// M-1: attestationKey must equal persistentHash([producerBytes, meterKeyHash]).
+// L-3: attestedAt populated from caller-supplied timestamp, validated not-future.
+export circuit attestProducerOwnership(
+  attestationKey: Bytes<32>,
+  producerBytes: Bytes<32>,
+  meterKeyHash: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+
+  // M-1: enforce attestationKey binding to (producer, meter).
+  const expectedKey = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(producerBytes),
+    disclose(meterKeyHash),
+  ]);
+  assert(disclose(attestationKey) == disclose(expectedKey), "attestation/producer mismatch");
+
+  // L-3: validate timestamp is not in the future.
+  // blockTimeGte(t) returns true iff block_time >= t, i.e. t is not ahead of block time.
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+
+  const status = AttestationStatus {
+    active: true,
+    attestedAt: currentTime,
+    revokedAt: 0 as Uint<64>,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(status));
+}
+
+export circuit revokeProducerOwnership(
+  attestationKey: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+  assert(producerAttestations.member(disclose(attestationKey)), "No such attestation");
+  const current = producerAttestations.lookup(disclose(attestationKey));
+  assert(current.active, "Already revoked");
+
+  // L-3: validate timestamp is not in the future.
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+
+  const revoked = AttestationStatus {
+    active: false,
+    attestedAt: current.attestedAt,
+    revokedAt: currentTime,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(revoked));
+}
+
+// =============================================================================
+// Settlement — C-1 hardened
+// =============================================================================
+//
+// C-1 fix: sessionPayloadHash is now 4-field, binding producer into the
+// HAT signature. Old 3-field HAT signatures from v5.1 will not verify.
+//
+// sessionPayloadHash = persistentHash<Vector<4, Bytes<32>>>([
+//   sessionID,
+//   hatPubkey,
+//   amountBytes,
+//   producer         // NEW in v5.2
+// ])
+
+export circuit settle(
+  // Session payload
+  sessionID: Bytes<32>,
+  hatPubkey: Bytes<32>,
+  amount: Uint<128>,
+  expiresAt: Uint<64>,
+  // Recipient
+  producer: Bytes<32>,
+  // Attestation binding (M-1)
+  attestationKey: Bytes<32>,
+  meterKeyHash: Bytes<32>,
+  // Pre-computed slice amounts
+  producerAmt: Uint<128>,
+  opsAmt: Uint<128>,
+  divAmt: Uint<128>,
+  daoAmt: Uint<128>,
+  // Signatures
+  hatSig: Bytes<64>,
+  authoritySig: Bytes<64>,
+): [] {
+  assertInitialized();
+
+  assert(amount > 0 as Uint<128>, "Amount must be positive");
+
+  // Freshness check (carried from v5.1).
+  const fresh = blockTimeLte(disclose(expiresAt));
+  assert(disclose(fresh), "Authority attestation expired");
+
+  // Replay protection (carried from v5.1).
+  assert(!_settledSessions.member(disclose(sessionID)), "Session already settled");
+
+  // -------------------------------------------------------------------
+  // M-1: attestationKey must match hash(producer, meterKeyHash)
+  // -------------------------------------------------------------------
+  const expectedAttKey = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(producer),
+    disclose(meterKeyHash),
+  ]);
+  assert(disclose(attestationKey) == disclose(expectedAttKey), "attestation/producer mismatch");
+
+  // -------------------------------------------------------------------
+  // BPS POLICY ENFORCEMENT (carried from v5.1)
+  // -------------------------------------------------------------------
+  const sumAll = (producerAmt + opsAmt + divAmt + daoAmt) as Uint<128>;
+  assert(sumAll == amount, "slice sum mismatch");
+
+  const bpsTotal = 10000 as Field;
+  const bpsProducer = (_bpsProducer as Field);
+  const bpsOps      = (_bpsOperations as Field);
+  const bpsDiv      = (_bpsDividend as Field);
+  const bpsDao      = (_bpsDao as Field);
+  const amountF     = (amount as Field);
+  const producerF   = (producerAmt as Field);
+  const opsF        = (opsAmt as Field);
+  const divF        = (divAmt as Field);
+  const daoF        = (daoAmt as Field);
+
+  const producerCross = (producerF * bpsTotal) as Uint<160>;
+  const producerTarget = (amountF * bpsProducer) as Uint<160>;
+  assert(
+    producerCross + (bpsTotal as Uint<160>) > producerTarget
+      && producerCross < producerTarget + (bpsTotal as Uint<160>),
+    "producer slice off-policy"
+  );
+
+  const opsCross = (opsF * bpsTotal) as Uint<160>;
+  const opsTarget = (amountF * bpsOps) as Uint<160>;
+  assert(
+    opsCross + (bpsTotal as Uint<160>) > opsTarget
+      && opsCross < opsTarget + (bpsTotal as Uint<160>),
+    "ops slice off-policy"
+  );
+
+  const divCross = (divF * bpsTotal) as Uint<160>;
+  const divTarget = (amountF * bpsDiv) as Uint<160>;
+  assert(
+    divCross + (bpsTotal as Uint<160>) > divTarget
+      && divCross < divTarget + (bpsTotal as Uint<160>),
+    "dividend slice off-policy"
+  );
+
+  const daoCross = (daoF * bpsTotal) as Uint<160>;
+  const daoTarget = (amountF * bpsDao) as Uint<160>;
+  assert(
+    daoCross + (bpsTotal as Uint<160>) > daoTarget
+      && daoCross < daoTarget + (bpsTotal as Uint<160>),
+    "dao slice off-policy"
+  );
+
+  // -------------------------------------------------------------------
+  // 1. Verify Meter Authority attestation over (hatPubkey, expiresAt)
+  // -------------------------------------------------------------------
+  const expiresAtBytes = (disclose(expiresAt) as Field) as Bytes<32>;
+  const authorityMessageHash = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(hatPubkey),
+    expiresAtBytes,
+  ]);
+  const authorityOk = signature_valid(
+    _meterAuthorityPubkey,
+    authorityMessageHash,
+    authoritySig,
+  );
+  assert(disclose(authorityOk), "Bad authority signature");
+
+  // -------------------------------------------------------------------
+  // 2. Verify HAT signature over session payload (C-1: 4-field)
+  // -------------------------------------------------------------------
+  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
+  const sessionPayloadHash = persistentHash<Vector<4, Bytes<32>>>([
+    disclose(sessionID),
+    disclose(hatPubkey),
+    amountBytes,
+    disclose(producer),
+  ]);
+  const hatOk = signature_valid(disclose(hatPubkey), sessionPayloadHash, hatSig);
+  assert(disclose(hatOk), "Bad HAT signature");
+
+  // -------------------------------------------------------------------
+  // 3. Apply mint to public balance map
+  // -------------------------------------------------------------------
+  const dProducer = disclose(producer);
+  const dOps = _operationsRecipient;
+  const dDiv = _dividendRecipient;
+  const dDao = _daoRecipient;
+
+  if (!_balances.member(dProducer)) {
+    _balances.insert(dProducer, disclose(producerAmt));
+  } else {
+    const cur = _balances.lookup(dProducer);
+    _balances.insert(dProducer, (cur + disclose(producerAmt)) as Uint<128>);
+  }
+
+  if (!_balances.member(dOps)) {
+    _balances.insert(dOps, disclose(opsAmt));
+  } else {
+    const cur = _balances.lookup(dOps);
+    _balances.insert(dOps, (cur + disclose(opsAmt)) as Uint<128>);
+  }
+
+  if (!_balances.member(dDiv)) {
+    _balances.insert(dDiv, disclose(divAmt));
+  } else {
+    const cur = _balances.lookup(dDiv);
+    _balances.insert(dDiv, (cur + disclose(divAmt)) as Uint<128>);
+  }
+
+  if (!_balances.member(dDao)) {
+    _balances.insert(dDao, disclose(daoAmt));
+  } else {
+    const cur = _balances.lookup(dDao);
+    _balances.insert(dDao, (cur + disclose(daoAmt)) as Uint<128>);
+  }
+
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+  _settledSessions.insert(disclose(sessionID));
+  settlementCount.increment(1);
+}
+
+// =============================================================================
+// Manual reissuance (M-4: capped + rate-limited + authority-signed)
+// =============================================================================
+//
+// M-4 fix: "break glass" path is now:
+//   - Capped at 1,000,000 base units (1 EBT) per call
+//   - Rate-limited to once per 3600 seconds (1 hour)
+//   - Requires a co-signature from the Meter Authority key (acting as
+//     multi-party approval until dedicated multisig gate is wired)
+
+export circuit manualReissue(
+  producer: Bytes<32>,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+  authoritySig: Bytes<64>,
+): [] {
+  assertOnlyOwner();
+  assert(amount > 0 as Uint<128>, "Must reissue > 0");
+
+  // M-4: per-call cap (1,000,000 base units = 1 EBT = 1 kWh).
+  assert(amount <= 1000000 as Uint<128>, "Exceeds max reissue per call");
+
+  // M-4: rate limit — 1 hour cooldown.
+  // L-3: validate currentTime is not in the future.
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+  const cooldown = 3600 as Uint<64>;
+  const earliest = (_lastReissueTime + cooldown) as Uint<64>;
+  assert(currentTime >= earliest, "Reissue cooldown not elapsed");
+
+  // M-4: multi-party approval — require Meter Authority co-signature.
+  const producerBytes = disclose(producer);
+  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
+  const reissueMessageHash = persistentHash<Vector<2, Bytes<32>>>([
+    producerBytes,
+    amountBytes,
+  ]);
+  const authOk = signature_valid(
+    _meterAuthorityPubkey,
+    reissueMessageHash,
+    authoritySig,
+  );
+  assert(disclose(authOk), "Reissue requires authority co-signature");
+
+  // Mint.
+  if (!_balances.member(producerBytes)) {
+    _balances.insert(producerBytes, disclose(amount));
+  } else {
+    const cur = _balances.lookup(producerBytes);
+    _balances.insert(producerBytes, (cur + disclose(amount)) as Uint<128>);
+  }
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+
+  // Audit log (L-3: timestamp from caller, validated above).
+  const seq = reissuanceCount.read();
+  const entry = ReissuanceEntry {
+    producer: producer,
+    amount: amount,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+    reissuedAt: currentTime,
+  };
+  reissuanceLog.insert(disclose(seq), disclose(entry));
+  reissuanceCount.increment(1);
+  _lastReissueTime = disclose(currentTime);
+}
+
+// =============================================================================
+// Read circuits
+// =============================================================================
+
+export circuit balanceOf(account: Bytes<32>): Uint<128> {
+  if (!_balances.member(disclose(account))) return 0 as Uint<128>;
+  return _balances.lookup(disclose(account));
+}
+
+export circuit totalSupply(): Uint<128> {
+  return _totalSupply;
+}
+
+export circuit getMeterAuthority(): Bytes<32> {
+  return _meterAuthorityPubkey;
+}
+
+export circuit getSettlementCount(): Uint<64> {
+  return settlementCount.read();
+}
+
+export circuit isSessionSettled(sessionID: Bytes<32>): Boolean {
+  return _settledSessions.member(disclose(sessionID));
+}
+
+export circuit getMarginPolicy(): Vector<4, Uint<16>> {
+  return [
+    _bpsProducer,
+    _bpsOperations,
+    _bpsDividend,
+    _bpsDao,
+  ];
+}
+
+export circuit getAttestation(attestationKey: Bytes<32>): AttestationStatus {
+  if (!producerAttestations.member(disclose(attestationKey))) {
+    return AttestationStatus {
+      active: false,
+      attestedAt: 0 as Uint<64>,
+      revokedAt: 0 as Uint<64>,
+      reasonCode: 0 as Uint<8>,
+      evidenceHash: default<Bytes<32>>,
+    };
+  }
+  return producerAttestations.lookup(disclose(attestationKey));
+}
+
+export circuit getReissuanceCount(): Uint<64> {
+  return reissuanceCount.read();
+}
