@@ -1,0 +1,266 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPower ProducerRegistry v1.1 (SLIM build) — domain-separated approvals.
+//
+// Branch: audit-remediation-2026-06-12-joi
+// Author: PollPower
+// Date:   2026-06-12
+// Audit:  Claude Fable 5, 2026-06-10 (tag v10.0, commit c06191e)
+//
+// =============================================================================
+// CHANGES FROM v1
+// =============================================================================
+//
+// v1.1 addresses two findings from the 2026-06-10 audit:
+//
+//   M-2: Ed25519 signed messages lacked contract/chain domain separation.
+//        The registry and multisig v6 share the same admin key set; an
+//        approval signature for one contract could replay against the
+//        other. approve() now verifies the signature over
+//        persistentHash([contractTag, actionHash]).
+//
+//   L-2: v1's registry mutations (executeAddMeter / executeRemoveMeter)
+//        and self-governance were already nonce-bound (carried forward).
+//        v1.1 removes the generic execute() exposure entirely — every
+//        action in the registry is one of the named, nonce-bound
+//        execute* circuits. (v1 had no generic execute(); this note is
+//        for parity with the multisig v6.1 change.)
+//
+// PRESERVED FROM v1:
+//   - SLIM design: _meters as Set<Bytes<32>>, metadata in postgres
+//   - Multi-sig-gated addMeter/removeMeter
+//   - Nonce-bound self-governance
+//
+// MIGRATION:
+//   v1 remains deployed; v1.1 is a fresh deployment with the same admin
+//   set. Off-chain admin tooling must sign
+//   persistentHash([contractTag, actionHash]) instead of bare actionHash.
+//   The settlement-api RegistryGate pre-flight check reads
+//   isMeterRegistered() which is unchanged.
+//
+// =============================================================================
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Witness: Ed25519 signature verification (same as multisig v6.1)
+// =============================================================================
+witness signature_valid(
+  pubkey: Bytes<32>,
+  messageHash: Bytes<32>,
+  signature: Bytes<64>,
+): Boolean;
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+export ledger _admins: Set<Bytes<32>>;
+export ledger _threshold: Uint<8>;
+export ledger _nonce: Counter;
+export ledger _approvals: Map<Bytes<32>, Set<Bytes<32>>>;
+
+// THE REGISTRY: just the set of approved meter keyHashes.
+export ledger _meters: Set<Bytes<32>>;
+
+export ledger _initialized: Boolean;
+
+// M-2: per-deployment domain separator. Set once at initialize().
+export ledger _contractTag: Bytes<32>;
+
+// =============================================================================
+// Initialization
+// =============================================================================
+
+export circuit initialize(
+  admin1: Bytes<32>,
+  admin2: Bytes<32>,
+  admin3: Bytes<32>,
+  admin4: Bytes<32>,
+  admin5: Bytes<32>,
+  threshold: Uint<8>,
+  seedMeterKeyHash: Bytes<32>,
+  seedEnabled: Boolean,
+  contractTag: Bytes<32>,
+): [] {
+  assert(!_initialized, "Already initialized");
+  assert(threshold > 0 as Uint<8>, "Threshold must be > 0");
+  assert(threshold <= 5 as Uint<8>, "Threshold must be <= initial admin count");
+
+  _admins.insert(disclose(admin1));
+  _admins.insert(disclose(admin2));
+  _admins.insert(disclose(admin3));
+  _admins.insert(disclose(admin4));
+  _admins.insert(disclose(admin5));
+
+  _threshold = disclose(threshold);
+  _contractTag = disclose(contractTag);
+  _initialized = disclose(true);
+
+  if (disclose(seedEnabled)) {
+    _meters.insert(disclose(seedMeterKeyHash));
+  }
+}
+
+// =============================================================================
+// Approve circuit — Ed25519 sig over domain-separated hash (M-2)
+// =============================================================================
+
+export circuit approve(
+  actionHash: Bytes<32>,
+  signerPubkey: Bytes<32>,
+  signature: Bytes<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  // M-2: domain-separated signed message.
+  const signedHash = persistentHash<Vector<2, Bytes<32>>>([
+    _contractTag,
+    disclose(actionHash),
+  ]);
+
+  const sigOk = signature_valid(signerPubkey, signedHash, signature);
+  assert(disclose(sigOk), "Bad Ed25519 signature");
+
+  assert(_admins.member(disclose(signerPubkey)), "Signer is not an admin");
+
+  const dHash = disclose(actionHash);
+  if (!_approvals.member(dHash)) {
+    _approvals.insertDefault(dHash);
+  }
+  _approvals.lookup(dHash).insert(disclose(signerPubkey));
+}
+
+// =============================================================================
+// Read circuits
+// =============================================================================
+
+export circuit isAdmin(account: Bytes<32>): Boolean {
+  return _admins.member(disclose(account));
+}
+
+export circuit getThreshold(): Uint<8> {
+  return _threshold;
+}
+
+export circuit getAdminCount(): Uint<64> {
+  return _admins.size();
+}
+
+export circuit getNonce(): Uint<64> {
+  return _nonce.read();
+}
+
+export circuit getContractTag(): Bytes<32> {
+  return _contractTag;
+}
+
+export circuit getApprovalCount(actionHash: Bytes<32>): Uint<64> {
+  if (_approvals.member(disclose(actionHash))) {
+    return _approvals.lookup(disclose(actionHash)).size();
+  }
+  return 0 as Uint<64>;
+}
+
+export circuit isApproved(actionHash: Bytes<32>): Boolean {
+  return getApprovalCount(actionHash) >= (_threshold as Uint<64>);
+}
+
+export circuit isMeterRegistered(meterKeyHash: Bytes<32>): Boolean {
+  return _meters.member(disclose(meterKeyHash));
+}
+
+export circuit getMeterCount(): Uint<64> {
+  return _meters.size();
+}
+
+// =============================================================================
+// Self-governance: addAdmin / removeAdmin / setThreshold
+// =============================================================================
+//
+// Op selectors bumped to "registry-v1.1:" to prevent any cross-version
+// hash collision with approvals collected against the v1 deployment.
+
+export circuit executeAddAdmin(newAdmin: Bytes<32>): [] {
+  assert(_initialized, "Not initialized");
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "registry-v1.1:addAdmin"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, disclose(newAdmin), nextNonce]);
+
+  assert(isApproved(actionHash), "addAdmin: not enough approvals");
+
+  _admins.insert(disclose(newAdmin));
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
+
+export circuit executeRemoveAdmin(removedAdmin: Bytes<32>): [] {
+  assert(_initialized, "Not initialized");
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "registry-v1.1:removeAdmin"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, disclose(removedAdmin), nextNonce]);
+
+  assert(isApproved(actionHash), "removeAdmin: not enough approvals");
+  assert(_admins.member(disclose(removedAdmin)), "Not an admin");
+  assert(_admins.size() > (_threshold as Uint<64>), "Would drop admin count below threshold");
+
+  _admins.remove(disclose(removedAdmin));
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
+
+export circuit executeSetThreshold(newThreshold: Uint<8>): [] {
+  assert(_initialized, "Not initialized");
+  assert(newThreshold > 0 as Uint<8>, "Threshold must be > 0");
+  assert((newThreshold as Uint<64>) <= _admins.size(), "Threshold > admin count");
+
+  const dThreshold = disclose(newThreshold);
+  const opSel = persistentHash<Bytes<32>>(pad(32, "registry-v1.1:setThreshold"));
+  const newThresholdBytes = (dThreshold as Field) as Bytes<32>;
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, newThresholdBytes, nextNonce]);
+
+  assert(isApproved(actionHash), "setThreshold: not enough approvals");
+
+  _threshold = dThreshold;
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// Registry mutations — multi-sig gated, nonce-bound
+// =============================================================================
+
+export circuit executeAddMeter(meterKeyHash: Bytes<32>): [] {
+  assert(_initialized, "Not initialized");
+  assert(!_meters.member(disclose(meterKeyHash)), "Meter already registered");
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "registry-v1.1:addMeter"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, disclose(meterKeyHash), nextNonce]);
+
+  assert(isApproved(actionHash), "addMeter: not enough approvals");
+
+  _meters.insert(disclose(meterKeyHash));
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
+
+export circuit executeRemoveMeter(meterKeyHash: Bytes<32>): [] {
+  assert(_initialized, "Not initialized");
+  assert(_meters.member(disclose(meterKeyHash)), "Meter not registered");
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "registry-v1.1:removeMeter"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, disclose(meterKeyHash), nextNonce]);
+
+  assert(isApproved(actionHash), "removeMeter: not enough approvals");
+
+  _meters.remove(disclose(meterKeyHash));
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}

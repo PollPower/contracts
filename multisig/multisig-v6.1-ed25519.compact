@@ -1,0 +1,287 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPowerMultiSig v6.1 — Ed25519-witness governance with domain separation.
+//
+// Branch: audit-remediation-2026-06-12-joi
+// Author: PollPower
+// Date:   2026-06-12
+// Audit:  Claude Fable 5, 2026-06-10 (tag v10.0, commit c06191e)
+//
+// =============================================================================
+// CHANGES FROM v6
+// =============================================================================
+//
+// v6.1 addresses two findings from the 2026-06-10 audit:
+//
+//   M-2: Ed25519 signed messages lacked contract/chain domain separation.
+//        The multisig v6 and ProducerRegistry contracts share the same
+//        admin key set (same Tangem rings). A signature produced for an
+//        actionHash on one contract could be replayed against the other.
+//
+//        Fix: approve() now verifies the signature over
+//          signedHash = persistentHash([contractTag, actionHash])
+//        where contractTag is a per-deployment constant set at initialize().
+//        Admin apps must sign the domain-separated hash, not the bare
+//        actionHash.
+//
+//   L-2: Generic approve(actionHash) + execute(actionHash) allowed a
+//        cleared-then-re-approved hash to be re-executed. Only the
+//        self-governance execute* variants were nonce-bound.
+//
+//        Fix: execute() now requires the actionHash to commit to the
+//        next nonce. The caller provides the action's preimage fields
+//        (opSelector + payload) and the contract recomputes:
+//          actionHash = persistentHash([opSelector, payload, nextNonce])
+//        Generic actions are now structurally identical to self-governance
+//        actions: every executed hash is nonce-bound.
+//
+// PRESERVED FROM v6:
+//   - Ed25519 witness verification via prover (signature_valid)
+//   - Threshold M-of-N approval logic
+//   - Self-governance with nonce-bound execute* variants
+//   - Audit-ledger role (real authorization at Cardano native multi-sig)
+//
+// MIGRATION:
+//   v6 remains deployed; v6.1 is a fresh deployment with the same admin
+//   set. Off-chain admin tooling must:
+//   1. Sign persistentHash([contractTag, actionHash]) instead of actionHash
+//   2. Include opSelector + payload when calling execute()
+//
+// =============================================================================
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Witness: Ed25519 signature verification
+// =============================================================================
+//
+// IMPLEMENTED IN: apps/admin/services/proverWitness.ts (TypeScript, off-chain).
+// Same trust model as v6: a malicious prover can lie about its OWN sigs,
+// but the pubkey check pins each verification to a specific admin record.
+
+witness signature_valid(
+  pubkey: Bytes<32>,
+  messageHash: Bytes<32>,
+  signature: Bytes<64>,
+): Boolean;
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+export ledger _admins: Set<Bytes<32>>;
+export ledger _threshold: Uint<8>;
+export ledger _nonce: Counter;
+export ledger _approvals: Map<Bytes<32>, Set<Bytes<32>>>;
+export ledger _initialized: Boolean;
+
+// M-2: per-deployment domain separator. Set once at initialize().
+// Recommended value: a hash of the deployment context, e.g.
+// SHA-256("pollpower:multisig:v6.1:preview:<deploy-date>"). Ideally the
+// contract address, but Compact cannot read its own address, so a
+// deploy-time constant is the practical equivalent — it just has to be
+// unique per deployment and committed before any approvals exist.
+export ledger _contractTag: Bytes<32>;
+
+// =============================================================================
+// Initialization
+// =============================================================================
+
+export circuit initialize(
+  admin1: Bytes<32>,
+  admin2: Bytes<32>,
+  admin3: Bytes<32>,
+  admin4: Bytes<32>,
+  admin5: Bytes<32>,
+  threshold: Uint<8>,
+  contractTag: Bytes<32>,
+): [] {
+  assert(!_initialized, "Already initialized");
+  assert(threshold > 0 as Uint<8>, "Threshold must be > 0");
+  assert(threshold <= 5 as Uint<8>, "Threshold must be <= initial admin count");
+
+  _admins.insert(disclose(admin1));
+  _admins.insert(disclose(admin2));
+  _admins.insert(disclose(admin3));
+  _admins.insert(disclose(admin4));
+  _admins.insert(disclose(admin5));
+
+  _threshold = disclose(threshold);
+  _contractTag = disclose(contractTag);
+  _initialized = disclose(true);
+}
+
+// =============================================================================
+// Approve circuit — Ed25519 sig over domain-separated hash (M-2)
+// =============================================================================
+//
+// The admin's ring signs:
+//   signedHash = persistentHash([contractTag, actionHash])
+// NOT the bare actionHash. This prevents replaying an approval signature
+// against any other contract sharing the same admin key set.
+
+export circuit approve(
+  actionHash: Bytes<32>,
+  signerPubkey: Bytes<32>,
+  signature: Bytes<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  // M-2: domain-separated signed message.
+  const signedHash = persistentHash<Vector<2, Bytes<32>>>([
+    _contractTag,
+    disclose(actionHash),
+  ]);
+
+  const sigOk = signature_valid(signerPubkey, signedHash, signature);
+  assert(disclose(sigOk), "Bad Ed25519 signature");
+
+  assert(_admins.member(disclose(signerPubkey)), "Signer is not an admin");
+
+  const dHash = disclose(actionHash);
+  if (!_approvals.member(dHash)) {
+    _approvals.insertDefault(dHash);
+  }
+  _approvals.lookup(dHash).insert(disclose(signerPubkey));
+}
+
+// =============================================================================
+// Read circuits
+// =============================================================================
+
+export circuit isAdmin(account: Bytes<32>): Boolean {
+  return _admins.member(disclose(account));
+}
+
+export circuit getThreshold(): Uint<8> {
+  return _threshold;
+}
+
+export circuit getAdminCount(): Uint<64> {
+  return _admins.size();
+}
+
+export circuit getNonce(): Uint<64> {
+  return _nonce.read();
+}
+
+export circuit getContractTag(): Bytes<32> {
+  return _contractTag;
+}
+
+export circuit getApprovalCount(actionHash: Bytes<32>): Uint<64> {
+  if (_approvals.member(disclose(actionHash))) {
+    return _approvals.lookup(disclose(actionHash)).size();
+  }
+  return 0 as Uint<64>;
+}
+
+export circuit isApproved(actionHash: Bytes<32>): Boolean {
+  return getApprovalCount(actionHash) >= (_threshold as Uint<64>);
+}
+
+// =============================================================================
+// Execute — nonce-bound for ALL actions (L-2)
+// =============================================================================
+//
+// L-2 fix: generic execute() no longer accepts an opaque actionHash.
+// The caller provides the action's preimage (opSelector + payload) and
+// the contract recomputes the nonce-bound hash:
+//
+//   actionHash = persistentHash([opSelector, payload, nextNonce])
+//
+// This makes every executed action structurally nonce-bound — identical
+// to the self-governance execute* variants. A cleared-then-re-approved
+// hash cannot be re-executed because the nonce has moved on, which
+// changes the hash the approvals would need to target.
+//
+// Off-chain change: admin apps compute actionHash with nextNonce =
+// getNonce() + 1 before collecting approvals (they already do this for
+// self-governance ops — now it's uniform).
+
+export circuit execute(
+  opSelector: Bytes<32>,
+  payload: Bytes<32>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  // Recompute the nonce-bound action hash.
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([
+    disclose(opSelector),
+    disclose(payload),
+    nextNonce,
+  ]);
+
+  assert(isApproved(actionHash), "Not enough approvals");
+
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// Self-governance: addAdmin / removeAdmin / setThreshold
+// =============================================================================
+//
+// Same nonce-bound pattern as v6, unchanged in structure. The op selectors
+// are bumped to "v6.1:" to prevent any cross-version hash collision with
+// approvals collected against the v6 deployment.
+
+export circuit executeAddAdmin(
+  newAdmin: Bytes<32>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "v6.1:addAdmin"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, disclose(newAdmin), nextNonce]);
+
+  assert(isApproved(actionHash), "addAdmin: not enough approvals");
+
+  _admins.insert(disclose(newAdmin));
+
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
+
+export circuit executeRemoveAdmin(
+  removedAdmin: Bytes<32>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "v6.1:removeAdmin"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, disclose(removedAdmin), nextNonce]);
+
+  assert(isApproved(actionHash), "removeAdmin: not enough approvals");
+  assert(_admins.member(disclose(removedAdmin)), "Not an admin");
+  assert(_admins.size() > (_threshold as Uint<64>), "Would drop admin count below threshold");
+
+  _admins.remove(disclose(removedAdmin));
+
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
+
+export circuit executeSetThreshold(
+  newThreshold: Uint<8>,
+): [] {
+  assert(_initialized, "Not initialized");
+  assert(newThreshold > 0 as Uint<8>, "Threshold must be > 0");
+  assert((newThreshold as Uint<64>) <= _admins.size(), "Threshold > admin count");
+
+  const dThreshold = disclose(newThreshold);
+  const opSel = persistentHash<Bytes<32>>(pad(32, "v6.1:setThreshold"));
+  const newThresholdBytes = (dThreshold as Field) as Bytes<32>;
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, newThresholdBytes, nextNonce]);
+
+  assert(isApproved(actionHash), "setThreshold: not enough approvals");
+
+  _threshold = dThreshold;
+
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
