@@ -1,0 +1,358 @@
+pragma language_version >= 0.22.0 && <= 0.22;
+
+// =============================================================================
+// Community Poll v2 — ZK-Shielded Governance for PollPower
+//
+// "Put the Poll in PollPower."
+//
+// Branch: audit-remediation-2026-06-12-joi
+// Author: PollPower
+// Date:   2026-06-12
+// Audit:  Claude Fable 5, 2026-06-10 (tag v10.0, commit c06191e)
+// Spec:   community-poll/V2-SPEC.md
+//
+// =============================================================================
+// CHANGES FROM V1
+// =============================================================================
+//
+// v2 addresses findings from the 2026-06-10 Claude Fable 5 audit:
+//
+//   C-2: castVote now binds nullifier, kycCommitment, and tallyKey to a
+//        private witness (voter_secret) via in-circuit recomputation:
+//          nullifier     == persistentHash([secret, pollId])
+//          kycCommitment == persistentHash([secret, identityProof])
+//          tallyKey      == persistentHash([pollId, optionBytes])
+//        One registered identity → one nullifier per poll → one vote.
+//        Tally forgery (incrementing an arbitrary key) is no longer
+//        possible: the incremented key is provably the one for the
+//        option that passed the bounds check.
+//
+//   M-3: registerKycCommitment / revokeKycCommitment branch on the
+//        STORED VALUE, not mere membership. Revoked commitments can be
+//        re-activated; double-revokes no longer double-decrement
+//        kycCount. Invariant: kycCount == |{c : kycCommitments[c]}|.
+//
+//   I-2: pragma pinned with an upper bound (was open-ended >= 0.22.0).
+//
+//   N-6: transferOwnership asserts newOwner.is_left (L-1 pattern from
+//        EBT v5.2). Prevents permanently bricking owner-gated circuits
+//        by transferring to a ContractAddress.
+//
+//   N-7: getTotalPolls / getTotalVotes return Uint<64> (Counter.read()'s
+//        actual type) instead of silently widening to Field.
+//
+// HONEST LIMITATION (documented, deliberate):
+//   Both nullifier and tallyKey are public per transaction, so an
+//   observer CAN link "this anonymous registered voter chose option N".
+//   Vote-choice privacy holds only ACROSS voters, not per transaction.
+//   Full ballot privacy (homomorphic tally / batched epochs) is v3
+//   research. Do not oversell the ZK guarantees.
+//
+// Privacy (Midnight, v2 actuals):
+//   - Voter identity: private (voter_secret never leaves the witness)
+//   - Which commitment voted: revealed per tx (nullifier is public)
+//   - Which option that tx chose: revealed per tx (tallyKey is public)
+//   - Vote tallies: public (transparent results)
+//   - KYC status: proven without revealing identity
+// =============================================================================
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Witnesses
+// =============================================================================
+
+// The voter's private secret. Lives in the wallet/app (proposed: HKDF from
+// wallet seed, info string "pollpower:vote:v2"). Supplied locally by the
+// prover; never appears on chain.
+witness voter_secret(): Bytes<32>;
+
+// ─── Initialization ─────────────────────────────────────────────────────────
+export ledger _initialized: Boolean;
+
+// ─── Access control ─────────────────────────────────────────────────────────
+export ledger owner: Either<ZswapCoinPublicKey, ContractAddress>;
+export ledger pollAuthority: Either<ZswapCoinPublicKey, ContractAddress>;  // Can create polls
+
+// ─── KYC commitment registry ────────────────────────────────────────────────
+// commitment = persistentHash([user_secret, identity_proof])
+// Computed CLIENT-SIDE; the authority never learns user_secret.
+// The commitment is public, the preimage is not.
+export ledger kycCommitments: Map<Bytes<32>, Boolean>;
+export ledger kycCount: Counter;
+
+// ─── Poll storage ───────────────────────────────────────────────────────────
+// pollId → number of options (max 10)
+export ledger pollOptionCounts: Map<Bytes<32>, Uint<128>>;
+
+// pollId → whether poll is active
+export ledger pollActive: Map<Bytes<32>, Boolean>;
+
+// tallyKey → vote count (public tally)
+// tallyKey = persistentHash([pollId, optionIndex as Bytes<32>])
+// Recomputed IN-CIRCUIT during castVote (C-2) — no longer trusted from caller.
+export ledger voteTallies: Map<Bytes<32>, Uint<128>>;
+
+// ─── Nullifier set (double-vote prevention) ─────────────────────────────────
+// nullifier = persistentHash([user_secret, pollId]) — unique per user per poll.
+// Recomputed IN-CIRCUIT during castVote (C-2) — cannot be fabricated.
+export ledger usedNullifiers: Map<Bytes<32>, Boolean>;
+
+// ─── Stats ──────────────────────────────────────────────────────────────────
+export ledger totalPolls: Counter;
+export ledger totalVotes: Counter;
+
+// =============================================================================
+// Constructor
+// =============================================================================
+
+export circuit initialize(): [] {
+    assert(!_initialized, "Already initialized");
+    _initialized = disclose(true);
+
+    owner = disclose(left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey()));
+    pollAuthority = disclose(left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey()));
+}
+
+// =============================================================================
+// Admin
+// =============================================================================
+
+export circuit setPollAuthority(
+    newAuth: Either<ZswapCoinPublicKey, ContractAddress>
+): [] {
+    assert(_initialized, "Not initialized");
+    const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+    assert(caller == owner, "Only owner");
+    pollAuthority = disclose(newAuth);
+}
+
+// N-6 (L-1 pattern): newOwner must be a public key. Transferring ownership
+// to a ContractAddress would permanently brick every `caller == owner` check.
+export circuit transferOwnership(
+    newOwner: Either<ZswapCoinPublicKey, ContractAddress>
+): [] {
+    assert(_initialized, "Not initialized");
+    const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+    assert(caller == owner, "Only owner");
+    assert(newOwner.is_left, "owner must be a public key, not contract address");
+    owner = disclose(newOwner);
+}
+
+// =============================================================================
+// KYC Commitment Management (M-3: branch on value, not membership)
+// =============================================================================
+
+// Register (or re-activate) a KYC commitment. Called after off-chain
+// identity verification. commitment = persistentHash([user_secret, identity_proof]),
+// computed client-side. The user keeps user_secret private; we only store
+// the commitment.
+export circuit registerKycCommitment(commitment: Bytes<32>): [] {
+    assert(_initialized, "Not initialized");
+    const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+    assert(caller == owner || caller == pollAuthority, "Not authorized");
+
+    if (kycCommitments.member(disclose(commitment))) {
+        const wasActive = kycCommitments.lookup(disclose(commitment));
+        if (!wasActive) {
+            // M-3: re-activate a previously revoked commitment.
+            kycCommitments.insert(disclose(commitment), disclose(true));
+            kycCount.increment(1);
+        }
+        // already-active: idempotent no-op
+    } else {
+        kycCommitments.insert(disclose(commitment), disclose(true));
+        kycCount.increment(1);
+    }
+}
+
+// Revoke KYC (e.g., fraud detected)
+export circuit revokeKycCommitment(commitment: Bytes<32>): [] {
+    assert(_initialized, "Not initialized");
+    const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+    assert(caller == owner, "Only owner");
+
+    if (kycCommitments.member(disclose(commitment))) {
+        const wasActive = kycCommitments.lookup(disclose(commitment));
+        if (wasActive) {
+            kycCommitments.insert(disclose(commitment), disclose(false));
+            assert(!kycCount.lessThan(1), "No commitments to remove");
+            kycCount.decrement(1);
+        }
+        // M-3: already-revoked is a no-op (prevents double-decrement)
+    }
+}
+
+// =============================================================================
+// Poll Creation
+// =============================================================================
+
+// Create a new poll.
+// pollId: unique identifier (hash of question + timestamp + nonce)
+// optionCount: number of choices (2-10)
+// Metadata (question text, option labels, deadline) stored off-chain in app/API.
+// On-chain: only the vote math and privacy guarantees.
+export circuit createPoll(
+    pollId: Bytes<32>,
+    optionCount: Uint<128>
+): [] {
+    assert(_initialized, "Not initialized");
+    const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+    assert(caller == owner || caller == pollAuthority, "Not authorized");
+
+    // Validate
+    assert(!pollOptionCounts.member(disclose(pollId)), "Poll already exists");
+    assert(optionCount >= 2, "Need at least 2 options");
+    assert(optionCount <= 10, "Max 10 options");
+
+    // Store poll
+    pollOptionCounts.insert(disclose(pollId), disclose(optionCount));
+    pollActive.insert(disclose(pollId), disclose(true));
+
+    // Tallies initialize lazily on first vote (Compact loops are bounded).
+
+    totalPolls.increment(1);
+}
+
+// Close a poll (no more votes accepted)
+export circuit closePoll(pollId: Bytes<32>): [] {
+    assert(_initialized, "Not initialized");
+    const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+    assert(caller == owner || caller == pollAuthority, "Not authorized");
+    assert(pollOptionCounts.member(disclose(pollId)), "Poll not found");
+
+    pollActive.insert(disclose(pollId), disclose(false));
+}
+
+// =============================================================================
+// Voting — the core ZK circuit (C-2 hardened)
+// =============================================================================
+
+// Cast a shielded vote.
+//
+// The voter proves (in ZK, ENFORCED in-circuit — unlike v1, which trusted
+// the caller for all three):
+//   1. nullifier     == persistentHash([voter_secret, pollId])
+//   2. kycCommitment == persistentHash([voter_secret, identityProof])
+//   3. tallyKey      == persistentHash([pollId, optionIndex])
+//
+// (1)+(2) bind the SAME secret to a registered commitment AND a unique
+// per-poll nullifier: one registered identity → one nullifier per poll
+// → one vote per poll. (3) kills tally forgery: the incremented key is
+// provably the one for the option that passed the bounds check.
+//
+// The contract does NOT see voter_secret (witness — never disclosed;
+// only the equality results are disclosed, one bit each, already implied
+// by transaction success).
+//
+// LIMITATION: nullifier and tallyKey are public per tx, so an observer
+// can link "this anonymous commitment chose option N". Privacy holds
+// across voters, not per transaction. See header.
+export circuit castVote(
+    pollId: Bytes<32>,
+    optionIndex: Uint<8>,
+    nullifier: Bytes<32>,
+    kycCommitment: Bytes<32>,
+    tallyKey: Bytes<32>,
+    identityProof: Bytes<32>
+): [] {
+    assert(_initialized, "Not initialized");
+
+    // Poll must exist and be active
+    assert(pollOptionCounts.member(disclose(pollId)), "Poll not found");
+    assert(pollActive.lookup(disclose(pollId)), "Poll closed");
+
+    // Option must be valid
+    const numOptions = pollOptionCounts.lookup(disclose(pollId));
+    assert((optionIndex as Uint<128>) < numOptions, "Invalid option");
+
+    // ── C-2: witness binding ────────────────────────────────────────
+    const secret = voter_secret();
+
+    // 1. Nullifier must derive from (secret, pollId). A voter has
+    //    exactly one valid nullifier per poll, fixed by their secret.
+    const expectedNullifier = persistentHash<Vector<2, Bytes<32>>>([secret, pollId]);
+    const nullifierOk = disclose(nullifier == expectedNullifier);
+    assert(nullifierOk, "bad nullifier");
+
+    // 2. KYC commitment must derive from (secret, identityProof) —
+    //    the SAME secret as the nullifier.
+    const expectedCommitment = persistentHash<Vector<2, Bytes<32>>>([secret, identityProof]);
+    const commitmentOk = disclose(kycCommitment == expectedCommitment);
+    assert(commitmentOk, "bad commitment");
+
+    // 3. Tally key must derive from (pollId, optionIndex).
+    const optionBytes = ((optionIndex as Field) as Bytes<32>);
+    const expectedTallyKey = persistentHash<Vector<2, Bytes<32>>>([pollId, optionBytes]);
+    const tallyKeyOk = disclose(tallyKey == expectedTallyKey);
+    assert(tallyKeyOk, "bad tally key");
+    // ────────────────────────────────────────────────────────────────
+
+    // Voter must be KYC-verified
+    assert(kycCommitments.member(disclose(kycCommitment)), "KYC not registered");
+    assert(kycCommitments.lookup(disclose(kycCommitment)), "KYC revoked");
+
+    // Nullifier must be fresh (no double voting)
+    assert(!usedNullifiers.member(disclose(nullifier)), "Already voted");
+
+    // Record nullifier (prevents re-voting)
+    usedNullifiers.insert(disclose(nullifier), disclose(true));
+
+    // Increment the (now provably correct) tally
+    const current = getVoteTally(tallyKey);
+    const newCount = _safeAdd(current, 1);
+    voteTallies.insert(disclose(tallyKey), disclose(newCount));
+
+    totalVotes.increment(1);
+}
+
+// =============================================================================
+// Results (public)
+// =============================================================================
+
+export circuit getVoteTally(tallyKey: Bytes<32>): Uint<128> {
+    if (!voteTallies.member(disclose(tallyKey))) {
+        return 0;
+    }
+    return voteTallies.lookup(disclose(tallyKey));
+}
+
+export circuit isPollActive(pollId: Bytes<32>): Boolean {
+    if (!pollActive.member(disclose(pollId))) {
+        return false;
+    }
+    return pollActive.lookup(disclose(pollId));
+}
+
+export circuit getPollOptionCount(pollId: Bytes<32>): Uint<128> {
+    if (!pollOptionCounts.member(disclose(pollId))) {
+        return 0;
+    }
+    return pollOptionCounts.lookup(disclose(pollId));
+}
+
+// N-7: Counter.read() returns Uint<64>; don't silently widen to Field.
+export circuit getTotalPolls(): Uint<64> {
+    return totalPolls.read();
+}
+
+export circuit getTotalVotes(): Uint<64> {
+    return totalVotes.read();
+}
+
+export circuit isKycVerified(commitment: Bytes<32>): Boolean {
+    if (!kycCommitments.member(disclose(commitment))) {
+        return false;
+    }
+    return kycCommitments.lookup(disclose(commitment));
+}
+
+// =============================================================================
+// Internal
+// =============================================================================
+
+circuit _safeAdd(a: Uint<128>, b: Uint<128>): Uint<128> {
+    const MAX_UINT128 = 340282366920938463463374607431768211455 as Uint<128>;
+    assert(a <= MAX_UINT128 - b, "Addition overflow");
+    return (a + b) as Uint<128>;
+}
