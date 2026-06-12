@@ -468,11 +468,17 @@ export circuit manualReissue(
   assert(currentTime >= earliest, "Reissue cooldown not elapsed");
 
   // M-4: multi-party approval — require Meter Authority co-signature.
+  // The signed hash binds the reissuance sequence number so each
+  // co-signature authorizes exactly ONE reissue. Without this, a single
+  // authority signature over (producer, amount) could be replayed every
+  // cooldown window forever. (Self-audit catch, 2026-06-12.)
   const producerBytes = disclose(producer);
   const amountBytes = (disclose(amount) as Field) as Bytes<32>;
-  const reissueMessageHash = persistentHash<Vector<2, Bytes<32>>>([
+  const seqBytes = (reissuanceCount.read() as Field) as Bytes<32>;
+  const reissueMessageHash = persistentHash<Vector<3, Bytes<32>>>([
     producerBytes,
     amountBytes,
+    seqBytes,
   ]);
   const authOk = signature_valid(
     _meterAuthorityPubkey,
@@ -491,6 +497,8 @@ export circuit manualReissue(
   _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
 
   // Audit log (L-3: timestamp from caller, validated above).
+  // NOTE: seq read again is safe — reissuanceCount unchanged since the
+  // signature check above; increment happens after the log write.
   const seq = reissuanceCount.read();
   const entry = ReissuanceEntry {
     producer: producer,
