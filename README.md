@@ -16,8 +16,8 @@ This repository contains the **canonical, on-chain source** for every contract P
 | [`ebt/ebt-v5.2.compact`](./ebt/ebt-v5.2.compact) | The Energy-Backed Token. Audit-hardened settlement with producer-bound signatures, attestation binding, and capped reissuance. | ✅ **PRODUCTION** — active mint path since 2026-06-12 |
 | [`ebt/ebt-v5.compact`](./ebt/ebt-v5.compact) | EBT v5 (original). Single-authority settlement with internal meter registry. | ⚠️ **LEGACY** — still on chain, balance reads only |
 | [`ebt/ebt-v5.1.compact`](./ebt/ebt-v5.1.compact) | EBT v5.1 (stateless attestation). Superseded by v5.2 before cutover. | ❌ **DEAD-LETTER** — deployed but never wired. See [audit findings](#audit-2026-06-10). |
-| [`multisig/multisig-v6.1-ed25519.compact`](./multisig/multisig-v6.1-ed25519.compact) | 3-of-5 Ed25519 council multi-sig with domain-separated approvals. | ✅ **PRODUCTION** — *pilot-mock admins active, see [STATUS](./producer-registry/STATUS.md)* |
-| [`multisig/multisig-v6-ed25519.compact`](./multisig/multisig-v6-ed25519.compact) | Multisig v6 (original Ed25519). Superseded by v6.1. | ⚠️ **LEGACY** — no domain separation |
+| [`multisig/multisig-v6-ed25519.compact`](./multisig/multisig-v6-ed25519.compact) | 3-of-5 Ed25519 council multi-sig. M-2 domain separation provided at the actionHash layer. | ✅ **PRODUCTION** — *pilot-mock admins active, see [STATUS](./producer-registry/STATUS.md)* |
+| [`multisig/multisig-v6.1-ed25519.compact`](./multisig/multisig-v6.1-ed25519.compact) | In-circuit contractTag variant. Redundant with actionHash-layer separation; forces Poseidon into the mobile app. | 📐 **DESIGN ARTIFACT** — not deployed. See [M2-MITIGATION-NOTE](./multisig/M2-MITIGATION-NOTE.md). |
 | [`multisig/multisig-v5.compact`](./multisig/multisig-v5.compact) | Multisig v5. Single-admin self-governance. | ❌ **DEPRECATED** — H-2 finding: any single admin can mutate the admin set. See [migration plan](./multisig/H2-MIGRATION-PLAN.md). |
 | [`producer-registry/producer-registry-v1.compact`](./producer-registry/producer-registry-v1.compact) | Council-gated registry of approved producers. Pre-flight check before any EBT mint. | ✅ **PRODUCTION** — *pilot-mock admins active* |
 | [`community-poll/community-poll-v2.compact`](./community-poll/community-poll-v2.compact) | KYC'd, Sybil-resistant community polls with witness-bound ZK voting. | ✅ **PRODUCTION** — deployed 2026-06-12, smoke-tested on-chain |
@@ -32,7 +32,7 @@ This repository contains the **canonical, on-chain source** for every contract P
 | Contract | Address | Deployed |
 |---|---|---|
 | **EBT v5.2** | `4120b44ed9067f5576006a559e187a447c667db401d9c2ef1d44dedb34e3f835` | 2026-06-12 |
-| **Multisig v6.1** | `6a57b2fbd39ae6d9e7a85c47db894262a330431926273d7dccfd39f9ca2a8fd7` | 2026-06-12 |
+| **Multisig v6** | `f7192a504e186e6a418bcb3f42291ee1a3c032b8c0724c4fab54cc3f62745c3a` | 2026-05-08 |
 | **Community Poll v2** | `8fcb540d96f34ed18d37ab637f0393341cf4eba2759d09e1e07675fc4f4fea63` | 2026-06-12 |
 | **ProducerRegistry v1** | `c6730596dd7770dd69bd5051a769e8c42d34dc99c47228f751cae38f00b2ff1d` | 2026-05-09 |
 
@@ -43,7 +43,7 @@ This repository contains the **canonical, on-chain source** for every contract P
 | EBT v5 | `5cbc10a7a8f43a86fab8a8a015823b973be887b41bf6e2b03b51eb2dccff3b0e` | Legacy — balance reads |
 | EBT v5.1 | `e3514ab0c5dca1a61700ac96f12f80157ea41474642161ce91cdd62dc0a1291d` | Dead-letter — never wired |
 | Multisig v5 | `182a7a8b8163d2bd98e4ff2e1c9dec7ef788e8503f46db46be311d74a2d8a7ce` | Deprecated |
-| Multisig v6 | `f7192a504e186e6a418bcb3f42291ee1a3c032b8c0724c4fab54cc3f62745c3a` | Superseded by v6.1 |
+| Multisig v6.1 | `6a57b2fbd39ae6d9e7a85c47db894262a330431926273d7dccfd39f9ca2a8fd7` | Deployed but unused (design artifact) |
 | Community Poll v1 | `a6a494880b3d646be22f31f891c1b1ba4df0142cbc7ddc008d9be6812f0b74be` | Research Preview |
 
 ---
@@ -61,7 +61,7 @@ On June 10, 2026, the full contract suite (tag `v10.0`, commit `c06191e`) was re
 | H-1 | High | Pilot-mock admin keys publicly derivable | ⏳ Tangem ring ceremony |
 | H-2 | High | Multisig v5 single-admin self-governance | ✅ Superseded by v6.1 |
 | M-1 | Medium | `attestationKey` not bound to `(producer, meterKeyHash)` | ✅ Fixed in EBT v5.2 |
-| M-2 | Medium | Ed25519 signed messages lack domain separation | ✅ Fixed in Multisig v6.1 |
+| M-2 | Medium | Ed25519 signed messages lack domain separation | ✅ Mitigated at actionHash layer (contract addr in signed preimage); v6.1 in-circuit variant not needed |
 | M-3 | Medium | KYC re-registration stuck / double-revoke undercount | ✅ Fixed in Poll v2 |
 | M-4 | Medium | `manualReissue` uncapped, single-key | ✅ Fixed in EBT v5.2 |
 | L-1 | Low | `transferOwnership` to ContractAddress bricks owner | ✅ Fixed in EBT v5.2 + Poll v2 |
@@ -76,7 +76,7 @@ Full audit spec: [`ebt/V5.2-MIGRATION.md`](./ebt/V5.2-MIGRATION.md) and [`commun
 
 - **H-1 is operational, not code.** The 5 pilot admin keys are derived from `SHA-256("pollpower-pilot-mock-ring-i")`. They are publicly derivable. This is disclosed because it is demonstration architecture, not a security control. Real Tangem ring pubkeys replace these in the pre-mainnet ceremony.
 - **Community Poll v2 has per-transaction linkability.** Nullifier + tallyKey are public per vote transaction. An observer can link an anonymous commitment to its chosen option. Privacy holds across voters, not per transaction. Full ballot privacy (homomorphic tally) is v3 research.
-- **ProducerRegistry v1.1 did not deploy** due to Midnight Preview block-size limits (18MB proving keys exceed the cap). v1 continues as production registry. M-2 domain separation for the registry is deferred until block limits increase.
+- **ProducerRegistry v1.1 and Multisig v6.1 are not deployed.** v1.1 exceeded the Preview block-size limit (18MB proving keys); both in-circuit `contractTag` variants are redundant with the actionHash-layer M-2 mitigation (the admin app binds the contract address into every signed preimage) and would force a Poseidon dependency into the mobile admin app. v1 and v6 continue as production. See [multisig/M2-MITIGATION-NOTE.md](./multisig/M2-MITIGATION-NOTE.md).
 
 ---
 
