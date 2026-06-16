@@ -41,7 +41,10 @@ cap + threshold-coupled-to-size + size-relative init guard + setThreshold
 majority floor) is implemented in
 [`multisig-v6.2-ed25519.compact`](./multisig-v6.2-ed25519.compact) (compiles
 clean, not yet deployed) and documented in
-[UNBOUNDED-ADMIN-FINDING.md](./UNBOUNDED-ADMIN-FINDING.md).
+[UNBOUNDED-ADMIN-FINDING.md](./UNBOUNDED-ADMIN-FINDING.md). The off-chain
+actionHash + ceremony tooling for v6.2 is staged in
+[`tooling/`](./tooling/) (the add/remove preimage grows to 4 fields with an
+atomic `newThreshold`).
 
 ## L-2 — nonce binding
 
