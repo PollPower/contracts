@@ -1,0 +1,347 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPowerMultiSig v6.2 — Ed25519-witness governance, H-3 hardened.
+//
+// Branch: audit-remediation-2026-06-16-joi
+// Author: Joi (with Garrett)
+// Date:   2026-06-16
+// Companion: contracts/multisig/UNBOUNDED-ADMIN-FINDING.md (H-3)
+// Audit:    Follow-up review 2026-06-16 (H-3); base 2026-06-10 Fable 5.
+//
+// =============================================================================
+// CHANGES FROM v6 (multisig-v6-ed25519.compact)
+// =============================================================================
+//
+// v6.2 addresses H-3 (High) — "Unbounded admin set + fixed threshold
+// (governance capture)" from the 2026-06-16 follow-up review.
+//
+//   H-3 mechanics in v6:
+//     - executeAddAdmin grew _admins without any size cap.
+//     - _threshold was fixed at initialize() and never tracked set size.
+//     - initialize()'s `threshold <= 5` guard was a hardcoded literal.
+//     - executeSetThreshold had only an upper bound (<= N), no majority floor.
+//   Together: a one-time threshold-many compromise could be made PERMANENT
+//   (add puppet admins at the unchanged threshold) and every honest vote
+//   diluted as the set grew. See UNBOUNDED-ADMIN-FINDING.md for the full
+//   attack and the deployed-source verification.
+//
+//   v6.2 fixes (all in-circuit integer comparisons — no Poseidon-in-app
+//   cost, unlike v6.1's contractTag; see M2-MITIGATION-NOTE.md for why that
+//   approach was rejected):
+//
+//     Fix 1 (hard cap): executeAddAdmin asserts _admins.size() < MAX_ADMINS
+//       so dilution is bounded to a known constant. MAX_ADMINS = 7 matches
+//       the documented "up to 7" council intent.
+//
+//     Fix 2 (threshold coupled to size — variant (b), atomic): executeAddAdmin
+//       and executeRemoveAdmin now take a newThreshold argument, bound into
+//       the approved actionHash. The council votes on the resulting
+//       (set, threshold) PAIR. After the size change, the contract enforces
+//       a STRICT MAJORITY: threshold*2 > size. This makes growth past the
+//       majority point require a coordinated threshold raise in the same
+//       approved action — a transient captor can no longer add puppets at a
+//       stale "3" bar.
+//
+//     Fix 3 (size-relative init guard): initialize() now also enforces a
+//       majority floor on the initial threshold (threshold*2 > 5), so a
+//       deploy cannot start below majority. The upper guard stays (the
+//       5-arg initialize() means 5 is the true initial count).
+//
+//     Fix 4 (setThreshold majority floor): executeSetThreshold now rejects
+//       any threshold below a strict majority of the current set, closing
+//       the symmetric "lower the threshold instead of adding puppets" path.
+//
+// MAJORITY RULE (used throughout): a threshold T is a strict majority of N
+//   admins iff  T * 2 > N. Examples: 3-of-5 (6>5 ✓), 2-of-5 (4>5 ✗),
+//   4-of-7 (8>7 ✓), 3-of-7 (6>7 ✗ — forces threshold raise to grow to 7).
+//
+// PRESERVED FROM v6:
+//   - Ed25519 witness verification via prover (signature_valid)
+//   - Threshold M-of-N approval logic
+//   - Nonce-bound self-governance actionHashes
+//   - removeAdmin floor guard (can't drop set at/below threshold)
+//   - Audit-ledger role (real authorization at Cardano native multi-sig)
+//   - M-2 domain separation at the actionHash-construction layer (off-chain;
+//     the admin app binds the contract address into every signed preimage —
+//     see M2-MITIGATION-NOTE.md). v6.2 does NOT add an in-circuit contractTag.
+//
+// MIGRATION (off-chain admin tooling):
+//   The add/remove action preimages now include newThreshold. actionHash.ts
+//   op canonicalization for "addAdmin" / "removeAdmin" must append the
+//   newThreshold field, in the same order the contract recomputes it below.
+//   See UNBOUNDED-ADMIN-FINDING.md "Decision points" (variant b).
+//
+// =============================================================================
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+// Maximum council size. "Up to 7" per design intent. Bounds H-3 dilution.
+// With strict-majority coupling, growing to 7 requires threshold 4.
+
+// =============================================================================
+// Witness: Ed25519 signature verification
+// =============================================================================
+//
+// IMPLEMENTED IN: apps/admin/services/proverWitness.ts (TypeScript, off-chain).
+// USES:           @noble/ed25519.verify() — pure-JS Ed25519 (RFC 8032).
+//
+// RETURNS true iff `signature` is a valid Ed25519 signature on `messageHash`
+// under public key `pubkey`. The contract trusts the prover for the math but
+// gates the resulting boolean on (a) the assert below, and (b) the pubkey
+// being a registered admin.
+//
+// SECURITY NOTE: a malicious prover can lie and claim true for an invalid
+// signature. This is bounded by "a malicious prover can sign as the admin
+// running that prover" — same trust level as physical possession of the
+// ring. It does NOT let the prover sign as a *different* admin, because
+// the pubkey check in approve() pins the signer to a specific admin record.
+witness signature_valid(
+  pubkey: Bytes<32>,
+  messageHash: Bytes<32>,
+  signature: Bytes<64>,
+): Boolean;
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+// Admin set, keyed by raw Ed25519 ring pubkey.
+export ledger _admins: Set<Bytes<32>>;
+
+// Required threshold M of N. Maintained as a strict majority of the set.
+export ledger _threshold: Uint<8>;
+
+// Globally monotonic nonce for replay protection.
+export ledger _nonce: Counter;
+
+// Pending approvals: actionHash -> set of admin ring pubkeys who approved.
+export ledger _approvals: Map<Bytes<32>, Set<Bytes<32>>>;
+
+// Initialization guard.
+export ledger _initialized: Boolean;
+
+// =============================================================================
+// Initialization
+// =============================================================================
+//
+// Deploy-time setup. 5 initial admins, threshold 3-of-5 by default.
+// We do NOT verify a signature at initialization; the deployer is implicit
+// (whoever submits the deploy tx). Subsequent admin-set changes go through
+// approve()/execute() and DO require Ed25519 sigs.
+export circuit initialize(
+  admin1: Bytes<32>,
+  admin2: Bytes<32>,
+  admin3: Bytes<32>,
+  admin4: Bytes<32>,
+  admin5: Bytes<32>,
+  threshold: Uint<8>,
+): [] {
+  assert(!_initialized, "Already initialized");
+  assert(threshold > 0 as Uint<8>, "Threshold must be > 0");
+  // Upper bound: 5 is the true initial admin count (5-arg initialize()).
+  assert(threshold <= 5 as Uint<8>, "Threshold must be <= initial admin count");
+  // Fix 3 (H-3): majority floor — initial threshold must be a strict majority
+  // of the 5 initial admins (threshold*2 > 5  =>  threshold >= 3).
+  assert((threshold as Uint<64>) * 2 as Uint<64> > 5 as Uint<64>,
+         "Initial threshold must be a majority of initial admins");
+
+  _admins.insert(disclose(admin1));
+  _admins.insert(disclose(admin2));
+  _admins.insert(disclose(admin3));
+  _admins.insert(disclose(admin4));
+  _admins.insert(disclose(admin5));
+
+  _threshold = disclose(threshold);
+  _initialized = disclose(true);
+}
+
+// =============================================================================
+// Approve circuit — Ed25519 sig required
+// =============================================================================
+//
+// Called by an admin (or relayer on the admin's behalf) once the Tangem ring
+// has produced a signature on the actionHash. The contract:
+//   1. Asks the off-chain prover to verify the signature; refuses if invalid.
+//   2. Confirms the signer pubkey is a registered admin.
+//   3. Records the approval (idempotent — re-approving is a no-op).
+export circuit approve(
+  actionHash: Bytes<32>,
+  signerPubkey: Bytes<32>,
+  signature: Bytes<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const sigOk = signature_valid(signerPubkey, actionHash, signature);
+  assert(disclose(sigOk), "Bad Ed25519 signature");
+
+  assert(_admins.member(disclose(signerPubkey)), "Signer is not an admin");
+
+  const dHash = disclose(actionHash);
+  if (!_approvals.member(dHash)) {
+    _approvals.insertDefault(dHash);
+  }
+  _approvals.lookup(dHash).insert(disclose(signerPubkey));
+}
+
+// =============================================================================
+// Read circuits — public, no signature required
+// =============================================================================
+
+export circuit isAdmin(account: Bytes<32>): Boolean {
+  return _admins.member(disclose(account));
+}
+
+export circuit getThreshold(): Uint<8> {
+  return _threshold;
+}
+
+export circuit getAdminCount(): Uint<64> {
+  return _admins.size();
+}
+
+export circuit getNonce(): Uint<64> {
+  return _nonce.read();
+}
+
+export circuit getApprovalCount(actionHash: Bytes<32>): Uint<64> {
+  if (_approvals.member(disclose(actionHash))) {
+    return _approvals.lookup(disclose(actionHash)).size();
+  }
+  return 0 as Uint<64>;
+}
+
+export circuit isApproved(actionHash: Bytes<32>): Boolean {
+  return getApprovalCount(actionHash) >= (_threshold as Uint<64>);
+}
+
+// =============================================================================
+// Execute — clears approvals, increments nonce. (Same shape as v6.)
+// =============================================================================
+export circuit execute(actionHash: Bytes<32>): [] {
+  assert(_initialized, "Not initialized");
+  assert(isApproved(actionHash), "Not enough approvals");
+
+  _approvals.remove(disclose(actionHash));
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// Self-governance: addAdmin / removeAdmin / setThreshold
+// =============================================================================
+//
+// v6.2 CHANGE (H-3, Fix 2 variant b): addAdmin and removeAdmin take a
+// newThreshold argument bound into the approved actionHash. The council votes
+// on the resulting (set, threshold) PAIR, and the contract enforces a strict
+// majority after the size change. This keeps the set/threshold invariant
+// atomic and auditable in a single actionHash.
+//
+// Approval flow (unchanged in shape):
+//   1. Admin proposes: compute actionHash = persistentHash(opSel || params... || nonce+1).
+//   2. Each approver taps ring on actionHash -> approve(actionHash, pubkey, sig).
+//   3. Once threshold reached, anyone calls the matching execute*; the contract
+//      recomputes the actionHash from calldata and applies the change.
+
+// Add an admin AND set the new threshold atomically.
+// Bounds: set stays <= MAX_ADMINS (7); resulting threshold is a strict
+// majority of the NEW set size and not greater than it.
+export circuit executeAddAdmin(
+  newAdmin: Bytes<32>,
+  newThreshold: Uint<8>,
+): [] {
+  assert(_initialized, "Not initialized");
+  assert(newThreshold > 0 as Uint<8>, "Threshold must be > 0");
+
+  // Recompute the action hash. Preimage now binds newThreshold (variant b),
+  // so the (admin, threshold) pair is what was approved.
+  const opSel = persistentHash<Bytes<32>>(pad(32, "v6.2:addAdmin"));
+  const newThresholdBytes = (disclose(newThreshold) as Field) as Bytes<32>;
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<4, Bytes<32>>>(
+    [opSel, disclose(newAdmin), newThresholdBytes, nextNonce]);
+
+  assert(isApproved(actionHash), "addAdmin: not enough approvals");
+
+  // Fix 1 (H-3): hard cap. Bound dilution to MAX_ADMINS = 7.
+  assert(_admins.size() < 7 as Uint<64>, "addAdmin: admin set at maximum (7)");
+
+  // Apply the addition.
+  _admins.insert(disclose(newAdmin));
+
+  // Fix 2 (H-3): couple threshold to the NEW set size. Strict majority.
+  const n = _admins.size();
+  assert((newThreshold as Uint<64>) <= n, "Threshold > admin count");
+  assert((newThreshold as Uint<64>) * 2 as Uint<64> > n,
+         "Threshold must be a majority of the new admin set");
+  _threshold = disclose(newThreshold);
+
+  // Clear approvals + bump nonce.
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
+
+// Remove an admin AND set the new threshold atomically.
+export circuit executeRemoveAdmin(
+  removedAdmin: Bytes<32>,
+  newThreshold: Uint<8>,
+): [] {
+  assert(_initialized, "Not initialized");
+  assert(newThreshold > 0 as Uint<8>, "Threshold must be > 0");
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "v6.2:removeAdmin"));
+  const newThresholdBytes = (disclose(newThreshold) as Field) as Bytes<32>;
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<4, Bytes<32>>>(
+    [opSel, disclose(removedAdmin), newThresholdBytes, nextNonce]);
+
+  assert(isApproved(actionHash), "removeAdmin: not enough approvals");
+  assert(_admins.member(disclose(removedAdmin)), "Not an admin");
+  // Preserved v6 floor guard: don't drop the set at/below the (old) threshold
+  // before the change — prevents removing honest admins to the capture point.
+  assert(_admins.size() > (_threshold as Uint<64>), "Would drop admin count below threshold");
+
+  _admins.remove(disclose(removedAdmin));
+
+  // Fix 2 (H-3): couple threshold to the NEW (smaller) set size. Strict
+  // majority, and at least 1 (the size can't reach 0 given the floor guard).
+  const n = _admins.size();
+  assert((newThreshold as Uint<64>) <= n, "Threshold > admin count");
+  assert((newThreshold as Uint<64>) * 2 as Uint<64> > n,
+         "Threshold must be a majority of the new admin set");
+  _threshold = disclose(newThreshold);
+
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}
+
+// Set threshold without changing the admin set. Retained for explicit
+// threshold adjustments (e.g. tightening within the same N).
+export circuit executeSetThreshold(
+  newThreshold: Uint<8>,
+): [] {
+  assert(_initialized, "Not initialized");
+  assert(newThreshold > 0 as Uint<8>, "Threshold must be > 0");
+  assert((newThreshold as Uint<64>) <= _admins.size(), "Threshold > admin count");
+  // Fix 4 (H-3): majority floor — can't lower threshold below a strict
+  // majority of the current set (closes the symmetric capture path).
+  assert((newThreshold as Uint<64>) * 2 as Uint<64> > _admins.size(),
+         "Threshold must be a majority of the admin set");
+
+  const dThreshold = disclose(newThreshold);
+  const opSel = persistentHash<Bytes<32>>(pad(32, "v6.2:setThreshold"));
+  const newThresholdBytes = (dThreshold as Field) as Bytes<32>;
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<3, Bytes<32>>>([opSel, newThresholdBytes, nextNonce]);
+
+  assert(isApproved(actionHash), "setThreshold: not enough approvals");
+
+  _threshold = dThreshold;
+
+  _approvals.remove(actionHash);
+  _nonce.increment(1);
+}

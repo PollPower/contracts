@@ -9,8 +9,10 @@ identical governance logic.
 **Reviewed against source:** 2026-06-16, deployed
 `multisig-v6-ed25519.compact` (verified on Kenya settlement box, byte-identical
 to the repo copy).
-**Status:** OPEN — documented here; remediation (v6.2) staged for the
-pre-mainnet hardening pass. See [Proposed fix](#proposed-fix-v62).
+**Status:** REMEDIATION WRITTEN — `multisig-v6.2-ed25519.compact` implements
+all four fixes below; compiles clean on compactc 0.30.0 `--skip-zk`. NOT yet
+deployed (staged for the pre-mainnet hardening ceremony). See
+[Proposed fix](#proposed-fix-v62).
 
 ---
 
@@ -268,6 +270,24 @@ than adding puppets.
 
 ---
 
+## Remediation status
+
+- **`multisig-v6.2-ed25519.compact` — WRITTEN + COMPILED.** Implements Fix 1
+  (hard cap 7), Fix 2 variant (b) (atomic `newThreshold` arg on add/remove,
+  bound into a 4-field actionHash, strict-majority enforced post-change), Fix 3
+  (majority floor in `initialize()`), and Fix 4 (majority floor in
+  `executeSetThreshold`). Compiles clean on compactc 0.30.0 `--skip-zk` (same
+  toolchain as the v5.2 production deploy).
+- **Off-chain tooling delta (required before deploy):** `actionHash.ts` op
+  canonicalization for `addAdmin` / `removeAdmin` must append the
+  `newThreshold` field so the ring signs the (admin, threshold) pair the
+  contract recomputes. Op selectors changed to `v6.2:addAdmin` /
+  `v6.2:removeAdmin` / `v6.2:setThreshold`.
+- **Next:** full ZK compile + deploy ceremony (Garrett green-light), bundled
+  with the H-1 ring-swap and H-2 v5→v6 cutover.
+
+---
+
 *Reviewed 2026-06-16. Source verified against the deployed
-`multisig-v6-ed25519.compact`. Remediation staged for the pre-mainnet hardening
-pass (v6.2), to be bundled with the H-1 ring-swap and H-2 cutover ceremony.*
+`multisig-v6-ed25519.compact`. v6.2 remediation written + compiled the same
+day; deploy staged for the pre-mainnet hardening ceremony.*

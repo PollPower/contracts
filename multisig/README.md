@@ -5,6 +5,7 @@ The council multi-signature contracts that govern privileged operations across t
 | File | Status |
 |---|---|
 | [`multisig-v6-ed25519.compact`](./multisig-v6-ed25519.compact) | ✅ **PRODUCTION** — 3-of-5 Ed25519 council multi-sig. M-2 domain separation is provided at the actionHash layer (see [M2-MITIGATION-NOTE.md](./M2-MITIGATION-NOTE.md)). Open hardening item: H-3 unbounded admin set + fixed threshold (see [UNBOUNDED-ADMIN-FINDING.md](./UNBOUNDED-ADMIN-FINDING.md)). |
+| [`multisig-v6.2-ed25519.compact`](./multisig-v6.2-ed25519.compact) | 🛠️ **STAGED** — H-3 remediation: hard-capped admin set (7), threshold coupled to set size (atomic, strict-majority), majority floors on init + setThreshold. Compiles clean (compactc 0.30.0 `--skip-zk`). Not yet deployed; for the pre-mainnet hardening ceremony. See [UNBOUNDED-ADMIN-FINDING.md](./UNBOUNDED-ADMIN-FINDING.md). |
 | [`multisig-v6.1-ed25519.compact`](./multisig-v6.1-ed25519.compact) | 📐 **DESIGN ARTIFACT** — in-circuit `contractTag` variant. NOT deployed: redundant with the actionHash-layer mitigation and forces a Poseidon dependency into the mobile admin app. See [M2-MITIGATION-NOTE.md](./M2-MITIGATION-NOTE.md). |
 | [`multisig-v5.compact`](./multisig-v5.compact) | ❌ **DEPRECATED** — single-admin self-governance vulnerability (H-2). See [H2-MIGRATION-PLAN.md](./H2-MIGRATION-PLAN.md). |
 
@@ -37,7 +38,9 @@ admin's relative weight dilutes. Affects both v6 (production) and the v6.1
 artifact (identical governance logic). Not pilot-urgent (one operator holds all
 five keys), but a pre-mainnet must-fix. Proposed v6.2 remediation (hard size
 cap + threshold-coupled-to-size + size-relative init guard + setThreshold
-majority floor) is documented in
+majority floor) is implemented in
+[`multisig-v6.2-ed25519.compact`](./multisig-v6.2-ed25519.compact) (compiles
+clean, not yet deployed) and documented in
 [UNBOUNDED-ADMIN-FINDING.md](./UNBOUNDED-ADMIN-FINDING.md).
 
 ## L-2 — nonce binding
