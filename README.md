@@ -70,6 +70,14 @@ On June 10, 2026, the full contract suite (tag `v10.0`, commit `c06191e`) was re
 | I-1 | Info | File header says "v4" | ✅ Fixed |
 | I-2 | Info | Pragma open-ended | ✅ Fixed in Poll v2 |
 
+### Follow-up review (2026-06-16)
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| H-3 | High | Multisig v6 admin set is uncapped while `_threshold` is fixed — a one-time threshold capture can be made permanent (puppet admins) and honest votes dilute | 📄 Open — v6.2 remediation staged; see [multisig/UNBOUNDED-ADMIN-FINDING.md](./multisig/UNBOUNDED-ADMIN-FINDING.md) |
+
+H-3 is a pre-mainnet must-fix, not pilot-urgent (one operator holds all five keys during the pilot). Recommended to bundle the v6.2 deploy with the H-1 Tangem ring swap and H-2 v5→v6 cutover ceremony.
+
 Full audit spec: [`ebt/V5.2-MIGRATION.md`](./ebt/V5.2-MIGRATION.md) and [`community-poll/V2-SPEC.md`](./community-poll/V2-SPEC.md).
 
 ### Known limitations
