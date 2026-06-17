@@ -1,0 +1,580 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPower EBT Token v7 — unshielded, contract-minted ledger token
+//
+// Branch: feat/ebt-v7-unshielded
+// Author: PollPower
+// Date:   2026-06-17
+// Design: memory/ebt-v7-design.md, ADR-018 (unshielded token model),
+//         ADR-017 (unified redemption), ADR-001 (rate immutability).
+// Base:   EBT v5.2 (audit-hardened, 2026-06-12). Carries forward ALL v5.2
+//         hardening (C-1, M-1, M-4, L-1, L-3).
+//
+// =============================================================================
+// WHAT CHANGES FROM V5.2
+// =============================================================================
+//
+// v5.2 was a contract token with a FLAT PUBLIC BALANCE MAP and no transfer/burn.
+// v7 makes EBT a CONTRACT-MINTED, UNSHIELDED, NATIVE-UTXO token:
+//
+//   * settle() mints the PRODUCER slice via mintUnshieldedToken() (ONE mint —
+//     keeps the prover small enough to fit a Preview block; 4 mints/circuit
+//     blew the block limit, see MEMORY 2026-06-17). The ops/div/dao protocol
+//     slices are RECORDED as owed in _pendingSplits and minted on demand by
+//     claimSplit() (one mint per call). Full 4-way split stays on-chain +
+//     provable; just spread across single-mint circuits.
+//     value now lives as native unshielded UTXOs.
+//   * redeem() burns a holder's EBT (send to a contract sink) and records a
+//     provable redemption the settlement-api keys the KES payout to. This
+//     RETIRES the SKIP_ON_CHAIN_BURN_FOR_PILOT crutch (ADR-017).
+//   * Transfers happen at the wallet/UTXO layer (holders sendUnshielded
+//     directly); the contract does NOT need a transfer() circuit for the
+//     minimal build. Add later only if on-chain transfer policy is wanted.
+//   * Recipients are UserAddress (not Bytes<32> pubkeys) — confirmed by the
+//     2026-06-17 spike (GATE 3 PASS: a non-submitter received contract-minted
+//     unshielded EBT, verified on-chain via the indexer).
+//
+// Token COLOR = tokenType(domainSep, kernel.self()) with
+//   domainSep = pad(32, "pollpower:ebt:v7:epoch1").
+// One epoch = one color = one rate (ADR-001). Multi-epoch later = color-per-
+// epoch; color IS the rate tag. No per-coin datum, no on-chain FIFO lots.
+//
+// PRESERVED FROM V5.2:
+//   - Stateless attestation settle() (permissionless, cryptographically proven)
+//   - C-1 4-field HAT signed payload (binds producer)
+//   - M-1 attestationKey == hash(producer, meterKeyHash)
+//   - Slice-policy cross-multiplication bound enforcement
+//   - blockTimeLte freshness + _settledSessions replay protection
+//   - L-1 transferOwnership .is_left guard
+//   - L-3 caller timestamps validated against block time
+//   - M-4 capped + cooled + authority-cosigned manualReissue (mints unshielded)
+//   - Attestation registry + audit logs
+//
+// BREAKING vs v5.2:
+//   - No _balances map; balances are native unshielded UTXOs read off-ledger.
+//   - settle()/manualReissue recipients are UserAddress.
+//   - balanceOf() removed (unshielded balance is a ledger fact; read via
+//     indexer / unshieldedBalance, not contract state).
+//   - New redeem() circuit + redemption log.
+//
+// =============================================================================
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Witnesses (off-chain Ed25519 verification)
+// =============================================================================
+
+witness signature_valid(
+  pubkey: Bytes<32>,
+  messageHash: Bytes<32>,
+  signature: Bytes<64>,
+): Boolean;
+
+// =============================================================================
+// Structs
+// =============================================================================
+
+struct AttestationStatus {
+  active: Boolean,
+  attestedAt: Uint<64>,
+  revokedAt: Uint<64>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+}
+
+struct ReissuanceEntry {
+  producer: Bytes<32>,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  reissuedAt: Uint<64>,
+}
+
+// Provable redemption record. settlement-api releases KES against this.
+struct RedemptionEntry {
+  redeemer:   Bytes<32>,   // holder identity (pubkey/hash) for the audit log
+  amount:     Uint<128>,   // EBT base units burned
+  payoutRef:  Bytes<32>,   // off-chain payout correlation id (cashout row)
+  redeemedAt: Uint<64>,    // block-time-validated timestamp (L-3 pattern)
+}
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+export ledger _initialized: Boolean;
+
+// Owner — controls privileged operations (L-1 guarded).
+export ledger _owner: Either<ZswapCoinPublicKey, ContractAddress>;
+
+// Meter Authority pubkey. settle() verifies attestations against this key.
+export ledger _meterAuthorityPubkey: Bytes<32>;
+
+// Total minted EBT (mint +=, redeem -=). Value itself lives as native UTXOs.
+export ledger _totalSupply: Uint<128>;
+// Net redeemed, for supply reconciliation.
+export ledger _totalRedeemed: Uint<128>;
+
+// Settlement counter + replay protection.
+export ledger settlementCount: Counter;
+export ledger _settledSessions: Set<Bytes<32>>;
+
+// Margin policy (bps out of 10000).
+export ledger _bpsProducer: Uint<16>;
+export ledger _bpsOperations: Uint<16>;
+export ledger _bpsDividend: Uint<16>;
+export ledger _bpsDao: Uint<16>;
+
+// Protocol recipients are now UserAddress (unshielded mint targets).
+export ledger _operationsRecipient: UserAddress;
+export ledger _dividendRecipient: UserAddress;
+export ledger _daoRecipient: UserAddress;
+
+// Producer attestation registry (M-1 keyed).
+export ledger producerAttestations: Map<Bytes<32>, AttestationStatus>;
+
+// Reissuance audit log + rate limiting (M-4).
+export ledger reissuanceCount: Counter;
+export ledger reissuanceLog: Map<Uint<64>, ReissuanceEntry>;
+export ledger _lastReissueTime: Uint<64>;
+
+// Redemption audit log (provable burns for KES release).
+export ledger _redemptionCount: Counter;
+export ledger _redemptionLog: Map<Uint<64>, RedemptionEntry>;
+
+// Pending protocol-split amounts owed but not yet minted (claimSplit drains).
+// Single accumulator per recipient kind; claimSplit mints + zeroes its slot.
+// Kept as accumulators (not per-session) so claims can batch many settlements.
+export ledger _pendingOps: Uint<128>;
+export ledger _pendingDiv: Uint<128>;
+export ledger _pendingDao: Uint<128>;
+export ledger _splitClaimCount: Counter;
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+// Token color domain separator. Epoch 1 (pilot). Multi-epoch => new domainSep.
+// (defined inline at each call site as pad(32, "pollpower:ebt:v7:epoch1"))
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+circuit assertInitialized(): [] {
+  assert(_initialized, "Not initialized");
+}
+
+circuit assertOnlyOwner(): [] {
+  assertInitialized();
+  assert(_owner.is_left, "Owner is contract address; not supported");
+  const caller = ownPublicKey();
+  assert(caller == _owner.left, "Only owner");
+}
+
+circuit ebtColor(): Bytes<32> {
+  return tokenType(pad(32, "pollpower:ebt:v7:epoch1"), kernel.self());
+}
+
+// =============================================================================
+// Initialization
+// =============================================================================
+
+export circuit initialize(
+  meterAuthorityPubkey: Bytes<32>,
+  operationsRecipient: UserAddress,
+  dividendRecipient: UserAddress,
+  daoRecipient: UserAddress,
+): [] {
+  assert(!_initialized, "Already initialized");
+  const callerKey = ownPublicKey();
+  const callerAcc = Either<ZswapCoinPublicKey, ContractAddress> {
+    is_left: true,
+    left: callerKey,
+    right: default<ContractAddress>,
+  };
+
+  _initialized = disclose(true);
+  _owner = disclose(callerAcc);
+  _meterAuthorityPubkey = disclose(meterAuthorityPubkey);
+
+  _bpsProducer = 8696 as Uint<16>;
+  _bpsOperations = 870 as Uint<16>;
+  _bpsDividend = 186 as Uint<16>;
+  _bpsDao = 248 as Uint<16>;
+
+  _operationsRecipient = disclose(operationsRecipient);
+  _dividendRecipient = disclose(dividendRecipient);
+  _daoRecipient = disclose(daoRecipient);
+
+  _lastReissueTime = 0 as Uint<64>;
+}
+
+// =============================================================================
+// Owner-only operations
+// =============================================================================
+
+// L-1: transferOwnership asserts newOwner.is_left to prevent bricking.
+export circuit transferOwnership(
+  newOwner: Either<ZswapCoinPublicKey, ContractAddress>
+): [] {
+  assertOnlyOwner();
+  assert(newOwner.is_left, "owner must be a public key, not contract address");
+  _owner = disclose(newOwner);
+}
+
+export circuit setMeterAuthority(newAuthorityPubkey: Bytes<32>): [] {
+  assertOnlyOwner();
+  _meterAuthorityPubkey = disclose(newAuthorityPubkey);
+}
+
+// =============================================================================
+// Producer attestation (audit trail; M-1 + L-3 hardened)
+// =============================================================================
+
+export circuit attestProducerOwnership(
+  attestationKey: Bytes<32>,
+  producerBytes: Bytes<32>,
+  meterKeyHash: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+
+  const expectedKey = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(producerBytes),
+    disclose(meterKeyHash),
+  ]);
+  assert(disclose(attestationKey) == disclose(expectedKey), "attestation/producer mismatch");
+
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+
+  const status = AttestationStatus {
+    active: true,
+    attestedAt: currentTime,
+    revokedAt: 0 as Uint<64>,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(status));
+}
+
+export circuit revokeProducerOwnership(
+  attestationKey: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+  assert(producerAttestations.member(disclose(attestationKey)), "No such attestation");
+  const current = producerAttestations.lookup(disclose(attestationKey));
+  assert(current.active, "Already revoked");
+
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+
+  const revoked = AttestationStatus {
+    active: false,
+    attestedAt: current.attestedAt,
+    revokedAt: currentTime,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(revoked));
+}
+
+// =============================================================================
+// Settlement — mint via unshielded token (C-1/M-1 hardened, v5.2 verification)
+// =============================================================================
+
+export circuit settle(
+  // Session payload
+  sessionID: Bytes<32>,
+  hatPubkey: Bytes<32>,
+  amount: Uint<128>,
+  expiresAt: Uint<64>,
+  // Recipient (producer). UserAddress for unshielded mint; producerKey is the
+  // 32-byte pubkey bound into the HAT/attestation chain (identity).
+  producerKey: Bytes<32>,
+  producerAddr: UserAddress,
+  // Attestation binding (M-1)
+  attestationKey: Bytes<32>,
+  meterKeyHash: Bytes<32>,
+  // Pre-computed slice amounts
+  producerAmt: Uint<128>,
+  opsAmt: Uint<128>,
+  divAmt: Uint<128>,
+  daoAmt: Uint<128>,
+  // Signatures
+  hatSig: Bytes<64>,
+  authoritySig: Bytes<64>,
+): [] {
+  assertInitialized();
+
+  assert(amount > 0 as Uint<128>, "Amount must be positive");
+
+  // Freshness check.
+  const fresh = blockTimeLte(disclose(expiresAt));
+  assert(disclose(fresh), "Authority attestation expired");
+
+  // Replay protection.
+  assert(!_settledSessions.member(disclose(sessionID)), "Session already settled");
+
+  // M-1: attestationKey must match hash(producerKey, meterKeyHash).
+  const expectedAttKey = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(producerKey),
+    disclose(meterKeyHash),
+  ]);
+  assert(disclose(attestationKey) == disclose(expectedAttKey), "attestation/producer mismatch");
+
+  // BPS POLICY ENFORCEMENT (cross-multiplication bounds).
+  const sumAll = (producerAmt + opsAmt + divAmt + daoAmt) as Uint<128>;
+  assert(sumAll == amount, "slice sum mismatch");
+
+  const bpsTotal = 10000 as Field;
+  const bpsProducer = (_bpsProducer as Field);
+  const bpsOps      = (_bpsOperations as Field);
+  const bpsDiv      = (_bpsDividend as Field);
+  const bpsDao      = (_bpsDao as Field);
+  const amountF     = (amount as Field);
+  const producerF   = (producerAmt as Field);
+  const opsF        = (opsAmt as Field);
+  const divF        = (divAmt as Field);
+  const daoF        = (daoAmt as Field);
+
+  const producerCross = (producerF * bpsTotal) as Uint<160>;
+  const producerTarget = (amountF * bpsProducer) as Uint<160>;
+  assert(
+    producerCross + (bpsTotal as Uint<160>) > producerTarget
+      && producerCross < producerTarget + (bpsTotal as Uint<160>),
+    "producer slice off-policy"
+  );
+
+  const opsCross = (opsF * bpsTotal) as Uint<160>;
+  const opsTarget = (amountF * bpsOps) as Uint<160>;
+  assert(
+    opsCross + (bpsTotal as Uint<160>) > opsTarget
+      && opsCross < opsTarget + (bpsTotal as Uint<160>),
+    "ops slice off-policy"
+  );
+
+  const divCross = (divF * bpsTotal) as Uint<160>;
+  const divTarget = (amountF * bpsDiv) as Uint<160>;
+  assert(
+    divCross + (bpsTotal as Uint<160>) > divTarget
+      && divCross < divTarget + (bpsTotal as Uint<160>),
+    "dividend slice off-policy"
+  );
+
+  const daoCross = (daoF * bpsTotal) as Uint<160>;
+  const daoTarget = (amountF * bpsDao) as Uint<160>;
+  assert(
+    daoCross + (bpsTotal as Uint<160>) > daoTarget
+      && daoCross < daoTarget + (bpsTotal as Uint<160>),
+    "dao slice off-policy"
+  );
+
+  // 1. Verify Meter Authority attestation over (hatPubkey, expiresAt).
+  const expiresAtBytes = (disclose(expiresAt) as Field) as Bytes<32>;
+  const authorityMessageHash = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(hatPubkey),
+    expiresAtBytes,
+  ]);
+  const authorityOk = signature_valid(
+    _meterAuthorityPubkey,
+    authorityMessageHash,
+    authoritySig,
+  );
+  assert(disclose(authorityOk), "Bad authority signature");
+
+  // 2. Verify HAT signature over session payload (C-1: 4-field, binds producer).
+  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
+  const sessionPayloadHash = persistentHash<Vector<4, Bytes<32>>>([
+    disclose(sessionID),
+    disclose(hatPubkey),
+    amountBytes,
+    disclose(producerKey),
+  ]);
+  const hatOk = signature_valid(disclose(hatPubkey), sessionPayloadHash, hatSig);
+  assert(disclose(hatOk), "Bad HAT signature");
+
+  // 3. Apply mint. ONE mint here (producer slice) to keep the settle prover
+  //    inside the Preview block limit. Protocol slices are recorded as owed
+  //    and minted later by claimSplit() (one mint each).
+  const domainSep = pad(32, "pollpower:ebt:v7:epoch1");
+  mintUnshieldedToken(disclose(domainSep), disclose(producerAmt) as Uint<64>,
+                      right<ContractAddress, UserAddress>(disclose(producerAddr)));
+
+  // Record protocol splits as owed (claimSplit drains these).
+  _pendingOps = disclose((_pendingOps + opsAmt) as Uint<128>);
+  _pendingDiv = disclose((_pendingDiv + divAmt) as Uint<128>);
+  _pendingDao = disclose((_pendingDao + daoAmt) as Uint<128>);
+
+  // Total supply reflects ALL minted+owed EBT (the full amount is committed;
+  // owed slices are guaranteed mintable via claimSplit). 1:1 invariant holds:
+  // circulating + pending == amount backed by pooled KES.
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+  _settledSessions.insert(disclose(sessionID));
+  settlementCount.increment(1);
+}
+
+// =============================================================================
+// claimSplit — mint one pending protocol slice (single mint per call)
+// =============================================================================
+//
+// Owner-gated. kind: 0=ops, 1=dividend, 2=dao. Mints the full pending balance
+// for that recipient to its configured UserAddress and zeroes the accumulator.
+// One mintUnshieldedToken per call => small prover => deployable.
+
+export circuit claimSplit(kind: Uint<8>): [] {
+  assertOnlyOwner();
+  const domainSep = pad(32, "pollpower:ebt:v7:epoch1");
+  // kind is a public selector, not a secret — disclose so branching is allowed.
+  const k = disclose(kind);
+
+  if (k == 0 as Uint<8>) {
+    assert(_pendingOps > 0 as Uint<128>, "No pending ops split");
+    mintUnshieldedToken(disclose(domainSep), disclose(_pendingOps) as Uint<64>,
+                        right<ContractAddress, UserAddress>(_operationsRecipient));
+    _pendingOps = disclose(0 as Uint<128>);
+  } else if (k == 1 as Uint<8>) {
+    assert(_pendingDiv > 0 as Uint<128>, "No pending dividend split");
+    mintUnshieldedToken(disclose(domainSep), disclose(_pendingDiv) as Uint<64>,
+                        right<ContractAddress, UserAddress>(_dividendRecipient));
+    _pendingDiv = disclose(0 as Uint<128>);
+  } else {
+    assert(k == 2 as Uint<8>, "Bad split kind");
+    assert(_pendingDao > 0 as Uint<128>, "No pending dao split");
+    mintUnshieldedToken(disclose(domainSep), disclose(_pendingDao) as Uint<64>,
+                        right<ContractAddress, UserAddress>(_daoRecipient));
+    _pendingDao = disclose(0 as Uint<128>);
+  }
+  _splitClaimCount.increment(1);
+}
+
+// =============================================================================
+// Redemption — burn EBT for KES (ADR-017 rail, retires pilot skip flag)
+// =============================================================================
+//
+// Holder burns EBT by sending it to a contract-controlled sink (the contract
+// itself receives it out of circulation). A provable RedemptionEntry is logged
+// and the settlement-api keys the M-Pesa payout to payoutRef.
+
+export circuit redeem(
+  amount:      Uint<128>,
+  redeemer:    Bytes<32>,    // holder identity for the audit log
+  payoutRef:   Bytes<32>,    // off-chain redemption/cashout correlation id
+  currentTime: Uint<64>,
+): [] {
+  assertInitialized();
+  assert(amount > 0 as Uint<128>, "Must redeem > 0");
+
+  const color = ebtColor();
+
+  // Caller must hold enough EBT (ledger enforces the spend; assert for a clear
+  // error). The caller's UTXOs are consumed by sendUnshielded below.
+  assert(unshieldedBalanceGte(color, disclose(amount)), "Insufficient EBT");
+
+  // L-3: validate timestamp not in the future.
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+
+  // Burn: move EBT to the contract's own sink (out of circulation).
+  sendUnshielded(disclose(color), disclose(amount),
+                 left<ContractAddress, UserAddress>(kernel.self()));
+
+  _totalSupply = disclose((_totalSupply - amount) as Uint<128>);
+  _totalRedeemed = disclose((_totalRedeemed + amount) as Uint<128>);
+
+  const entry = RedemptionEntry {
+    redeemer: disclose(redeemer),
+    amount: disclose(amount),
+    payoutRef: disclose(payoutRef),
+    redeemedAt: disclose(currentTime),
+  };
+  _redemptionLog.insert(_redemptionCount.read() as Uint<64>, disclose(entry));
+  _redemptionCount.increment(1);
+}
+
+// =============================================================================
+// Manual reissuance (M-4: capped + rate-limited + authority-signed)
+// =============================================================================
+
+export circuit manualReissue(
+  producerKey: Bytes<32>,
+  producerAddr: UserAddress,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+  authoritySig: Bytes<64>,
+): [] {
+  assertOnlyOwner();
+  assert(amount > 0 as Uint<128>, "Must reissue > 0");
+
+  // M-4: per-call cap (1,000,000 base units = 1 EBT).
+  assert(amount <= 1000000 as Uint<128>, "Exceeds max reissue per call");
+
+  // M-4: rate limit — 1 hour cooldown. L-3: currentTime not in the future.
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+  const cooldown = 3600 as Uint<64>;
+  const earliest = (_lastReissueTime + cooldown) as Uint<64>;
+  assert(currentTime >= earliest, "Reissue cooldown not elapsed");
+
+  // M-4: multi-party approval — Meter Authority co-signature, seq-bound (no replay).
+  const producerBytes = disclose(producerKey);
+  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
+  const seqBytes = (reissuanceCount.read() as Field) as Bytes<32>;
+  const reissueMessageHash = persistentHash<Vector<3, Bytes<32>>>([
+    producerBytes,
+    amountBytes,
+    seqBytes,
+  ]);
+  const authOk = signature_valid(
+    _meterAuthorityPubkey,
+    reissueMessageHash,
+    authoritySig,
+  );
+  assert(disclose(authOk), "Reissue requires authority co-signature");
+
+  // Mint unshielded to the producer.
+  const domainSep = pad(32, "pollpower:ebt:v7:epoch1");
+  mintUnshieldedToken(disclose(domainSep), disclose(amount) as Uint<64>,
+                      right<ContractAddress, UserAddress>(disclose(producerAddr)));
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+
+  // Audit log.
+  const seq = reissuanceCount.read();
+  const entry = ReissuanceEntry {
+    producer: producerKey,
+    amount: amount,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+    reissuedAt: currentTime,
+  };
+  reissuanceLog.insert(disclose(seq), disclose(entry));
+  reissuanceCount.increment(1);
+  _lastReissueTime = disclose(currentTime);
+}
+
+// =============================================================================
+// Read circuits — INTENTIONALLY OMITTED
+// =============================================================================
+//
+// All ledger state is `export`ed and therefore public; reads are served
+// off-chain via the indexer (publicDataProvider.queryContractState + the
+// compiled `ledger()` decoder), exactly as settlement-api's ledger-reader.ts
+// already does for v5.2 (~0.3-1.3s, no proof, no fee). On-chain read circuits
+// would each add a verifier key to the DEPLOY transaction; v7's deploy tx must
+// stay under the Preview block extrinsic-size limit (v5.2 with 15 circuits
+// deployed; v7 with 21 was rejected as "would exhaust the block limits").
+// Dropping the 12 redundant read circuits keeps v7 lean (9 circuits) and
+// deployable, with ZERO loss of readability (state is public).
+//
+// Off-chain readers compute:
+//   totalSupply / totalRedeemed / settlementCount / margin bps / attestations /
+//   reissuanceCount / redemptionCount / pending splits / contract EBT balance
+// directly from the decoded ledger state. unshieldedBalance(color) for any
+// holder is read from the indexer's UTXO set (see the v7 spike receipt check).

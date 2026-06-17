@@ -8,15 +8,63 @@ EBT is the unit of account for the PollPower energy economy. One token represent
 
 | File | Status |
 |---|---|
-| [`ebt-v5.2.compact`](./ebt-v5.2.compact) | ✅ **PRODUCTION** — audit-hardened, active mint path since 2026-06-12 |
+| [`ebt-v7.compact`](./ebt-v7.compact) | ✅ **PRODUCTION (Preview)** — unshielded, contract-minted native-UTXO token. Transferable + redeemable. Deployed 2026-06-17 |
+| [`ebt-v5.2.compact`](./ebt-v5.2.compact) | 🟡 **LEGACY** — audit-hardened public-balance token, active mint path 2026-06-12 → 2026-06-17. Superseded by v7 |
 | [`ebt-v5.compact`](./ebt-v5.compact) | ⚠️ **LEGACY** — original mint path, balance reads only |
 | [`ebt-v5.1.compact`](./ebt-v5.1.compact) | ❌ **DEAD-LETTER** — deployed but never wired. Superseded by v5.2 before cutover. |
 
-## EBT v5.2 (production)
+---
+
+## EBT v7 (production) — unshielded, contract-minted ledger token
+
+**Address (Midnight Preview):** `667d7f2aad9fac8613604df544d608ee2956f1771e440cc0c666592e80bec2b4`
+**Deployed + initialized:** 2026-06-17
+**Design:** [`V7-DESIGN.md`](./V7-DESIGN.md) · **Decision:** ADR-018 (unshielded token model), ADR-017 (unified redemption)
+**Token color:** `tokenType(pad(32, "pollpower:ebt:v7:epoch1"), contract)` — one epoch = one color = one rate (ADR-001)
+
+### What changed from v5.2
+
+v5.2 was a contract token with a flat **public balance map** and no transfer/burn. v7 makes EBT a **contract-minted, unshielded, native-UTXO token**:
+
+- **`settle()` mints unshielded** via `mintUnshieldedToken()` instead of writing a balance map. Value now lives as native unshielded UTXOs — a third party (non-submitter) can hold and forward EBT. This is exactly what the shielded "Option A" path could *not* do (shielded outputs encrypt to the submitter); the 2026-06-17 spike proved unshielded receipt works on Preview.
+- **`redeem()` burns** EBT (sends to a contract-controlled sink) and logs a provable `RedemptionEntry` the settlement layer keys the KES payout to. This retires the pilot `SKIP_ON_CHAIN_BURN_FOR_PILOT` crutch — the burn is now a real on-chain op.
+- **Transfers** happen at the wallet/UTXO layer (holders `sendUnshielded` directly); no on-chain `transfer()` circuit needed for the minimal build.
+- **Recipients are `UserAddress`** (not `Bytes<32>` pubkeys) — required for unshielded mint targets.
+
+### settle() + claimSplit() — single-mint design
+
+Minting all four protocol slices (producer + ops/dividend/dao) in one circuit produced a ~19.5 MB `settle.prover` that **exhausted the Preview block limit**. v7 splits the mints so every circuit is single-mint and deployable:
+
+- **`settle()`** mints only the **producer** slice (one `mintUnshieldedToken`) and records the ops/dividend/dao slices as *owed* in `_pendingOps/_pendingDiv/_pendingDao`.
+- **`claimSplit(kind)`** mints one pending protocol slice on demand (`kind` 0=ops, 1=dividend, 2=dao), one mint per call, and zeroes that accumulator.
+
+The full 4-way split stays **on-chain and provable** — just spread across single-mint circuits. The 1:1 invariant holds: `circulating + pending == amount backed by pooled KES`.
+
+### Reads are off-chain
+
+All ledger state is `export`ed (public). Reads are served by the indexer (`queryContractState` + the compiled `ledger()` decoder) — no on-chain read circuits. Dropping the 12 read circuits kept the deploy transaction under the Preview block extrinsic-size limit (v7 deploys with **9 circuits**; an earlier 21-circuit build was rejected as "would exhaust the block limits").
+
+### Audit hardening carried forward from v5.2
+
+- **C-1:** producer bound into the 4-field HAT signed payload — prevents frontrunning permissionless `settle()`
+- **M-1:** `attestationKey == hash(producer, meterKeyHash)` enforced in-circuit
+- **M-4:** `manualReissue` capped (1M base units), rate-limited (1 hr cooldown), Meter Authority co-signed
+- **L-1:** `transferOwnership` guards `.is_left`
+- **L-3:** caller timestamps validated against block time via `blockTimeGte`
+
+### Circuits
+
+`initialize` · `settle` · `claimSplit` · `redeem` · `manualReissue` · `attestProducerOwnership` · `revokeProducerOwnership` · `transferOwnership` · `setMeterAuthority`
+
+---
+
+## EBT v5.2 (legacy)
 
 **Address (Midnight Preview):** `4120b44ed9067f5576006a559e187a447c667db401d9c2ef1d44dedb34e3f835`
 **Deployed:** 2026-06-12
 **Audit:** [2026-06-10 Fable 5 review](../README.md#audit-2026-06-10)
+
+Audit-hardened public-balance settlement contract. Active mint path from 2026-06-12 until v7 superseded it on 2026-06-17. Fixes C-1/M-1/M-4/L-1/L-3 (see below). Still on chain; balances readable.
 
 ### What v5.2 fixes (audit findings)
 
