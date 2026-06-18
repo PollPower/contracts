@@ -13,7 +13,8 @@ This repository contains the **canonical, on-chain source** for every contract P
 
 | Contract | Purpose | Status |
 |---|---|---|
-| [`ebt/ebt-v5.2.compact`](./ebt/ebt-v5.2.compact) | The Energy-Backed Token. Audit-hardened settlement with producer-bound signatures, attestation binding, and capped reissuance. | ✅ **PRODUCTION** — active mint path since 2026-06-12 |
+| [`ebt/ebt-v7.compact`](./ebt/ebt-v7.compact) | The Energy-Backed Token. Unshielded, contract-minted ledger token — `settle()` mints the producer slice directly to the producer's wallet; `claimSplit()` distributes the ops/dividend/DAO slices. Carries forward all v5.2 audit hardening (C-1, M-1, M-4, L-1, L-3). | ✅ **PRODUCTION** — active mint path since 2026-06-17 |
+| [`ebt/ebt-v5.2.compact`](./ebt/ebt-v5.2.compact) | EBT v5.2. Audit-hardened settlement with producer-bound signatures, attestation binding, and capped reissuance. Superseded by v7's unshielded contract-mint model. | ⚠️ **LEGACY** — on chain, superseded by v7 |
 | [`ebt/ebt-v5.compact`](./ebt/ebt-v5.compact) | EBT v5 (original). Single-authority settlement with internal meter registry. | ⚠️ **LEGACY** — still on chain, balance reads only |
 | [`ebt/ebt-v5.1.compact`](./ebt/ebt-v5.1.compact) | EBT v5.1 (stateless attestation). Superseded by v5.2 before cutover. | ❌ **DEAD-LETTER** — deployed but never wired. See [audit findings](#audit-2026-06-10). |
 | [`multisig/multisig-v6-ed25519.compact`](./multisig/multisig-v6-ed25519.compact) | 3-of-5 Ed25519 council multi-sig. M-2 domain separation provided at the actionHash layer. | ✅ **PRODUCTION** — *pilot-mock admins active, see [STATUS](./producer-registry/STATUS.md)* |
@@ -32,7 +33,7 @@ This repository contains the **canonical, on-chain source** for every contract P
 
 | Contract | Address | Deployed |
 |---|---|---|
-| **EBT v5.2** | `4120b44ed9067f5576006a559e187a447c667db401d9c2ef1d44dedb34e3f835` | 2026-06-12 |
+| **EBT v7** | `667d7f2aad9fac8613604df544d608ee2956f1771e440cc0c666592e80bec2b4` | 2026-06-17 |
 | **Multisig v6** | `f7192a504e186e6a418bcb3f42291ee1a3c032b8c0724c4fab54cc3f62745c3a` | 2026-05-08 |
 | **Community Poll v2** | `8fcb540d96f34ed18d37ab637f0393341cf4eba2759d09e1e07675fc4f4fea63` | 2026-06-12 |
 | **ProducerRegistry v1** | `c6730596dd7770dd69bd5051a769e8c42d34dc99c47228f751cae38f00b2ff1d` | 2026-05-09 |
@@ -41,6 +42,7 @@ This repository contains the **canonical, on-chain source** for every contract P
 
 | Contract | Address | Status |
 |---|---|---|
+| EBT v5.2 | `4120b44ed9067f5576006a559e187a447c667db401d9c2ef1d44dedb34e3f835` | Legacy — superseded by v7 |
 | EBT v5 | `5cbc10a7a8f43a86fab8a8a015823b973be887b41bf6e2b03b51eb2dccff3b0e` | Legacy — balance reads |
 | EBT v5.1 | `e3514ab0c5dca1a61700ac96f12f80157ea41474642161ce91cdd62dc0a1291d` | Dead-letter — never wired |
 | Multisig v5 | `182a7a8b8163d2bd98e4ff2e1c9dec7ef788e8503f46db46be311d74a2d8a7ce` | Deprecated |
@@ -93,15 +95,16 @@ Full audit spec: [`ebt/V5.2-MIGRATION.md`](./ebt/V5.2-MIGRATION.md) and [`commun
 
 EBT cannot be minted unless every party with a role agrees, by signature. No single key — including any held by PollPower — can produce a mint by itself.
 
-**Current path (EBT v5.2, active since 2026-06-12):**
+**Current path (EBT v7, active since 2026-06-17):**
 
 1. A consumer pays KES at a metered outlet.
 2. The **gateway hardware** signs the meter reading with its Ed25519 key. The signature covers session ID, hardware pubkey, amount, AND the producer's wallet address (C-1 fix — the producer is bound into the signature).
 3. The **Meter Authority** (whose pubkey is set by the council) attests that the gateway is currently approved.
 4. The **ProducerRegistry** (3-of-5 council multi-sig-gated) confirms the meter is registered.
-5. `settle()` verifies both signatures, the attestation binding (M-1), the slice policy, and the session replay guard, then mints EBT.
+5. `settle()` verifies both signatures, the attestation binding (M-1), the slice policy, and the session replay guard, then mints the producer's EBT slice **as an unshielded ledger token directly to the producer's wallet** — the recipient owns the minted UTXO on chain, not the submitter.
+6. `claimSplit()` distributes the operations / dividend / DAO slices per the BPS policy.
 
-Three independent signing roles. No single party completes the path alone.
+v7's unshielded contract-mint model means a third party (the producer) provably receives contract-minted value without trusting the submitter — the capability the earlier shielded design could not deliver. Three independent signing roles; no single party completes the path alone.
 
 ---
 
@@ -109,7 +112,8 @@ Three independent signing roles. No single party completes the path alone.
 
 [Compact](https://docs.midnight.network/develop/tutorial/building) is the smart-contract language for Midnight, syntactically similar to TypeScript with ZK-aware semantics. The contracts are small enough to read in one sitting:
 
-- `ebt-v5.2.compact` — ~560 lines (the most complex — two signature verifications + BPS policy)
+- `ebt-v7.compact` — the production settlement contract (two signature verifications + BPS policy + unshielded mint)
+- `ebt-v5.2.compact` — ~560 lines (legacy; superseded by v7)
 - `multisig-v6.1-ed25519.compact` — ~300 lines
 - `community-poll-v2.compact` — ~290 lines
 - `producer-registry-v1.compact` — ~250 lines
