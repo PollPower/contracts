@@ -61,7 +61,7 @@ On June 10, 2026, the full contract suite (tag `v10.0`, commit `c06191e`) was re
 |---|---|---|---|
 | C-1 | Critical | `producer` unauthenticated in v5.1 `settle()` — frontrun risk | ✅ Fixed in EBT v5.2 |
 | C-2 | Critical | Community-Poll `castVote` has no witness binding — Sybil voting | ✅ Fixed in Poll v2 |
-| H-1 | High | Pilot-mock admin keys publicly derivable | ⏳ Tangem ring ceremony |
+| H-1 | High | Pilot-mock admin keys publicly derivable | ⏳ **In progress** — real Tangem ring hardware validated end-to-end (first council ring activated, on-chip Ed25519); full 5-ring swap into the on-chain multisig pending pre-mainnet ceremony |
 | H-2 | High | Multisig v5 single-admin self-governance | ✅ Superseded by v6.1 |
 | M-1 | Medium | `attestationKey` not bound to `(producer, meterKeyHash)` | ✅ Fixed in EBT v5.2 |
 | M-2 | Medium | Ed25519 signed messages lack domain separation | ✅ Mitigated at actionHash layer (contract addr in signed preimage); v6.1 in-circuit variant not needed |
@@ -85,7 +85,7 @@ Full audit spec: [`ebt/V5.2-MIGRATION.md`](./ebt/V5.2-MIGRATION.md) and [`commun
 
 ### Known limitations
 
-- **H-1 is operational, not code.** The 5 pilot admin keys are derived from `SHA-256("pollpower-pilot-mock-ring-i")`. They are publicly derivable. This is disclosed because it is demonstration architecture, not a security control. Real Tangem ring pubkeys replace these in the pre-mainnet ceremony.
+- **H-1 is operational, not code.** The 5 pilot admin keys are derived from `SHA-256("pollpower-pilot-mock-ring-i")`. They are publicly derivable. This is disclosed because it is demonstration architecture, not a security control. Real Tangem ring pubkeys replace these in the pre-mainnet ceremony. The Tangem hardware path is now validated end-to-end (a real council ring has been activated with an on-chip Ed25519 key); the remaining work is provisioning all five council rings and swapping them into the deployed multisig admin set, retiring the mock keys.
 - **Community Poll v2 has per-transaction linkability.** Nullifier + tallyKey are public per vote transaction. An observer can link an anonymous commitment to its chosen option. Privacy holds across voters, not per transaction. Full ballot privacy (homomorphic tally) is v3 research.
 - **ProducerRegistry v1.1 and Multisig v6.1 are not deployed.** v1.1 exceeded the Preview block-size limit (18MB proving keys); both in-circuit `contractTag` variants are redundant with the actionHash-layer M-2 mitigation (the admin app binds the contract address into every signed preimage) and would force a Poseidon dependency into the mobile admin app. v1 and v6 continue as production. See [multisig/M2-MITIGATION-NOTE.md](./multisig/M2-MITIGATION-NOTE.md).
 
