@@ -107,10 +107,13 @@ something to divide against.
 2. Set env vars:
    - `V7_CONTRACT_ADDR` = v7.1 address
    - `LD_CONTRACT_ADDR` = LD address
-   - `INDEXER_URL` = Preview indexer URL
+   - `INDEXER_HTTP_URL` = Preview indexer HTTPS endpoint (for state reads)
+   - `INDEXER_WS_URL` = Preview indexer WSS endpoint (for subscription)
    - `PROOF_SERVER_URL` = local proof-server URL (default `http://localhost:6300`)
    - `KEEPER_SK` = keeper wallet secret key (hex, kept out of source control)
    - `CURSOR_FILE` = path to persistent cursor JSON (e.g. `./data/ld-keeper.cursor.json`)
+   - `WS_RECONNECT_BASE_MS` = initial reconnect delay (default `1000`)
+   - `WS_RECONNECT_MAX_MS` = max reconnect delay (default `60000`)
 3. Verify keeper is running: `pm2 logs ld-keeper`
 
 ## Phase 7 — Prove the loop end-to-end

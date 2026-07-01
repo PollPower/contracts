@@ -116,21 +116,30 @@ The Living Dividend is a downstream contract; EBT v7.1 stays minimal.
 Because Compact does not yet support contract-to-contract calls (per
 Midnight's docs and OpenZeppelin's `MultiToken` disclaimers), and
 user-declared MIP-0002 event types are not yet exposed by compactc 0.31.0,
-we use a **public ledger-log pattern** functionally equivalent to events:
+we use a **public ledger-log pattern** functionally equivalent to events,
+coupled with a WebSocket-subscribed keeper.
 
 1. [`../ebt/ebt-v7.1.compact`](../ebt/ebt-v7.1.compact) writes a
    `DividendMintedEntry` record to the public `_dividendMintedLog` ledger
    map inside `claimSplit(kind=1)` — the moment the dividend slice actually
    mints to LD.
-2. [`ld-keeper.ts`](./ld-keeper.ts) subscribes to changes in that map via
-   the indexer.
+2. [`ld-keeper.ts`](./ld-keeper.ts) subscribes via the Midnight indexer's
+   `subscribeToContractActionEvents` GraphQL-over-WebSocket subscription
+   (indexer 2.0.0+). Every ContractCall on v7.1 delivers a push frame; the
+   keeper reads the current `_dividendMintedLog` and drains new entries.
 3. Keeper calls `LD.bumpOnMint(sourceTxSalt, amount, currentTime)`.
 4. LD's idempotency guard (`_processedSalts: Set<Bytes<32>>`) makes
    duplicate calls safe. The keeper can be restarted, replaced, or run
    redundantly with no side effect.
 
-When compactc exposes user-declared MIP-0002 event types, the log-map
-swaps to `emit` in a drop-in change on both sides.
+WebSocket subscription gives sub-second latency and automatic reconnect
+with exponential backoff; if the indexer or keeper drops, entries queue
+in the ledger map and drain on reconnect.
+
+When compactc exposes user-declared MIP-0002 event types (Path C in
+[DESIGN.md](./DESIGN.md)), the log-map + subscription pair swaps to
+`emit` + `queryContractEvents({ eventType: 'DividendMinted' })` in a
+drop-in change on both sides.
 
 Failure mode: if the keeper dies, dividends stop accruing (but no funds
 are lost). When the keeper restarts, it replays missed events in order
