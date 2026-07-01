@@ -1,0 +1,595 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPower EBT Token v7.1 — unshielded, contract-minted ledger token
+//                            with DividendMinted event emission for the
+//                            Living Dividend downstream contract.
+//
+// Author: PollPower
+// Date:   2026-07-01
+// Design: living-dividend/DESIGN.md, ebt/V7.1-EVENT-DIFF.md,
+//         ADR-018 (unshielded token model), ADR-019 (Living Dividend).
+// Base:   EBT v7 (deployed Preview 667d7f2a…, merged 2026-06-17).
+//
+// =============================================================================
+// WHAT CHANGES FROM V7
+// =============================================================================
+//
+// v7.1 is a minimal amendment to v7 to enable the Living Dividend downstream
+// contract. Contract-to-contract calls are not yet supported in Compact, so we
+// use the MIP-0002 event pattern (landed in midnight-js on 2026-06-30):
+//
+//   * NEW: `_livingDividendAddress: Maybe<ContractAddress>` — nullable pointer
+//     to the LD contract. Default is `none` at deploy; when set (via multisig),
+//     `claimSplit(dividend)` emits a `DividendMinted` event that the LD keeper
+//     consumes to update its accumulator.
+//
+//   * NEW: `setLivingDividendAddress(addr, currentTime)` — owner-gated setter
+//     for the LD pointer. L-3 timestamp validation. When set, subsequent
+//     dividend-slice claims emit the event.
+//
+//   * NEW: `clearLivingDividendAddress(currentTime)` — owner-gated "emergency
+//     disable" that clears the pointer back to `none`. Same pattern.
+//
+//   * NEW: `_dividendEventSeq: Counter` — monotone counter driving unique
+//     salt derivation for dividend-log entries (matches LD's `_processedSalts`).
+//
+//   * NEW: `_dividendMintedLog: Map<Uint<64>, DividendMintedEntry>` — public
+//     ledger log of dividend-mint records. LD's keeper subscribes to changes
+//     in this map via the indexer and calls LD.bumpOnMint for each new entry.
+//     Semantically equivalent to a MIP-0002 `emit`, but implemented as a
+//     writable ledger Map because user-declared event *types* are not yet
+//     exposed by compactc 0.31.0 (MIP-0002 in midnight-js 5.0.0-alpha exposes
+//     the *reader* side; the *writer* side landed for stdlib event types like
+//     `UnshieldedMint` but not yet for user-declared ones). Ledger-log gives
+//     us the same keeper subscription with today's toolchain.
+//
+//   * NEW: `_dividendMintedLog.insert(seq, DividendMintedEntry { ... })`
+//     inside `claimSplit(kind=1)` — the dividend branch. Salt is derived
+//     from the sequence counter so it's unforgeable and unique per record.
+//
+// EVERYTHING ELSE FROM V7 IS UNCHANGED. Producer settle, ops split, DAO split,
+// redemption, manual reissue, attestation, ownership — bit-for-bit v7. v7.1
+// with `_livingDividendAddress = none` is functionally identical to v7. This
+// means:
+//
+//   1. Zero-risk migration path: deploy v7.1 with pointer unset, verify settle
+//      behaves like v7, then multisig-bind the LD address in a separate tx.
+//
+//   2. If v7.1 has a bug, revert to v7 with no data loss. Producers, consumers,
+//      ops, DAO paths are all unaffected.
+//
+// =============================================================================
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Witnesses
+// =============================================================================
+
+witness signature_valid(
+  pubkey: Bytes<32>,
+  messageHash: Bytes<32>,
+  signature: Bytes<64>,
+): Boolean;
+
+// =============================================================================
+// Structs
+// =============================================================================
+
+struct AttestationStatus {
+  active: Boolean,
+  attestedAt: Uint<64>,
+  revokedAt: Uint<64>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+}
+
+struct ReissuanceEntry {
+  producer: Bytes<32>,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  reissuedAt: Uint<64>,
+}
+
+struct RedemptionEntry {
+  redeemer:   Bytes<32>,
+  amount:     Uint<128>,
+  payoutRef:  Bytes<32>,
+  redeemedAt: Uint<64>,
+}
+
+// v7.1 ledger-log entry: written to _dividendMintedLog when dividend slice
+// mints to LD. The Living Dividend keeper subscribes to this map's growth via
+// the indexer and calls LD.bumpOnMint(sourceTxSalt, amount, currentTime) for
+// each new entry.
+struct DividendMintedEntry {
+  sourceTxSalt: Bytes<32>,
+  amount:       Uint<128>,
+  recipient:    ContractAddress,
+  blockTime:    Uint<64>,
+  epochColor:   Bytes<32>,
+}
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+export ledger _initialized: Boolean;
+export ledger _owner: Either<ZswapCoinPublicKey, ContractAddress>;
+export ledger _meterAuthorityPubkey: Bytes<32>;
+
+export ledger _totalSupply: Uint<128>;
+export ledger _totalRedeemed: Uint<128>;
+
+export ledger settlementCount: Counter;
+export ledger _settledSessions: Set<Bytes<32>>;
+
+export ledger _bpsProducer: Uint<16>;
+export ledger _bpsOperations: Uint<16>;
+export ledger _bpsDividend: Uint<16>;
+export ledger _bpsDao: Uint<16>;
+
+export ledger _operationsRecipient: UserAddress;
+export ledger _dividendRecipient: UserAddress;
+export ledger _daoRecipient: UserAddress;
+
+export ledger producerAttestations: Map<Bytes<32>, AttestationStatus>;
+
+export ledger reissuanceCount: Counter;
+export ledger reissuanceLog: Map<Uint<64>, ReissuanceEntry>;
+export ledger _lastReissueTime: Uint<64>;
+
+export ledger _redemptionCount: Counter;
+export ledger _redemptionLog: Map<Uint<64>, RedemptionEntry>;
+
+export ledger _pendingOps: Uint<128>;
+export ledger _pendingDiv: Uint<128>;
+export ledger _pendingDao: Uint<128>;
+export ledger _splitClaimCount: Counter;
+
+// v7.1 additions:
+// Nullable pointer to the Living Dividend contract. When `some`, claimSplit
+// for the dividend kind emits a DividendMinted event bound to that address.
+export ledger _livingDividendAddress: Maybe<ContractAddress>;
+
+// Monotone counter used to derive unique salts for DividendMintedEntry
+// records. LD's _processedSalts Set gives idempotency; this counter ensures
+// uniqueness.
+export ledger _dividendEventSeq: Counter;
+
+// Public log of dividend-mint records. Keepers watch this map and call
+// LD.bumpOnMint for each new entry. Semantically equivalent to a MIP-0002
+// emit; ledger-based because user-declared event types aren't yet exposed by
+// compactc 0.31.0. Any indexer that watches contract state can subscribe.
+export ledger _dividendMintedLog: Map<Uint<64>, DividendMintedEntry>;
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+circuit assertInitialized(): [] {
+  assert(_initialized, "Not initialized");
+}
+
+circuit assertOnlyOwner(): [] {
+  assertInitialized();
+  assert(_owner.is_left, "Owner is contract address; not supported");
+  const caller = ownPublicKey();
+  assert(caller == _owner.left, "Only owner");
+}
+
+circuit ebtColor(): Bytes<32> {
+  return tokenType(pad(32, "pollpower:ebt:v7:epoch1"), kernel.self());
+}
+
+// =============================================================================
+// Initialization
+// =============================================================================
+
+export circuit initialize(
+  meterAuthorityPubkey: Bytes<32>,
+  operationsRecipient: UserAddress,
+  dividendRecipient: UserAddress,
+  daoRecipient: UserAddress,
+): [] {
+  assert(!_initialized, "Already initialized");
+  const callerKey = ownPublicKey();
+  const callerAcc = Either<ZswapCoinPublicKey, ContractAddress> {
+    is_left: true,
+    left: callerKey,
+    right: default<ContractAddress>,
+  };
+
+  _initialized = disclose(true);
+  _owner = disclose(callerAcc);
+  _meterAuthorityPubkey = disclose(meterAuthorityPubkey);
+
+  _bpsProducer = 8696 as Uint<16>;
+  _bpsOperations = 870 as Uint<16>;
+  _bpsDividend = 186 as Uint<16>;
+  _bpsDao = 248 as Uint<16>;
+
+  _operationsRecipient = disclose(operationsRecipient);
+  _dividendRecipient = disclose(dividendRecipient);
+  _daoRecipient = disclose(daoRecipient);
+
+  _lastReissueTime = 0 as Uint<64>;
+
+  // v7.1: LD pointer starts unset. Multisig binds it later via
+  // setLivingDividendAddress once the LD contract is deployed.
+  _livingDividendAddress = none<ContractAddress>();
+}
+
+// =============================================================================
+// Owner-only operations
+// =============================================================================
+
+export circuit transferOwnership(
+  newOwner: Either<ZswapCoinPublicKey, ContractAddress>
+): [] {
+  assertOnlyOwner();
+  assert(newOwner.is_left, "owner must be a public key, not contract address");
+  _owner = disclose(newOwner);
+}
+
+export circuit setMeterAuthority(newAuthorityPubkey: Bytes<32>): [] {
+  assertOnlyOwner();
+  _meterAuthorityPubkey = disclose(newAuthorityPubkey);
+}
+
+// v7.1: bind the Living Dividend contract address. Owner-gated (in the
+// production deployment this is the multisig owner per ADR-002). L-3 hardened.
+export circuit setLivingDividendAddress(
+  addr: ContractAddress,
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "timestamp cannot be in the future");
+  _livingDividendAddress = some<ContractAddress>(disclose(addr));
+}
+
+// v7.1: emergency disable. Clears LD pointer back to none; subsequent
+// claimSplit(dividend) calls stop emitting the event. Dividend slice still
+// mints to _dividendRecipient (the placeholder/holding wallet) exactly as v7
+// behaved before LD was bound.
+export circuit clearLivingDividendAddress(
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "timestamp cannot be in the future");
+  _livingDividendAddress = none<ContractAddress>();
+}
+
+// =============================================================================
+// Producer attestation (unchanged from v7)
+// =============================================================================
+
+export circuit attestProducerOwnership(
+  attestationKey: Bytes<32>,
+  producerBytes: Bytes<32>,
+  meterKeyHash: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+
+  const expectedKey = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(producerBytes),
+    disclose(meterKeyHash),
+  ]);
+  assert(disclose(attestationKey) == disclose(expectedKey), "attestation/producer mismatch");
+
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+
+  const status = AttestationStatus {
+    active: true,
+    attestedAt: currentTime,
+    revokedAt: 0 as Uint<64>,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(status));
+}
+
+export circuit revokeProducerOwnership(
+  attestationKey: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+  assert(producerAttestations.member(disclose(attestationKey)), "No such attestation");
+  const current = producerAttestations.lookup(disclose(attestationKey));
+  assert(current.active, "Already revoked");
+
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+
+  const revoked = AttestationStatus {
+    active: false,
+    attestedAt: current.attestedAt,
+    revokedAt: currentTime,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(revoked));
+}
+
+// =============================================================================
+// Settlement (unchanged from v7)
+// =============================================================================
+
+export circuit settle(
+  sessionID: Bytes<32>,
+  hatPubkey: Bytes<32>,
+  amount: Uint<128>,
+  expiresAt: Uint<64>,
+  producerKey: Bytes<32>,
+  producerAddr: UserAddress,
+  attestationKey: Bytes<32>,
+  meterKeyHash: Bytes<32>,
+  producerAmt: Uint<128>,
+  opsAmt: Uint<128>,
+  divAmt: Uint<128>,
+  daoAmt: Uint<128>,
+  hatSig: Bytes<64>,
+  authoritySig: Bytes<64>,
+): [] {
+  assertInitialized();
+
+  assert(amount > 0 as Uint<128>, "Amount must be positive");
+
+  const fresh = blockTimeLte(disclose(expiresAt));
+  assert(disclose(fresh), "Authority attestation expired");
+
+  assert(!_settledSessions.member(disclose(sessionID)), "Session already settled");
+
+  const expectedAttKey = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(producerKey),
+    disclose(meterKeyHash),
+  ]);
+  assert(disclose(attestationKey) == disclose(expectedAttKey), "attestation/producer mismatch");
+
+  const sumAll = (producerAmt + opsAmt + divAmt + daoAmt) as Uint<128>;
+  assert(sumAll == amount, "slice sum mismatch");
+
+  const bpsTotal = 10000 as Field;
+  const bpsProducer = (_bpsProducer as Field);
+  const bpsOps      = (_bpsOperations as Field);
+  const bpsDiv      = (_bpsDividend as Field);
+  const bpsDao      = (_bpsDao as Field);
+  const amountF     = (amount as Field);
+  const producerF   = (producerAmt as Field);
+  const opsF        = (opsAmt as Field);
+  const divF        = (divAmt as Field);
+  const daoF        = (daoAmt as Field);
+
+  const producerCross = (producerF * bpsTotal) as Uint<160>;
+  const producerTarget = (amountF * bpsProducer) as Uint<160>;
+  assert(
+    producerCross + (bpsTotal as Uint<160>) > producerTarget
+      && producerCross < producerTarget + (bpsTotal as Uint<160>),
+    "producer slice off-policy"
+  );
+
+  const opsCross = (opsF * bpsTotal) as Uint<160>;
+  const opsTarget = (amountF * bpsOps) as Uint<160>;
+  assert(
+    opsCross + (bpsTotal as Uint<160>) > opsTarget
+      && opsCross < opsTarget + (bpsTotal as Uint<160>),
+    "ops slice off-policy"
+  );
+
+  const divCross = (divF * bpsTotal) as Uint<160>;
+  const divTarget = (amountF * bpsDiv) as Uint<160>;
+  assert(
+    divCross + (bpsTotal as Uint<160>) > divTarget
+      && divCross < divTarget + (bpsTotal as Uint<160>),
+    "dividend slice off-policy"
+  );
+
+  const daoCross = (daoF * bpsTotal) as Uint<160>;
+  const daoTarget = (amountF * bpsDao) as Uint<160>;
+  assert(
+    daoCross + (bpsTotal as Uint<160>) > daoTarget
+      && daoCross < daoTarget + (bpsTotal as Uint<160>),
+    "dao slice off-policy"
+  );
+
+  const expiresAtBytes = (disclose(expiresAt) as Field) as Bytes<32>;
+  const authorityMessageHash = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(hatPubkey),
+    expiresAtBytes,
+  ]);
+  const authorityOk = signature_valid(
+    _meterAuthorityPubkey,
+    authorityMessageHash,
+    authoritySig,
+  );
+  assert(disclose(authorityOk), "Bad authority signature");
+
+  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
+  const sessionPayloadHash = persistentHash<Vector<4, Bytes<32>>>([
+    disclose(sessionID),
+    disclose(hatPubkey),
+    amountBytes,
+    disclose(producerKey),
+  ]);
+  const hatOk = signature_valid(disclose(hatPubkey), sessionPayloadHash, hatSig);
+  assert(disclose(hatOk), "Bad HAT signature");
+
+  const domainSep = pad(32, "pollpower:ebt:v7:epoch1");
+  mintUnshieldedToken(disclose(domainSep), disclose(producerAmt) as Uint<64>,
+                      right<ContractAddress, UserAddress>(disclose(producerAddr)));
+
+  _pendingOps = disclose((_pendingOps + opsAmt) as Uint<128>);
+  _pendingDiv = disclose((_pendingDiv + divAmt) as Uint<128>);
+  _pendingDao = disclose((_pendingDao + daoAmt) as Uint<128>);
+
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+  _settledSessions.insert(disclose(sessionID));
+  settlementCount.increment(1);
+}
+
+// =============================================================================
+// claimSplit — mint one pending protocol slice
+// =============================================================================
+//
+// v7.1 CHANGE: when kind == 1 (dividend) AND _livingDividendAddress is set,
+// emit a DividendMinted event. LD's keeper subscribes to this event and calls
+// LD.bumpOnMint(sourceTxSalt, amount, currentTime).
+//
+// The dividend recipient is still _dividendRecipient (a UserAddress). In the
+// LD-bound configuration, ops sets _dividendRecipient to the UserAddress form
+// of the LD contract's address so the mint lands there. The event carries the
+// ContractAddress form used by keepers to identify the target.
+
+export circuit claimSplit(kind: Uint<8>, currentTime: Uint<64>): [] {
+  assertOnlyOwner();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "timestamp cannot be in the future");
+
+  const domainSep = pad(32, "pollpower:ebt:v7:epoch1");
+  const k = disclose(kind);
+
+  if (k == 0 as Uint<8>) {
+    assert(_pendingOps > 0 as Uint<128>, "No pending ops split");
+    mintUnshieldedToken(disclose(domainSep), disclose(_pendingOps) as Uint<64>,
+                        right<ContractAddress, UserAddress>(_operationsRecipient));
+    _pendingOps = disclose(0 as Uint<128>);
+  } else if (k == 1 as Uint<8>) {
+    assert(_pendingDiv > 0 as Uint<128>, "No pending dividend split");
+    const divAmount = _pendingDiv;
+    mintUnshieldedToken(disclose(domainSep), disclose(divAmount) as Uint<64>,
+                        right<ContractAddress, UserAddress>(_dividendRecipient));
+    _pendingDiv = disclose(0 as Uint<128>);
+
+    // v7.1: write DividendMintedEntry to the public log iff LD pointer is set.
+    // Keepers watching _dividendMintedLog will pick up the new entry via the
+    // indexer and call LD.bumpOnMint. Ledger-log rather than emit because
+    // user-declared event types aren't yet exposed by compactc 0.31.0.
+    if (disclose(_livingDividendAddress.is_some)) {
+      const seq = _dividendEventSeq.read();
+      const seqBytes = (seq as Field) as Bytes<32>;
+      // Derive a salt from the sequence counter. Guaranteed unique per record
+      // by counter monotonicity. LD's idempotency guard verifies against its
+      // own _processedSalts Set.
+      const salt = persistentHash<Vector<2, Bytes<32>>>([
+        pad(32, "pollpower:dividend:v7.1"),
+        seqBytes,
+      ]);
+      const entry = DividendMintedEntry {
+        sourceTxSalt: disclose(salt),
+        amount: disclose(divAmount),
+        recipient: disclose(_livingDividendAddress.value),
+        blockTime: disclose(currentTime),
+        epochColor: disclose(ebtColor()),
+      };
+      _dividendMintedLog.insert(disclose(seq) as Uint<64>, disclose(entry));
+      _dividendEventSeq.increment(1);
+    }
+  } else {
+    assert(k == 2 as Uint<8>, "Bad split kind");
+    assert(_pendingDao > 0 as Uint<128>, "No pending dao split");
+    mintUnshieldedToken(disclose(domainSep), disclose(_pendingDao) as Uint<64>,
+                        right<ContractAddress, UserAddress>(_daoRecipient));
+    _pendingDao = disclose(0 as Uint<128>);
+  }
+  _splitClaimCount.increment(1);
+}
+
+// =============================================================================
+// Redemption (unchanged from v7)
+// =============================================================================
+
+export circuit redeem(
+  amount:      Uint<128>,
+  redeemer:    Bytes<32>,
+  payoutRef:   Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertInitialized();
+  assert(amount > 0 as Uint<128>, "Must redeem > 0");
+
+  const color = ebtColor();
+
+  assert(unshieldedBalanceGte(color, disclose(amount)), "Insufficient EBT");
+
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+
+  sendUnshielded(disclose(color), disclose(amount),
+                 left<ContractAddress, UserAddress>(kernel.self()));
+
+  _totalSupply = disclose((_totalSupply - amount) as Uint<128>);
+  _totalRedeemed = disclose((_totalRedeemed + amount) as Uint<128>);
+
+  const entry = RedemptionEntry {
+    redeemer: disclose(redeemer),
+    amount: disclose(amount),
+    payoutRef: disclose(payoutRef),
+    redeemedAt: disclose(currentTime),
+  };
+  _redemptionLog.insert(_redemptionCount.read() as Uint<64>, disclose(entry));
+  _redemptionCount.increment(1);
+}
+
+// =============================================================================
+// Manual reissuance (unchanged from v7)
+// =============================================================================
+
+export circuit manualReissue(
+  producerKey: Bytes<32>,
+  producerAddr: UserAddress,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+  authoritySig: Bytes<64>,
+): [] {
+  assertOnlyOwner();
+  assert(amount > 0 as Uint<128>, "Must reissue > 0");
+
+  assert(amount <= 1000000 as Uint<128>, "Exceeds max reissue per call");
+
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+  const cooldown = 3600 as Uint<64>;
+  const earliest = (_lastReissueTime + cooldown) as Uint<64>;
+  assert(currentTime >= earliest, "Reissue cooldown not elapsed");
+
+  const producerBytes = disclose(producerKey);
+  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
+  const seqBytes = (reissuanceCount.read() as Field) as Bytes<32>;
+  const reissueMessageHash = persistentHash<Vector<3, Bytes<32>>>([
+    producerBytes,
+    amountBytes,
+    seqBytes,
+  ]);
+  const authOk = signature_valid(
+    _meterAuthorityPubkey,
+    reissueMessageHash,
+    authoritySig,
+  );
+  assert(disclose(authOk), "Reissue requires authority co-signature");
+
+  const domainSep = pad(32, "pollpower:ebt:v7:epoch1");
+  mintUnshieldedToken(disclose(domainSep), disclose(amount) as Uint<64>,
+                      right<ContractAddress, UserAddress>(disclose(producerAddr)));
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+
+  const seq = reissuanceCount.read();
+  const entry = ReissuanceEntry {
+    producer: producerKey,
+    amount: amount,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+    reissuedAt: currentTime,
+  };
+  reissuanceLog.insert(disclose(seq), disclose(entry));
+  reissuanceCount.increment(1);
+  _lastReissueTime = disclose(currentTime);
+}

@@ -1,14 +1,21 @@
 // ld-keeper.ts
 // PollPower Living Dividend keeper service
 //
-// Subscribes to v7.1 `DividendMinted` events on the Midnight indexer,
-// filters for events targeting the LD contract address, and submits
-// idempotent `bumpOnMint` transactions to the LD contract.
+// Subscribes to v7.1's public `_dividendMintedLog` ledger map on the Midnight
+// indexer, filters entries for records targeting the LD contract address,
+// and submits idempotent `bumpOnMint` transactions to the LD contract.
+//
+// The v7.1 log-map pattern is functionally equivalent to a MIP-0002 emit +
+// event subscription, implemented as ledger state because user-declared event
+// types aren't yet exposed by compactc 0.31.0. When compactc catches up to
+// MIP-0002 for user-declared events, this keeper will switch from ledger
+// polling to event subscription in a small drop-in change.
 //
 // Runs on any long-lived process host (systemd, pm2, Docker) with
 // network access to a Midnight indexer + proof server.
 //
-// STATUS: reference implementation alongside living-dividend-v1.compact.
+// STATUS: reference implementation alongside living-dividend-v1.compact and
+//         ebt-v7.1.compact.
 //         Depends on midnight-js contracts SDK (target 5.0.0-alpha or later).
 //         Placeholders (`./state-store`, `./contracts/LivingDividend`,
 //         `./logger`) are wired against the deploying operator's own
@@ -80,6 +87,10 @@ export async function runKeeper(config: KeeperConfig): Promise<never> {
 
   while (true) {
     try {
+      // NOTE: with the v7.1 ledger-log pattern, cursor.lastProcessedBlock is
+      // repurposed as "last processed log sequence" (Uint<64> monotone from
+      // v7.1's _dividendEventSeq counter). Kept the field name unchanged for
+      // migration simplicity; drop-in swap when MIP-0002 events land in compactc.
       const events = await fetchNewEvents(
         indexer,
         config.v7ContractAddress,
@@ -153,25 +164,33 @@ export async function runKeeper(config: KeeperConfig): Promise<never> {
 async function fetchNewEvents(
   indexer: ReturnType<typeof getIndexerClient>,
   v7Address: string,
-  fromBlock: bigint,
+  fromSeq: bigint,
 ): Promise<DividendMintedEvent[]> {
-  // Uses the MIP-0002 contract-events endpoint that landed in midnight-js
-  // testkit end-to-end tests on 2026-06-30.
-  const raw = await indexer.getContractEvents({
+  // Read v7.1 contract state; extract entries from _dividendMintedLog whose
+  // sequence exceeds fromSeq. Map key is Uint<64> monotone counter, so simple
+  // forward iteration from fromSeq+1 catches every new entry.
+  const state = await indexer.getContractState({
     contractAddress: v7Address,
-    eventType: 'DividendMinted',
-    fromBlock,
+    atBlock: 'latest',
   });
+  const log = state.data.get('_dividendMintedLog');
+  if (!log) return [];
 
-  return raw.map((r): DividendMintedEvent => ({
-    sourceTxSalt: r.data.sourceTxSalt,
-    amount:       BigInt(r.data.amount),
-    recipient:    r.data.recipient,
-    blockTime:    BigInt(r.data.blockTime),
-    epochColor:   r.data.epochColor,
-    block:        BigInt(r.block),
-    txHash:       r.txHash,
-  }));
+  const results: DividendMintedEvent[] = [];
+  for (const [seq, entry] of log) {
+    const seqBig = BigInt(seq);
+    if (seqBig <= fromSeq) continue;
+    results.push({
+      sourceTxSalt: entry.sourceTxSalt,
+      amount:       BigInt(entry.amount),
+      recipient:    entry.recipient,
+      blockTime:    BigInt(entry.blockTime),
+      epochColor:   entry.epochColor,
+      block:        seqBig,   // repurposed as monotone log-sequence cursor
+      txHash:       '',       // ledger-log doesn't expose parent tx directly
+    });
+  }
+  return results;
 }
 
 function hexToBytes(hex: string): Uint8Array {
