@@ -109,21 +109,28 @@ job from being used to register multiple addresses. Key format:
 `hash(providerTag, jobIdHash)` — vendor-agnostic (SmileID, Onfido,
 Persona, in-person cooperative attestation).
 
-## Integration with EBT v7
+## Integration with EBT v7.1
 
-The Living Dividend is a downstream contract; EBT v7 stays minimal.
+The Living Dividend is a downstream contract; EBT v7.1 stays minimal.
 
 Because Compact does not yet support contract-to-contract calls (per
-Midnight's docs and OpenZeppelin's `MultiToken` disclaimers), we use the
-**MIP-0002 event pattern** that landed in midnight-js on 2026-06-30:
+Midnight's docs and OpenZeppelin's `MultiToken` disclaimers), and
+user-declared MIP-0002 event types are not yet exposed by compactc 0.31.0,
+we use a **public ledger-log pattern** functionally equivalent to events:
 
-1. v7.1 (see [`../ebt/V7.1-EVENT-DIFF.md`](../ebt/V7.1-EVENT-DIFF.md))
-   emits a `DividendMinted` event inside `settle()`.
-2. `ld-keeper.ts` subscribes to that event via the indexer.
+1. [`../ebt/ebt-v7.1.compact`](../ebt/ebt-v7.1.compact) writes a
+   `DividendMintedEntry` record to the public `_dividendMintedLog` ledger
+   map inside `claimSplit(kind=1)` — the moment the dividend slice actually
+   mints to LD.
+2. [`ld-keeper.ts`](./ld-keeper.ts) subscribes to changes in that map via
+   the indexer.
 3. Keeper calls `LD.bumpOnMint(sourceTxSalt, amount, currentTime)`.
 4. LD's idempotency guard (`_processedSalts: Set<Bytes<32>>`) makes
    duplicate calls safe. The keeper can be restarted, replaced, or run
    redundantly with no side effect.
+
+When compactc exposes user-declared MIP-0002 event types, the log-map
+swaps to `emit` in a drop-in change on both sides.
 
 Failure mode: if the keeper dies, dividends stop accruing (but no funds
 are lost). When the keeper restarts, it replays missed events in order
