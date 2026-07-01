@@ -24,6 +24,7 @@ This repository contains the **canonical, on-chain source** for every contract P
 | [`producer-registry/producer-registry-v1.compact`](./producer-registry/producer-registry-v1.compact) | Council-gated registry of approved producers. Pre-flight check before any EBT mint. | ✅ **PRODUCTION** — *pilot-mock admins active* |
 | [`community-poll/community-poll-v2.compact`](./community-poll/community-poll-v2.compact) | KYC'd, Sybil-resistant community polls with witness-bound ZK voting. | ✅ **PRODUCTION** — deployed 2026-06-12, smoke-tested on-chain |
 | [`community-poll/community-poll.compact`](./community-poll/community-poll.compact) | Community Poll v1. No real ZK guarantees despite comments claiming otherwise. | ❌ **RESEARCH PREVIEW** — C-2 finding: unlimited Sybil voting. See [V2-SPEC](./community-poll/V2-SPEC.md). |
+| [`living-dividend/living-dividend-v1.compact`](./living-dividend/living-dividend-v1.compact) | Cumulative-points accumulator distributing a fraction of every EBT mint to every KYC-verified living member of the network. Downstream of EBT v7.1 via MIP-0002 event pattern. Claim-on-demand + graceful death filter (180-day inactivity threshold, 30-day prune grace). | 🛠️ **STAGED** — compile-clean on compactc 0.31.0 (full ZK). Awaits EBT v7.1 event patch and deploy ceremony. See [DESIGN](./living-dividend/DESIGN.md) and [DEPLOY-RUNBOOK](./living-dividend/DEPLOY-RUNBOOK.md). |
 
 ---
 

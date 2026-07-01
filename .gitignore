@@ -25,3 +25,6 @@ _drafts/
 *.key
 *.pem
 deployment.json
+
+CLAUDE.md
+

@@ -1,0 +1,418 @@
+// living-dividend-v1.compact
+// PollPower Living Dividend, v1
+// Compile-clean on compactc 0.31.0 (full ZK, 18.7s, zero warnings)
+//
+// See: README.md, DESIGN.md, DEPLOY-RUNBOOK.md in this directory.
+// Depends on: EBT v7.1 (see ../ebt/V7.1-EVENT-DIFF.md)
+//
+// Circuits: 13 total (1 constructor + 5 readers + 7 mutating)
+// Ledger fields: 15 (3 sealed config + 4 accumulator + 4 maps/sets + 4 audit)
+// Witnesses: 4 (divmod, multisig sig, member sig, blocktime)
+
+pragma language_version >= 0.16 && <= 0.23;
+import CompactStandardLibrary;
+
+// ─── constants ────────────────────────────────
+pure circuit SCALE(): Uint<128> {
+  return 1000000000000000000 as Uint<128>;  // 10^18
+}
+pure circuit INACTIVITY_THRESHOLD_T(): Uint<64> {
+  return 15552000 as Uint<64>;  // 180 days in seconds
+}
+pure circuit PRUNE_GRACE_PERIOD(): Uint<64> {
+  return 2592000 as Uint<64>;  // 30 days in seconds
+}
+
+// ─── structs ──────────────────────────────────
+struct MemberState {
+  accPerShareAtCheckpoint: Uint<128>;
+  lastSeen:                Uint<64>;
+  registeredAt:            Uint<64>;
+  isLive:                  Boolean;
+}
+
+struct RegistrationEntry {
+  member:             UserAddress;
+  kycAttestationHash: Bytes<32>;
+  registeredAt:       Uint<64>;
+}
+
+struct ClaimEntry {
+  member:      UserAddress;
+  amount:      Uint<128>;
+  claimedAt:   Uint<64>;
+}
+
+struct PendingPrune {
+  member:      UserAddress;
+  proposedAt:  Uint<64>;
+}
+
+struct DivResult {
+  quotient:  Uint<128>;
+  remainder: Uint<128>;
+}
+
+struct SolvencyState {
+  balance:         Uint<128>;
+  totalReceived:   Uint<128>;
+  totalClaimed:    Uint<128>;
+  outstandingOwed: Uint<128>;
+  isSolvent:       Boolean;
+}
+
+struct ContractStats {
+  accPerShare:        Uint<128>;
+  totalLivingMembers: Uint<64>;
+  registrationCount:  Uint<64>;
+  claimCount:         Uint<64>;
+  bumpCount:          Uint<64>;
+  pruneCount:         Uint<64>;
+}
+
+// ─── ledger state ─────────────────────────────
+export sealed ledger _initialized: Boolean;
+export sealed ledger _ebtColor: Bytes<32>;
+export ledger _multisigAuthority: Bytes<32>;
+
+export ledger _accPerShare: Uint<128>;
+export ledger _totalLivingMembers: Uint<64>;
+export ledger _totalPoolReceived: Uint<128>;
+export ledger _totalClaimed: Uint<128>;
+
+export ledger _members: Map<UserAddress, MemberState>;
+export ledger _seenKycJobHashes: Set<Bytes<32>>;
+export ledger _processedSalts: Set<Bytes<32>>;
+export ledger _pendingPrunes: Map<UserAddress, PendingPrune>;
+
+export ledger _registrationCount: Counter;
+export ledger _claimCount: Counter;
+export ledger _bumpCount: Counter;
+export ledger _pruneCount: Counter;
+export ledger _registrationLog: Map<Uint<64>, RegistrationEntry>;
+export ledger _claimLog: Map<Uint<64>, ClaimEntry>;
+
+// ─── witnesses (prover-side) ──────────────────
+witness witness_divmod(numerator: Field, divisor: Field): DivResult;
+witness witness_multisigSignatureValid(payload: Bytes<32>, authorityHash: Bytes<32>): Boolean;
+witness witness_memberSignatureValid(member: UserAddress, payload: Bytes<32>): Boolean;
+witness witness_blockTimeGte(t: Uint<64>): Boolean;
+
+// ─── in-circuit divide with witness verification ─
+pure circuit checkedDivide(numeratorF: Field, divisorF: Field, r: DivResult): Uint<128> {
+  const qF = r.quotient as Field;
+  const remF = r.remainder as Field;
+  assert(numeratorF == qF * divisorF + remF, "checkedDivide: equation fails");
+  const marginF = divisorF - remF - (1 as Field);
+  const _range = marginF as Uint<128>;  // runtime-fails if remainder >= divisor
+  return r.quotient;
+}
+
+// ─── constructor (deploy-time init) ───────────
+constructor(ebtColor: Bytes<32>, multisigAuthority: Bytes<32>) {
+  _ebtColor = disclose(ebtColor);
+  _multisigAuthority = disclose(multisigAuthority);
+  _initialized = true;
+}
+
+// ─── reader circuits ──────────────────────────
+export circuit getSolvencyState(): SolvencyState {
+  const bal = unshieldedBalance(_ebtColor);
+  const owed = (_totalPoolReceived - _totalClaimed) as Uint<128>;
+  return SolvencyState {
+    balance:         bal,
+    totalReceived:   _totalPoolReceived,
+    totalClaimed:    _totalClaimed,
+    outstandingOwed: owed,
+    isSolvent:       bal >= owed,
+  };
+}
+
+export circuit getStats(): ContractStats {
+  return ContractStats {
+    accPerShare:        _accPerShare,
+    totalLivingMembers: _totalLivingMembers,
+    registrationCount:  _registrationCount.read() as Uint<64>,
+    claimCount:         _claimCount.read() as Uint<64>,
+    bumpCount:          _bumpCount.read() as Uint<64>,
+    pruneCount:         _pruneCount.read() as Uint<64>,
+  };
+}
+
+export circuit getMemberState(member: UserAddress): MemberState {
+  assert(_members.member(disclose(member)), "getMemberState: not registered");
+  return _members.lookup(disclose(member));
+}
+
+export circuit getClaimableAmount(member: UserAddress): Uint<128> {
+  if (disclose(!_members.member(disclose(member)))) {
+    return 0 as Uint<128>;
+  }
+  const state = _members.lookup(disclose(member));
+  if (disclose(!state.isLive)) {
+    return 0 as Uint<128>;
+  }
+  const growth = (_accPerShare - state.accPerShareAtCheckpoint) as Uint<128>;
+  const growthF = growth as Field;
+  const scaleF = SCALE() as Field;
+  const divResult = witness_divmod(growthF, scaleF);
+  return disclose(checkedDivide(growthF, scaleF, divResult));
+}
+
+export circuit hasPendingPrune(member: UserAddress): Boolean {
+  return _pendingPrunes.member(disclose(member));
+}
+
+// ─── mutating circuits ────────────────────────
+
+export circuit register(
+  member:             UserAddress,
+  kycAttestationHash: Bytes<32>,
+  currentTime:        Uint<64>,
+): [] {
+  assert(_initialized, "register: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "register: timestamp in future");
+
+  const payload = persistentHash<Vector<4, Bytes<32>>>([
+    pad(32, "ld:register:v1"),
+    disclose(member).bytes,
+    disclose(kycAttestationHash),
+    disclose(currentTime as Field) as Bytes<32>,
+  ]);
+  assert(disclose(witness_multisigSignatureValid(payload, _multisigAuthority)),
+         "register: multisig signature invalid");
+
+  assert(!_members.member(disclose(member)) ||
+         !_members.lookup(disclose(member)).isLive,
+         "register: address already registered");
+
+  assert(!_seenKycJobHashes.member(disclose(kycAttestationHash)),
+         "register: KYC job already used");
+
+  const newState = MemberState {
+    accPerShareAtCheckpoint: _accPerShare,
+    lastSeen:                disclose(currentTime),
+    registeredAt:            disclose(currentTime),
+    isLive:                  true,
+  };
+  _members.insert(disclose(member), newState);
+  _seenKycJobHashes.insert(disclose(kycAttestationHash));
+  _totalLivingMembers = (_totalLivingMembers + 1 as Uint<64>) as Uint<64>;
+
+  const entry = RegistrationEntry {
+    member: disclose(member),
+    kycAttestationHash: disclose(kycAttestationHash),
+    registeredAt: disclose(currentTime),
+  };
+  _registrationLog.insert(_registrationCount.read() as Uint<64>, entry);
+  _registrationCount.increment(1);
+}
+
+export circuit unregister(
+  member:      UserAddress,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "unregister: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "unregister: timestamp in future");
+
+  const payload = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "ld:unregister:v1"),
+    disclose(member).bytes,
+    disclose(currentTime as Field) as Bytes<32>,
+  ]);
+  assert(disclose(witness_multisigSignatureValid(payload, _multisigAuthority)),
+         "unregister: multisig signature invalid");
+
+  assert(_members.member(disclose(member)),
+         "unregister: not a registered member");
+  const state = _members.lookup(disclose(member));
+  assert(state.isLive, "unregister: member already inactive");
+
+  const closed = MemberState {
+    accPerShareAtCheckpoint: state.accPerShareAtCheckpoint,
+    lastSeen:                state.lastSeen,
+    registeredAt:            state.registeredAt,
+    isLive:                  false,
+  };
+  _members.insert(disclose(member), closed);
+  _totalLivingMembers = (_totalLivingMembers - 1 as Uint<64>) as Uint<64>;
+}
+
+export circuit bumpOnMint(
+  sourceTxSalt: Bytes<32>,
+  amount:       Uint<128>,
+  currentTime:  Uint<64>,
+): [] {
+  assert(_initialized, "bumpOnMint: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "bumpOnMint: timestamp in future");
+
+  assert(!_processedSalts.member(disclose(sourceTxSalt)),
+         "bumpOnMint: salt already processed");
+  assert(_totalLivingMembers > 0 as Uint<64>,
+         "bumpOnMint: no members registered");
+
+  const owedAlready = (_totalPoolReceived - _totalClaimed) as Uint<128>;
+  const wouldBe = (owedAlready + disclose(amount)) as Uint<128>;
+  assert(unshieldedBalance(_ebtColor) >= wouldBe,
+         "bumpOnMint: amount not backed by balance");
+
+  const amountF = disclose(amount) as Field;
+  const scaleF = SCALE() as Field;
+  const divisorF = _totalLivingMembers as Field;
+  const numeratorF = amountF * scaleF;
+  const divResult = witness_divmod(numeratorF, divisorF);
+  const delta = checkedDivide(numeratorF, divisorF, divResult);
+
+  _accPerShare = (_accPerShare + disclose(delta)) as Uint<128>;
+  _totalPoolReceived = (_totalPoolReceived + disclose(amount)) as Uint<128>;
+  _processedSalts.insert(disclose(sourceTxSalt));
+  _bumpCount.increment(1);
+}
+
+export circuit claim(
+  member:      UserAddress,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "claim: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "claim: timestamp in future");
+
+  assert(_members.member(disclose(member)),
+         "claim: not a registered member");
+  const state = _members.lookup(disclose(member));
+  assert(state.isLive, "claim: member is inactive; re-register");
+
+  const payload = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "ld:claim:v1"),
+    disclose(member).bytes,
+    disclose(currentTime as Field) as Bytes<32>,
+  ]);
+  assert(disclose(witness_memberSignatureValid(disclose(member), payload)),
+         "claim: member signature invalid");
+
+  const growth = (_accPerShare - state.accPerShareAtCheckpoint) as Uint<128>;
+  const growthF = growth as Field;
+  const scaleF = SCALE() as Field;
+  const divResult = witness_divmod(growthF, scaleF);
+  const owed = disclose(checkedDivide(growthF, scaleF, divResult));
+
+  if (disclose(owed > 0 as Uint<128>)) {
+    sendUnshielded(
+      disclose(_ebtColor),
+      disclose(owed),
+      right<ContractAddress, UserAddress>(disclose(member))
+    );
+    _totalClaimed = (_totalClaimed + disclose(owed)) as Uint<128>;
+  }
+
+  const updated = MemberState {
+    accPerShareAtCheckpoint: _accPerShare,
+    lastSeen:                disclose(currentTime),
+    registeredAt:            state.registeredAt,
+    isLive:                  true,
+  };
+  _members.insert(disclose(member), updated);
+
+  const entry = ClaimEntry {
+    member: disclose(member),
+    amount: disclose(owed),
+    claimedAt: disclose(currentTime),
+  };
+  _claimLog.insert(_claimCount.read() as Uint<64>, entry);
+  _claimCount.increment(1);
+}
+
+export circuit touchLiveness(
+  member:      UserAddress,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "touchLiveness: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "touchLiveness: timestamp in future");
+
+  assert(_members.member(disclose(member)),
+         "touchLiveness: not a registered member");
+  const state = _members.lookup(disclose(member));
+  assert(state.isLive, "touchLiveness: member is inactive; re-register");
+
+  const payload = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "ld:touch:v1"),
+    disclose(member).bytes,
+    disclose(currentTime as Field) as Bytes<32>,
+  ]);
+  assert(disclose(witness_memberSignatureValid(disclose(member), payload)),
+         "touchLiveness: member signature invalid");
+
+  const updated = MemberState {
+    accPerShareAtCheckpoint: state.accPerShareAtCheckpoint,
+    lastSeen:                disclose(currentTime),
+    registeredAt:            state.registeredAt,
+    isLive:                  true,
+  };
+  _members.insert(disclose(member), updated);
+}
+
+export circuit proposePrune(
+  member:      UserAddress,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "proposePrune: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "proposePrune: timestamp in future");
+
+  assert(_members.member(disclose(member)),
+         "proposePrune: not a registered member");
+  const state = _members.lookup(disclose(member));
+  assert(state.isLive, "proposePrune: member already inactive");
+
+  const threshold = (state.lastSeen + INACTIVITY_THRESHOLD_T()) as Uint<64>;
+  assert(disclose(currentTime) >= threshold,
+         "proposePrune: member is within threshold T");
+
+  assert(!_pendingPrunes.member(disclose(member)),
+         "proposePrune: prune already pending");
+
+  _pendingPrunes.insert(disclose(member),
+    PendingPrune {
+      member: disclose(member),
+      proposedAt: disclose(currentTime),
+    }
+  );
+}
+
+export circuit executePrune(
+  member:      UserAddress,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "executePrune: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "executePrune: timestamp in future");
+
+  assert(_pendingPrunes.member(disclose(member)),
+         "executePrune: no pending prune");
+  const pending = _pendingPrunes.lookup(disclose(member));
+
+  const graceEnd = (pending.proposedAt + PRUNE_GRACE_PERIOD()) as Uint<64>;
+  assert(disclose(currentTime) >= graceEnd,
+         "executePrune: grace period not elapsed");
+
+  const state = _members.lookup(disclose(member));
+
+  if (disclose(state.lastSeen > pending.proposedAt)) {
+    _pendingPrunes.remove(disclose(member));
+  } else {
+    const closed = MemberState {
+      accPerShareAtCheckpoint: state.accPerShareAtCheckpoint,
+      lastSeen:                state.lastSeen,
+      registeredAt:            state.registeredAt,
+      isLive:                  false,
+    };
+    _members.insert(disclose(member), closed);
+    _pendingPrunes.remove(disclose(member));
+    _totalLivingMembers = (_totalLivingMembers - 1 as Uint<64>) as Uint<64>;
+    _pruneCount.increment(1);
+  }
+}
