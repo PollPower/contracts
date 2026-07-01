@@ -20,15 +20,41 @@
 //
 //   * NEW: `_livingDividendAddress: Maybe<ContractAddress>` — nullable pointer
 //     to the LD contract. Default is `none` at deploy; when set (via multisig),
-//     `claimSplit(dividend)` emits a `DividendMinted` event that the LD keeper
+//     `claimSplit(dividend)` writes a DividendMintedEntry that the LD keeper
 //     consumes to update its accumulator.
 //
-//   * NEW: `setLivingDividendAddress(addr, currentTime)` — owner-gated setter
-//     for the LD pointer. L-3 timestamp validation. When set, subsequent
-//     dividend-slice claims emit the event.
+//   * NEW: `_multisigAuthority: Bytes<32>` — SHA-256 hash of the sorted admin
+//     ring pubkeys. Set at initialize(). Gates LD-binding operations
+//     independent of the single-key `_owner`. Matches ADR-002 pattern; wired
+//     to the same `verifyMultisigBundle` off-chain helper the LD contract uses.
 //
-//   * NEW: `clearLivingDividendAddress(currentTime)` — owner-gated "emergency
-//     disable" that clears the pointer back to `none`. Same pattern.
+//   * NEW: `setLivingDividendAddress(addr, currentTime)` — multisig-gated
+//     setter (owner NOT sufficient). Requires a valid 3-of-5 bundle over the
+//     signed payload, verified via the new `multisig_signature_valid` witness.
+//     L-3 timestamp validation preserved.
+//
+//   * NEW: `clearLivingDividendAddress(currentTime)` — multisig-gated
+//     "emergency disable" that clears the pointer back to `none`.
+//
+//   * NEW: `witness multisig_signature_valid(payload, authorityHash): Boolean`
+//     — shared with the LD contract. Off-chain the prover populates a
+//     MultisigBundle in private state; the witness verifies threshold-of-N
+//     Ed25519 sigs and the ring-hash membership check. Contract asserts the
+//     result.
+//
+// SECURITY MODEL FOR PRIVILEGED OPERATIONS (v7.1)
+//
+//   Owner (single key)   — attests producers, sets meter authority, transfers
+//                          ownership. Same as v7. Signs manualReissue too.
+//
+//   Multisig authority   — gates LD-binding setters (setLivingDividendAddress,
+//                          clearLivingDividendAddress) via 3-of-5 signatures
+//                          over the payload. Independent of owner. Rotatable
+//                          separately from owner rotation.
+//
+// This split lets us test the full multisig ceremony flow on Preview with
+// mock keys today, and rotate to real Tangem rings before mainnet without
+// touching the owner key at the same time.
 //
 //   * NEW: `_dividendEventSeq: Counter` — monotone counter driving unique
 //     salt derivation for dividend-log entries (matches LD's `_processedSalts`).
@@ -60,7 +86,7 @@
 //
 // =============================================================================
 
-pragma language_version >= 0.16 && <= 0.22;
+pragma language_version >= 0.16 && <= 0.23;
 
 import CompactStandardLibrary;
 
@@ -72,6 +98,17 @@ witness signature_valid(
   pubkey: Bytes<32>,
   messageHash: Bytes<32>,
   signature: Bytes<64>,
+): Boolean;
+
+// v7.1: multisig-bundle witness. Prover populates a MultisigBundle in private
+// state; off-chain the shared verifyMultisigBundle helper checks:
+//   1. SHA-256(sortedSigners) == authorityHash  (ring membership)
+//   2. at least `threshold` Ed25519 sigs valid over `payload`
+// Contract asserts the result. Shared shape with the LD contract (see
+// living-dividend/witnesses.ts).
+witness multisig_signature_valid(
+  payload:       Bytes<32>,
+  authorityHash: Bytes<32>,
 ): Boolean;
 
 // =============================================================================
@@ -120,6 +157,9 @@ struct DividendMintedEntry {
 export ledger _initialized: Boolean;
 export ledger _owner: Either<ZswapCoinPublicKey, ContractAddress>;
 export ledger _meterAuthorityPubkey: Bytes<32>;
+// v7.1: multisig-authority hash (SHA-256 of sorted admin ring pubkeys).
+// Gates LD-binding setters via the shared multisig_signature_valid witness.
+export ledger _multisigAuthority: Bytes<32>;
 
 export ledger _totalSupply: Uint<128>;
 export ledger _totalRedeemed: Uint<128>;
@@ -191,6 +231,7 @@ circuit ebtColor(): Bytes<32> {
 
 export circuit initialize(
   meterAuthorityPubkey: Bytes<32>,
+  multisigAuthorityHash: Bytes<32>,
   operationsRecipient: UserAddress,
   dividendRecipient: UserAddress,
   daoRecipient: UserAddress,
@@ -206,6 +247,7 @@ export circuit initialize(
   _initialized = disclose(true);
   _owner = disclose(callerAcc);
   _meterAuthorityPubkey = disclose(meterAuthorityPubkey);
+  _multisigAuthority = disclose(multisigAuthorityHash);
 
   _bpsProducer = 8696 as Uint<16>;
   _bpsOperations = 870 as Uint<16>;
@@ -240,28 +282,62 @@ export circuit setMeterAuthority(newAuthorityPubkey: Bytes<32>): [] {
   _meterAuthorityPubkey = disclose(newAuthorityPubkey);
 }
 
-// v7.1: bind the Living Dividend contract address. Owner-gated (in the
-// production deployment this is the multisig owner per ADR-002). L-3 hardened.
+// v7.1: multisig-gated LD binding.
+//
+// NOT owner-gated — owner cannot bind LD alone. Requires a valid 3-of-5
+// multisig bundle over the signed payload. Payload includes a domain-
+// separator string, the target address bytes, and the currentTime; the
+// same shape is reconstructed off-chain when building the bundle so any
+// off-chain tampering of any field invalidates the signature check.
+//
+// The multisig_signature_valid witness delegates to the shared
+// verifyMultisigBundle helper (see living-dividend/witnesses.ts). Same
+// helper, same mock keys today, same real-ring keys after registration.
 export circuit setLivingDividendAddress(
   addr: ContractAddress,
   currentTime: Uint<64>,
 ): [] {
-  assertOnlyOwner();
+  assertInitialized();
   assert(disclose(blockTimeGte(disclose(currentTime))),
          "timestamp cannot be in the future");
+
+  const domainSep = pad(32, "ebt:v7.1:setLD");
+  const timeBytes = (disclose(currentTime) as Field) as Bytes<32>;
+  const payload = persistentHash<Vector<3, Bytes<32>>>([
+    domainSep,
+    disclose(addr).bytes,
+    timeBytes,
+  ]);
+  assert(
+    disclose(multisig_signature_valid(payload, _multisigAuthority)),
+    "setLivingDividendAddress: multisig signature invalid"
+  );
+
   _livingDividendAddress = some<ContractAddress>(disclose(addr));
 }
 
-// v7.1: emergency disable. Clears LD pointer back to none; subsequent
-// claimSplit(dividend) calls stop emitting the event. Dividend slice still
-// mints to _dividendRecipient (the placeholder/holding wallet) exactly as v7
-// behaved before LD was bound.
+// v7.1: emergency disable. Multisig-gated; clears LD pointer back to none.
+// Subsequent claimSplit(dividend) calls stop writing DividendMintedEntry.
+// Dividend slice still mints to _dividendRecipient (the placeholder/holding
+// wallet) exactly as v7 behaved before LD was bound.
 export circuit clearLivingDividendAddress(
   currentTime: Uint<64>,
 ): [] {
-  assertOnlyOwner();
+  assertInitialized();
   assert(disclose(blockTimeGte(disclose(currentTime))),
          "timestamp cannot be in the future");
+
+  const domainSep = pad(32, "ebt:v7.1:clearLD");
+  const timeBytes = (disclose(currentTime) as Field) as Bytes<32>;
+  const payload = persistentHash<Vector<2, Bytes<32>>>([
+    domainSep,
+    timeBytes,
+  ]);
+  assert(
+    disclose(multisig_signature_valid(payload, _multisigAuthority)),
+    "clearLivingDividendAddress: multisig signature invalid"
+  );
+
   _livingDividendAddress = none<ContractAddress>();
 }
 
