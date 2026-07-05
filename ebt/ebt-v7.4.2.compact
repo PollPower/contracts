@@ -1,0 +1,800 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPower EBT Token v7.4 — unshielded, contract-minted ledger token
+//                            with LD ledger-log AND multisig-rotatable
+//                            dividend recipient.
+//
+// Author: PollPower
+// Date:   2026-07-04
+// Design: living-dividend/DESIGN.md, memory/2026-07-02-e2e-smoke.md
+//         (Option D pivot), ADR-018, ADR-019, ADR-002.
+//         contracts/dev/PHASE2-DOMAIN-BIND-DESIGN.md (LD-1).
+// Base:   EBT v7.3 (contracts/dev/ebt-v7.3/, vendored reference).
+// Toolchain: compactc 0.30.0, language 0.22.0, runtime 0.15.0.
+//
+// =============================================================================
+// WHAT CHANGES FROM V7.3 (Phase 2 — LD-1 + authority rotation)
+// =============================================================================
+//
+// Audit finding LD-1: dividend salt in claimSplit(dividend) was derived from
+// _dividendEventSeq alone (plus domain pad). On EBT redeploy the counter
+// resets → salts repeat → a rebound LD silently drops bumpOnMint.
+//
+// v7.4 binds this contract's identity into the salt:
+//   persistentHash([pad("pollpower:dividend:v7.4"), kernel.self().bytes, seq])
+//
+// Field order (keeper/off-chain mirror must match): domain-label, self-bytes,
+// seq-bytes. Vector<3, Bytes<32>>.
+//
+// NEW (H-1 prep): `setMultisigAuthority` — multisig-gated in-place rotation
+// of `_multisigAuthority`. Sitting council signs succession over a self-bound
+// payload with strict-monotonic nonce. Enables Tangem swap without redeploy.
+// Domain: "ebt:v7.4:rotateAuth"; Vector<5> field order:
+//   [domain, self, newAuthHash, nonce, time].
+//
+// UNCHANGED in v7.4: ebtColor token domain ("pollpower:ebt:v7:epoch1" — token
+// type / fungibility), multisig payload domains (ebt:v7.3:setLD etc. — Phase 2
+// LD-3 job), all other circuits bit-for-bit v7.3.
+//
+// =============================================================================
+// WHAT CHANGES FROM V7.1
+// =============================================================================
+//
+// v7.2 attempted to mint the dividend slice directly into the LD contract's
+// unshielded balance via `left<ContractAddress, UserAddress>(ld)`. That
+// approach compiles + deploys but is rejected at the Substrate transaction
+// pool with `Custom error: 186` because Midnight's runtime does not yet
+// support unshielded token mint/send to contract addresses (same C2C
+// limitation that killed EBT v6 Option A).
+//
+// v7.3 pivots to Option D from memory/2026-07-02-e2e-smoke.md:
+//   - dividend slice keeps minting to a UserAddress recipient
+//     (`_dividendRecipient`) as v7.1 does
+//   - v7.1 ALREADY writes DividendMintedEntry to _dividendMintedLog
+//   - the recipient is now a THRESHOLD-CUSTODIED WALLET (LD-pool)
+//     controlled off-chain by the admin ring via app-side Shamir Secret
+//     Sharing (design in living-dividend/DESIGN.md §Option-D)
+//   - claims accrue in the LD contract as PendingClaim entries; a batch
+//     payer service submits them from LD-pool after multisig approval
+//
+// The only Compact-level change from v7.1 is a new multisig-gated setter:
+//   * NEW: `setDividendRecipient(addr, currentTime)` — multisig-gated
+//     (owner NOT sufficient). Same signed-payload pattern as
+//     setLivingDividendAddress. Payload includes a domain separator
+//     `"ebt:v7.3:setDivRecip"` so signatures for this operation cannot
+//     be replayed against setLivingDividendAddress (different domain).
+//     L-3 timestamp validation preserved.
+//
+// This setter lets us:
+//   * Retarget the dividend slice as LD-pool wallet rotates
+//   * Emergency-disable a compromised LD-pool (retarget to a treasury
+//     placeholder while a replacement is provisioned)
+//   * Migrate to a future C2C-supporting design without redeploying v7
+//
+// EVERYTHING ELSE FROM V7.1 IS UNCHANGED. Settle, claimSplit, redeem,
+// manualReissue, attestations, ownership, setLivingDividendAddress —
+// bit-for-bit v7.1.
+//
+// =============================================================================
+// WHAT CHANGES FROM V7
+// =============================================================================
+//
+// v7.1 is a minimal amendment to v7 to enable the Living Dividend downstream
+// contract. Contract-to-contract calls are not yet supported in Compact, so we
+// use the MIP-0002 event pattern (landed in midnight-js on 2026-06-30):
+//
+//   * NEW: `_livingDividendAddress: Maybe<ContractAddress>` — nullable pointer
+//     to the LD contract. Default is `none` at deploy; when set (via multisig),
+//     `claimSplit(dividend)` writes a DividendMintedEntry that the LD keeper
+//     consumes to update its accumulator.
+//
+//   * NEW: `_multisigAuthority: Bytes<32>` — SHA-256 hash of the sorted admin
+//     ring pubkeys. Set at initialize(). Gates LD-binding operations
+//     independent of the single-key `_owner`. Matches ADR-002 pattern; wired
+//     to the same `verifyMultisigBundle` off-chain helper the LD contract uses.
+//
+//   * NEW: `setLivingDividendAddress(addr, currentTime)` — multisig-gated
+//     setter (owner NOT sufficient). Requires a valid 3-of-5 bundle over the
+//     signed payload, verified via the new `multisig_signature_valid` witness.
+//     L-3 timestamp validation preserved.
+//
+//   * NEW: `clearLivingDividendAddress(currentTime)` — multisig-gated
+//     "emergency disable" that clears the pointer back to `none`.
+//
+//   * NEW: `witness multisig_signature_valid(payload, authorityHash): Boolean`
+//     — shared with the LD contract. Off-chain the prover populates a
+//     MultisigBundle in private state; the witness verifies threshold-of-N
+//     Ed25519 sigs and the ring-hash membership check. Contract asserts the
+//     result.
+//
+// SECURITY MODEL FOR PRIVILEGED OPERATIONS (v7.1)
+//
+//   Owner (single key)   — attests producers, sets meter authority, transfers
+//                          ownership. Same as v7. Signs manualReissue too.
+//
+//   Multisig authority   — gates LD-binding setters (setLivingDividendAddress,
+//                          clearLivingDividendAddress) via 3-of-5 signatures
+//                          over the payload. Independent of owner. Rotatable
+//                          separately from owner rotation.
+//
+// This split lets us test the full multisig ceremony flow on Preview with
+// mock keys today, and rotate to real Tangem rings before mainnet without
+// touching the owner key at the same time.
+//
+//   * NEW: `_dividendEventSeq: Counter` — monotone counter driving unique
+//     salt derivation for dividend-log entries (matches LD's `_processedSalts`).
+//
+//   * NEW: `_dividendMintedLog: Map<Uint<64>, DividendMintedEntry>` — public
+//     ledger log of dividend-mint records. LD's keeper subscribes to changes
+//     in this map via the indexer and calls LD.bumpOnMint for each new entry.
+//     Semantically equivalent to a MIP-0002 `emit`, but implemented as a
+//     writable ledger Map because user-declared event *types* are not yet
+//     exposed by compactc 0.31.0 (MIP-0002 in midnight-js 5.0.0-alpha exposes
+//     the *reader* side; the *writer* side landed for stdlib event types like
+//     `UnshieldedMint` but not yet for user-declared ones). Ledger-log gives
+//     us the same keeper subscription with today's toolchain.
+//
+//   * NEW: `_dividendMintedLog.insert(seq, DividendMintedEntry { ... })`
+//     inside `claimSplit(kind=1)` — the dividend branch. Salt is derived
+//     from the sequence counter so it's unforgeable and unique per record.
+//
+// EVERYTHING ELSE FROM V7 IS UNCHANGED. Producer settle, ops split, DAO split,
+// redemption, manual reissue, attestation, ownership — bit-for-bit v7. v7.1
+// with `_livingDividendAddress = none` is functionally identical to v7. This
+// means:
+//
+//   1. Zero-risk migration path: deploy v7.1 with pointer unset, verify settle
+//      behaves like v7, then multisig-bind the LD address in a separate tx.
+//
+//   2. If v7.1 has a bug, revert to v7 with no data loss. Producers, consumers,
+//      ops, DAO paths are all unaffected.
+//
+// =============================================================================
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Witnesses
+// =============================================================================
+
+witness signature_valid(
+  pubkey: Bytes<32>,
+  messageHash: Bytes<32>,
+  signature: Bytes<64>,
+): Boolean;
+
+// v7.1: multisig-bundle witness. Prover populates a MultisigBundle in private
+// state; off-chain the shared verifyMultisigBundle helper checks:
+//   1. SHA-256(sortedSigners) == authorityHash  (ring membership)
+//   2. at least `threshold` Ed25519 sigs valid over `payload`
+// Contract asserts the result. Shared shape with the LD contract (see
+// living-dividend/witnesses.ts).
+witness multisig_signature_valid(
+  payload:       Bytes<32>,
+  authorityHash: Bytes<32>,
+): Boolean;
+
+// =============================================================================
+// Structs
+// =============================================================================
+
+struct AttestationStatus {
+  active: Boolean,
+  attestedAt: Uint<64>,
+  revokedAt: Uint<64>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+}
+
+struct ReissuanceEntry {
+  producer: Bytes<32>,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  reissuedAt: Uint<64>,
+}
+
+struct RedemptionEntry {
+  redeemer:   Bytes<32>,
+  amount:     Uint<128>,
+  payoutRef:  Bytes<32>,
+  redeemedAt: Uint<64>,
+}
+
+// v7.1 ledger-log entry: written to _dividendMintedLog when dividend slice
+// mints to LD. The Living Dividend keeper subscribes to this map's growth via
+// the indexer and calls LD.bumpOnMint(sourceTxSalt, amount, currentTime) for
+// each new entry.
+struct DividendMintedEntry {
+  sourceTxSalt: Bytes<32>,
+  amount:       Uint<128>,
+  recipient:    ContractAddress,
+  blockTime:    Uint<64>,
+  epochColor:   Bytes<32>,
+}
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+export ledger _initialized: Boolean;
+export ledger _owner: Either<ZswapCoinPublicKey, ContractAddress>;
+export ledger _meterAuthorityPubkey: Bytes<32>;
+// v7.1: multisig-authority hash (SHA-256 of sorted admin ring pubkeys).
+// Gates LD-binding setters via the shared multisig_signature_valid witness.
+export ledger _multisigAuthority: Bytes<32>;
+// Strict-monotonic nonce for setMultisigAuthority replay protection.
+export ledger _authorityRotationNonce: Counter;
+
+export ledger _totalSupply: Uint<128>;
+export ledger _totalRedeemed: Uint<128>;
+
+export ledger settlementCount: Counter;
+export ledger _settledSessions: Set<Bytes<32>>;
+
+export ledger _bpsProducer: Uint<16>;
+export ledger _bpsOperations: Uint<16>;
+export ledger _bpsDividend: Uint<16>;
+export ledger _bpsDao: Uint<16>;
+
+export ledger _operationsRecipient: UserAddress;
+export ledger _dividendRecipient: UserAddress;
+export ledger _daoRecipient: UserAddress;
+
+export ledger producerAttestations: Map<Bytes<32>, AttestationStatus>;
+
+export ledger reissuanceCount: Counter;
+export ledger reissuanceLog: Map<Uint<64>, ReissuanceEntry>;
+export ledger _lastReissueTime: Uint<64>;
+
+export ledger _redemptionCount: Counter;
+export ledger _redemptionLog: Map<Uint<64>, RedemptionEntry>;
+
+export ledger _pendingOps: Uint<128>;
+export ledger _pendingDiv: Uint<128>;
+export ledger _pendingDao: Uint<128>;
+export ledger _splitClaimCount: Counter;
+
+// v7.1 additions:
+// Nullable pointer to the Living Dividend contract. When `some`, claimSplit
+// for the dividend kind emits a DividendMinted event bound to that address.
+export ledger _livingDividendAddress: Maybe<ContractAddress>;
+
+// Monotone counter used to derive unique salts for DividendMintedEntry
+// records. LD's _processedSalts Set gives idempotency; this counter ensures
+// uniqueness.
+export ledger _dividendEventSeq: Counter;
+
+// Public log of dividend-mint records. Keepers watch this map and call
+// LD.bumpOnMint for each new entry. Semantically equivalent to a MIP-0002
+// emit; ledger-based because user-declared event types aren't yet exposed by
+// compactc 0.31.0. Any indexer that watches contract state can subscribe.
+export ledger _dividendMintedLog: Map<Uint<64>, DividendMintedEntry>;
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+circuit assertInitialized(): [] {
+  assert(_initialized, "Not initialized");
+}
+
+circuit assertOnlyOwner(): [] {
+  assertInitialized();
+  assert(_owner.is_left, "Owner is contract address; not supported");
+  const caller = ownPublicKey();
+  assert(caller == _owner.left, "Only owner");
+}
+
+circuit ebtColor(): Bytes<32> {
+  // TOKEN TYPE domain — intentionally NOT bumped to v7.4. Changing this
+  // string changes the unshielded token color and breaks fungibility with
+  // existing Preview EBT. LD-1 only touches the dividend-salt domain label.
+  return tokenType(pad(32, "pollpower:ebt:v7:epoch1"), kernel.self());
+}
+
+// =============================================================================
+// Initialization
+// =============================================================================
+
+export circuit initialize(
+  meterAuthorityPubkey: Bytes<32>,
+  multisigAuthorityHash: Bytes<32>,
+  operationsRecipient: UserAddress,
+  dividendRecipient: UserAddress,
+  daoRecipient: UserAddress,
+): [] {
+  assert(!_initialized, "Already initialized");
+  const callerKey = ownPublicKey();
+  const callerAcc = Either<ZswapCoinPublicKey, ContractAddress> {
+    is_left: true,
+    left: callerKey,
+    right: default<ContractAddress>,
+  };
+
+  _initialized = disclose(true);
+  _owner = disclose(callerAcc);
+  _meterAuthorityPubkey = disclose(meterAuthorityPubkey);
+  _multisigAuthority = disclose(multisigAuthorityHash);
+
+  _bpsProducer = 8696 as Uint<16>;
+  _bpsOperations = 870 as Uint<16>;
+  _bpsDividend = 186 as Uint<16>;
+  _bpsDao = 248 as Uint<16>;
+
+  _operationsRecipient = disclose(operationsRecipient);
+  _dividendRecipient = disclose(dividendRecipient);
+  _daoRecipient = disclose(daoRecipient);
+
+  _lastReissueTime = 0 as Uint<64>;
+
+  // v7.1: LD pointer starts unset. Multisig binds it later via
+  // setLivingDividendAddress once the LD contract is deployed.
+  _livingDividendAddress = none<ContractAddress>();
+}
+
+// =============================================================================
+// Owner-only operations
+// =============================================================================
+
+// v7.4.2: transferOwnership + setMeterAuthority merged into one owner-gated
+// circuit (block-size fit). op 0 = transferOwnership, op 1 = setMeterAuthority.
+// Owner gate identical to the original circuits; no signature payloads involved.
+export circuit execOwnerOp(
+  op: Uint<8>,
+  newOwner: Either<ZswapCoinPublicKey, ContractAddress>,
+  newAuthorityPubkey: Bytes<32>,
+): [] {
+  assertOnlyOwner();
+  const k = disclose(op);
+  if (k == 0 as Uint<8>) {
+    assert(newOwner.is_left, "owner must be a public key, not contract address");
+    _owner = disclose(newOwner);
+  } else {
+    assert(k == 1 as Uint<8>, "execOwnerOp: bad op");
+    _meterAuthorityPubkey = disclose(newAuthorityPubkey);
+  }
+}
+
+// v7.1: multisig-gated LD binding.
+//
+// NOT owner-gated — owner cannot bind LD alone. Requires a valid 3-of-5
+// multisig bundle over the signed payload. Payload includes a domain-
+// separator string, the target address bytes, and the currentTime; the
+// same shape is reconstructed off-chain when building the bundle so any
+// off-chain tampering of any field invalidates the signature check.
+//
+// The multisig_signature_valid witness delegates to the shared
+// verifyMultisigBundle helper (see living-dividend/witnesses.ts). Same
+// helper, same mock keys today, same real-ring keys after registration.
+//
+// v7.4.2: ALL FOUR multisig-gated operations merged into ONE exported
+// circuit to fit the deploy-tx block limit (error 1010). Each op branch
+// computes its ORIGINAL payload hash with its ORIGINAL domain label —
+// bit-identical to v7.3/v7.4 — so existing off-chain bundle builders are
+// unchanged; only the circuit-call site changes.
+//
+//   op 0 = setLivingDividendAddress   ("ebt:v7.3:setLD",       Vector<3>)
+//   op 1 = clearLivingDividendAddress ("ebt:v7.3:clearLD",     Vector<2>)
+//   op 2 = setDividendRecipient       ("ebt:v7.3:setDivRecip", Vector<3>)
+//   op 3 = setMultisigAuthority       ("ebt:v7.4:rotateAuth",  Vector<5>)
+//
+// Unused typed params for a given op are ignored (pass defaults off-chain).
+// Distinct domain separators keep bundles non-interchangeable across ops —
+// no privilege collapse: every branch requires a valid multisig bundle.
+export circuit execMultisigOp(
+  op:               Uint<8>,
+  ldAddr:           ContractAddress,
+  newRecipient:     UserAddress,
+  newAuthorityHash: Bytes<32>,
+  nonceIn:          Uint<64>,
+  currentTime:      Uint<64>,
+): [] {
+  assertInitialized();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "execMultisigOp: timestamp cannot be in the future");
+
+  const k = disclose(op);
+  const timeBytes = (disclose(currentTime) as Field) as Bytes<32>;
+
+  if (k == 0 as Uint<8>) {
+    const payload = persistentHash<Vector<3, Bytes<32>>>([
+      pad(32, "ebt:v7.3:setLD"),
+      disclose(ldAddr).bytes,
+      timeBytes,
+    ]);
+    assert(
+      disclose(multisig_signature_valid(payload, _multisigAuthority)),
+      "setLivingDividendAddress: multisig signature invalid"
+    );
+    _livingDividendAddress = some<ContractAddress>(disclose(ldAddr));
+  } else {
+    if (k == 1 as Uint<8>) {
+      const payload = persistentHash<Vector<2, Bytes<32>>>([
+        pad(32, "ebt:v7.3:clearLD"),
+        timeBytes,
+      ]);
+      assert(
+        disclose(multisig_signature_valid(payload, _multisigAuthority)),
+        "clearLivingDividendAddress: multisig signature invalid"
+      );
+      _livingDividendAddress = none<ContractAddress>();
+    } else {
+      if (k == 2 as Uint<8>) {
+        const payload = persistentHash<Vector<3, Bytes<32>>>([
+          pad(32, "ebt:v7.3:setDivRecip"),
+          disclose(newRecipient).bytes,
+          timeBytes,
+        ]);
+        assert(
+          disclose(multisig_signature_valid(payload, _multisigAuthority)),
+          "setDividendRecipient: multisig signature invalid"
+        );
+        _dividendRecipient = disclose(newRecipient);
+      } else {
+        assert(k == 3 as Uint<8>, "execMultisigOp: bad op");
+
+        const zeroAuth = pad(32, "");
+        const disclosedNew = disclose(newAuthorityHash);
+        assert(disclosedNew != zeroAuth,
+               "setMultisigAuthority: zero hash rejected");
+        assert(disclosedNew != _multisigAuthority,
+               "setMultisigAuthority: no-op rotation");
+
+        const expectedNonce = (_authorityRotationNonce.read() + 1 as Uint<64>) as Uint<64>;
+        assert(disclose(nonceIn) == expectedNonce,
+               "setMultisigAuthority: invalid nonce");
+
+        const selfBytes = disclose(kernel.self()).bytes;
+        const nonceBytes = (disclose(nonceIn) as Field) as Bytes<32>;
+        const payload = persistentHash<Vector<5, Bytes<32>>>([
+          pad(32, "ebt:v7.4:rotateAuth"),
+          selfBytes,
+          disclosedNew,
+          nonceBytes,
+          timeBytes,
+        ]);
+        assert(
+          disclose(multisig_signature_valid(payload, _multisigAuthority)),
+          "setMultisigAuthority: multisig signature invalid"
+        );
+
+        _multisigAuthority = disclosedNew;
+        _authorityRotationNonce.increment(1);
+      }
+    }
+  }
+}
+
+// =============================================================================
+// Producer attestation (unchanged from v7)
+// =============================================================================
+
+export circuit attestProducerOwnership(
+  attestationKey: Bytes<32>,
+  producerBytes: Bytes<32>,
+  meterKeyHash: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+
+  const expectedKey = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(producerBytes),
+    disclose(meterKeyHash),
+  ]);
+  assert(disclose(attestationKey) == disclose(expectedKey), "attestation/producer mismatch");
+
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+
+  const status = AttestationStatus {
+    active: true,
+    attestedAt: currentTime,
+    revokedAt: 0 as Uint<64>,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(status));
+}
+
+export circuit revokeProducerOwnership(
+  attestationKey: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+  assert(producerAttestations.member(disclose(attestationKey)), "No such attestation");
+  const current = producerAttestations.lookup(disclose(attestationKey));
+  assert(current.active, "Already revoked");
+
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+
+  const revoked = AttestationStatus {
+    active: false,
+    attestedAt: current.attestedAt,
+    revokedAt: currentTime,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(revoked));
+}
+
+// =============================================================================
+// Settlement (unchanged from v7)
+// =============================================================================
+
+export circuit settle(
+  sessionID: Bytes<32>,
+  hatPubkey: Bytes<32>,
+  amount: Uint<128>,
+  expiresAt: Uint<64>,
+  producerKey: Bytes<32>,
+  producerAddr: UserAddress,
+  attestationKey: Bytes<32>,
+  meterKeyHash: Bytes<32>,
+  producerAmt: Uint<128>,
+  opsAmt: Uint<128>,
+  divAmt: Uint<128>,
+  daoAmt: Uint<128>,
+  hatSig: Bytes<64>,
+  authoritySig: Bytes<64>,
+): [] {
+  assertInitialized();
+
+  assert(amount > 0 as Uint<128>, "Amount must be positive");
+
+  const fresh = blockTimeLte(disclose(expiresAt));
+  assert(disclose(fresh), "Authority attestation expired");
+
+  assert(!_settledSessions.member(disclose(sessionID)), "Session already settled");
+
+  const expectedAttKey = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(producerKey),
+    disclose(meterKeyHash),
+  ]);
+  assert(disclose(attestationKey) == disclose(expectedAttKey), "attestation/producer mismatch");
+
+  const sumAll = (producerAmt + opsAmt + divAmt + daoAmt) as Uint<128>;
+  assert(sumAll == amount, "slice sum mismatch");
+
+  const bpsTotal = 10000 as Field;
+  const bpsProducer = (_bpsProducer as Field);
+  const bpsOps      = (_bpsOperations as Field);
+  const bpsDiv      = (_bpsDividend as Field);
+  const bpsDao      = (_bpsDao as Field);
+  const amountF     = (amount as Field);
+  const producerF   = (producerAmt as Field);
+  const opsF        = (opsAmt as Field);
+  const divF        = (divAmt as Field);
+  const daoF        = (daoAmt as Field);
+
+  const producerCross = (producerF * bpsTotal) as Uint<160>;
+  const producerTarget = (amountF * bpsProducer) as Uint<160>;
+  assert(
+    producerCross + (bpsTotal as Uint<160>) > producerTarget
+      && producerCross < producerTarget + (bpsTotal as Uint<160>),
+    "producer slice off-policy"
+  );
+
+  const opsCross = (opsF * bpsTotal) as Uint<160>;
+  const opsTarget = (amountF * bpsOps) as Uint<160>;
+  assert(
+    opsCross + (bpsTotal as Uint<160>) > opsTarget
+      && opsCross < opsTarget + (bpsTotal as Uint<160>),
+    "ops slice off-policy"
+  );
+
+  const divCross = (divF * bpsTotal) as Uint<160>;
+  const divTarget = (amountF * bpsDiv) as Uint<160>;
+  assert(
+    divCross + (bpsTotal as Uint<160>) > divTarget
+      && divCross < divTarget + (bpsTotal as Uint<160>),
+    "dividend slice off-policy"
+  );
+
+  const daoCross = (daoF * bpsTotal) as Uint<160>;
+  const daoTarget = (amountF * bpsDao) as Uint<160>;
+  assert(
+    daoCross + (bpsTotal as Uint<160>) > daoTarget
+      && daoCross < daoTarget + (bpsTotal as Uint<160>),
+    "dao slice off-policy"
+  );
+
+  const expiresAtBytes = (disclose(expiresAt) as Field) as Bytes<32>;
+  const authorityMessageHash = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(hatPubkey),
+    expiresAtBytes,
+  ]);
+  const authorityOk = signature_valid(
+    _meterAuthorityPubkey,
+    authorityMessageHash,
+    authoritySig,
+  );
+  assert(disclose(authorityOk), "Bad authority signature");
+
+  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
+  const sessionPayloadHash = persistentHash<Vector<4, Bytes<32>>>([
+    disclose(sessionID),
+    disclose(hatPubkey),
+    amountBytes,
+    disclose(producerKey),
+  ]);
+  const hatOk = signature_valid(disclose(hatPubkey), sessionPayloadHash, hatSig);
+  assert(disclose(hatOk), "Bad HAT signature");
+
+  const domainSep = pad(32, "pollpower:ebt:v7:epoch1");
+  mintUnshieldedToken(disclose(domainSep), disclose(producerAmt) as Uint<64>,
+                      right<ContractAddress, UserAddress>(disclose(producerAddr)));
+
+  _pendingOps = disclose((_pendingOps + opsAmt) as Uint<128>);
+  _pendingDiv = disclose((_pendingDiv + divAmt) as Uint<128>);
+  _pendingDao = disclose((_pendingDao + daoAmt) as Uint<128>);
+
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+  _settledSessions.insert(disclose(sessionID));
+  settlementCount.increment(1);
+}
+
+// =============================================================================
+// claimSplit — mint one pending protocol slice
+// =============================================================================
+//
+// v7.1 CHANGE: when kind == 1 (dividend) AND _livingDividendAddress is set,
+// emit a DividendMinted event. LD's keeper subscribes to this event and calls
+// LD.bumpOnMint(sourceTxSalt, amount, currentTime).
+//
+// The dividend recipient is still _dividendRecipient (a UserAddress). In the
+// LD-bound configuration, ops sets _dividendRecipient to the UserAddress form
+// of the LD contract's address so the mint lands there. The event carries the
+// ContractAddress form used by keepers to identify the target.
+
+export circuit claimSplit(kind: Uint<8>, currentTime: Uint<64>): [] {
+  assertOnlyOwner();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "timestamp cannot be in the future");
+
+  const domainSep = pad(32, "pollpower:ebt:v7:epoch1");
+  const k = disclose(kind);
+
+  if (k == 0 as Uint<8>) {
+    assert(_pendingOps > 0 as Uint<128>, "No pending ops split");
+    mintUnshieldedToken(disclose(domainSep), disclose(_pendingOps) as Uint<64>,
+                        right<ContractAddress, UserAddress>(_operationsRecipient));
+    _pendingOps = disclose(0 as Uint<128>);
+  } else if (k == 1 as Uint<8>) {
+    assert(_pendingDiv > 0 as Uint<128>, "No pending dividend split");
+    const divAmount = _pendingDiv;
+    mintUnshieldedToken(disclose(domainSep), disclose(divAmount) as Uint<64>,
+                        right<ContractAddress, UserAddress>(_dividendRecipient));
+    _pendingDiv = disclose(0 as Uint<128>);
+
+    // v7.1: write DividendMintedEntry to the public log iff LD pointer is set.
+    // Keepers watching _dividendMintedLog will pick up the new entry via the
+    // indexer and call LD.bumpOnMint. Ledger-log rather than emit because
+    // user-declared event types aren't yet exposed by compactc 0.31.0.
+    if (disclose(_livingDividendAddress.is_some)) {
+      const seq = _dividendEventSeq.read();
+      const seqBytes = (seq as Field) as Bytes<32>;
+      // LD-1 (v7.4): salt binds contract identity so redeploy cannot repeat
+      // seq-only salts. Field order: domain-label, self-bytes, seq-bytes.
+      // VERIFY: kernel.self().bytes composition — compile-check pending (Joi).
+      const selfBytes = disclose(kernel.self()).bytes;
+      const salt = persistentHash<Vector<3, Bytes<32>>>([
+        pad(32, "pollpower:dividend:v7.4"),
+        selfBytes,
+        seqBytes,
+      ]);
+      const entry = DividendMintedEntry {
+        sourceTxSalt: disclose(salt),
+        amount: disclose(divAmount),
+        recipient: disclose(_livingDividendAddress.value),
+        blockTime: disclose(currentTime),
+        epochColor: disclose(ebtColor()),
+      };
+      _dividendMintedLog.insert(disclose(seq) as Uint<64>, disclose(entry));
+      _dividendEventSeq.increment(1);
+    }
+  } else {
+    assert(k == 2 as Uint<8>, "Bad split kind");
+    assert(_pendingDao > 0 as Uint<128>, "No pending dao split");
+    mintUnshieldedToken(disclose(domainSep), disclose(_pendingDao) as Uint<64>,
+                        right<ContractAddress, UserAddress>(_daoRecipient));
+    _pendingDao = disclose(0 as Uint<128>);
+  }
+  _splitClaimCount.increment(1);
+}
+
+// =============================================================================
+// Redemption (unchanged from v7)
+// =============================================================================
+
+export circuit redeem(
+  amount:      Uint<128>,
+  redeemer:    Bytes<32>,
+  payoutRef:   Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertInitialized();
+  assert(amount > 0 as Uint<128>, "Must redeem > 0");
+
+  const color = ebtColor();
+
+  assert(unshieldedBalanceGte(color, disclose(amount)), "Insufficient EBT");
+
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+
+  sendUnshielded(disclose(color), disclose(amount),
+                 left<ContractAddress, UserAddress>(kernel.self()));
+
+  _totalSupply = disclose((_totalSupply - amount) as Uint<128>);
+  _totalRedeemed = disclose((_totalRedeemed + amount) as Uint<128>);
+
+  const entry = RedemptionEntry {
+    redeemer: disclose(redeemer),
+    amount: disclose(amount),
+    payoutRef: disclose(payoutRef),
+    redeemedAt: disclose(currentTime),
+  };
+  _redemptionLog.insert(_redemptionCount.read() as Uint<64>, disclose(entry));
+  _redemptionCount.increment(1);
+}
+
+// =============================================================================
+// Manual reissuance (unchanged from v7)
+// =============================================================================
+
+export circuit manualReissue(
+  producerKey: Bytes<32>,
+  producerAddr: UserAddress,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+  authoritySig: Bytes<64>,
+): [] {
+  assertOnlyOwner();
+  assert(amount > 0 as Uint<128>, "Must reissue > 0");
+
+  assert(amount <= 1000000 as Uint<128>, "Exceeds max reissue per call");
+
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+  const cooldown = 3600 as Uint<64>;
+  const earliest = (_lastReissueTime + cooldown) as Uint<64>;
+  assert(currentTime >= earliest, "Reissue cooldown not elapsed");
+
+  const producerBytes = disclose(producerKey);
+  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
+  const seqBytes = (reissuanceCount.read() as Field) as Bytes<32>;
+  const reissueMessageHash = persistentHash<Vector<3, Bytes<32>>>([
+    producerBytes,
+    amountBytes,
+    seqBytes,
+  ]);
+  const authOk = signature_valid(
+    _meterAuthorityPubkey,
+    reissueMessageHash,
+    authoritySig,
+  );
+  assert(disclose(authOk), "Reissue requires authority co-signature");
+
+  const domainSep = pad(32, "pollpower:ebt:v7:epoch1");
+  mintUnshieldedToken(disclose(domainSep), disclose(amount) as Uint<64>,
+                      right<ContractAddress, UserAddress>(disclose(producerAddr)));
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+
+  const seq = reissuanceCount.read();
+  const entry = ReissuanceEntry {
+    producer: producerKey,
+    amount: amount,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+    reissuedAt: currentTime,
+  };
+  reissuanceLog.insert(disclose(seq), disclose(entry));
+  reissuanceCount.increment(1);
+  _lastReissueTime = disclose(currentTime);
+}

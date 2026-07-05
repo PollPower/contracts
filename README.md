@@ -2,7 +2,9 @@
 
 The smart contracts that govern the PollPower energy economy on the [Midnight Network](https://midnight.network).
 
-This repository contains the **canonical, on-chain source** for every contract PollPower currently runs, including audit-hardened versions deployed on 2026-06-12.
+This repository contains the **canonical, on-chain source** for every contract PollPower currently runs, including audit-hardened versions deployed on 2026-06-12 and the **domain-bound v7.4.x contract generation deployed on Midnight Preview on 2026-07-05**.
+
+> **Milestone (2026-07-05):** the **Living Dividend** — the mechanism that pays every KYC-verified member a share of every energy sale — has now completed its **full economic loop live on Preview**: five members joined a brand-new (zero-state) dividend pool, an energy sale minted the dividend, and **all five members claimed and were paid on-chain**. This is the first end-to-end join → earn → claim → get-paid cycle for a group of members from a true zero start. See [the v7.4 stack](#the-v74-contract-generation-2026-07-05) below.
 
 > **Released alongside the [PollPower White Paper v10.0](https://github.com/PollPower/whitepaper).**
 > The whitepaper describes the design rationale; this repository contains the code that enforces it.
@@ -13,32 +15,50 @@ This repository contains the **canonical, on-chain source** for every contract P
 
 | Contract | Purpose | Status |
 |---|---|---|
-| [`ebt/ebt-v7.compact`](./ebt/ebt-v7.compact) | The Energy-Backed Token. Unshielded, contract-minted ledger token — `settle()` mints the producer slice directly to the producer's wallet; `claimSplit()` distributes the ops/dividend/DAO slices. Carries forward all v5.2 audit hardening (C-1, M-1, M-4, L-1, L-3). | ✅ **PRODUCTION** — active mint path since 2026-06-17 |
-| [`ebt/ebt-v7.1.compact`](./ebt/ebt-v7.1.compact) | EBT v7.1 — v7 + `DividendMintedEntry` public ledger log on dividend-slice mint, plus **3-of-5 multisig-gated** `setLivingDividendAddress` and `clearLivingDividendAddress` setters (owner-key alone cannot bind LD). New `_multisigAuthority: Bytes<32>` field committed at `initialize()`; new `multisig_signature_valid` witness shared with the LD contract. Nullable-default LD pointer means v7.1 is functionally identical to v7 until the multisig binds it. See [`ebt/V7.1-EVENT-DIFF.md`](./ebt/V7.1-EVENT-DIFF.md). | 🛠️ **STAGED** — syntax-clean on compactc 0.31.0. Awaits deploy ceremony as part of the Living Dividend rollout. |
+| [`ebt/ebt-v7.4.2.compact`](./ebt/ebt-v7.4.2.compact) | **EBT v7.4.2 — current settlement contract.** v7.1 lineage + domain-bound dividend salt (LD-1: contract address bound into the mint record so it can't be replayed across deployments), and the four multisig setters / two owner setters merged into `execMultisigOp(op,…)` / `execOwnerOp(op,…)` to fit the block-weight limit. Adds in-place `setMultisigAuthority` rotation so the pre-mainnet Tangem ring swap needs no redeploy. Carries forward all v5.2 audit hardening (C-1, M-1, M-4, L-1, L-3). | ✅ **PRODUCTION (Preview)** — deployed + validated end-to-end 2026-07-05 |
+| [`ebt/ebt-v7.compact`](./ebt/ebt-v7.compact) | The Energy-Backed Token (v7). Unshielded, contract-minted ledger token — `settle()` mints the producer slice directly to the producer's wallet; `claimSplit()` distributes the ops/dividend/DAO slices. Carries forward all v5.2 audit hardening (C-1, M-1, M-4, L-1, L-3). | ✅ **PRODUCTION** — active mint path since 2026-06-17; superseded on Preview by v7.4.2 |
+| [`ebt/ebt-v7.1.compact`](./ebt/ebt-v7.1.compact) | EBT v7.1 — v7 + `DividendMintedEntry` public ledger log on dividend-slice mint, plus **3-of-5 multisig-gated** `setLivingDividendAddress` / `clearLivingDividendAddress` setters. Design basis for v7.4.2. See [`ebt/V7.1-EVENT-DIFF.md`](./ebt/V7.1-EVENT-DIFF.md). | ✅ **SUPERSEDED** — folded into the deployed v7.4.2 |
 | [`ebt/ebt-v5.2.compact`](./ebt/ebt-v5.2.compact) | EBT v5.2. Audit-hardened settlement with producer-bound signatures, attestation binding, and capped reissuance. Superseded by v7's unshielded contract-mint model. | ⚠️ **LEGACY** — on chain, superseded by v7 |
 | [`ebt/ebt-v5.compact`](./ebt/ebt-v5.compact) | EBT v5 (original). Single-authority settlement with internal meter registry. | ⚠️ **LEGACY** — still on chain, balance reads only |
 | [`ebt/ebt-v5.1.compact`](./ebt/ebt-v5.1.compact) | EBT v5.1 (stateless attestation). Superseded by v5.2 before cutover. | ❌ **DEAD-LETTER** — deployed but never wired. See [audit findings](#audit-2026-06-10). |
-| [`multisig/multisig-v6-ed25519.compact`](./multisig/multisig-v6-ed25519.compact) | 3-of-5 Ed25519 council multi-sig. M-2 domain separation provided at the actionHash layer. | ✅ **PRODUCTION** — *pilot-mock admins active, see [STATUS](./producer-registry/STATUS.md)* |
+| [`multisig/multisig-v7-ed25519.compact`](./multisig/multisig-v7-ed25519.compact) | **Multisig v7 — current council multi-sig.** 3-of-5 Ed25519 with the contract address domain-bound into every signed action (nonce-bound `approve`/`execute`). Governs binding, meter approval, and authority rotation across the v7.4 stack. | ✅ **PRODUCTION (Preview)** — deployed 2026-07-05, *pilot-mock admins active, see [STATUS](./producer-registry/STATUS.md)* |
+| [`multisig/multisig-v6-ed25519.compact`](./multisig/multisig-v6-ed25519.compact) | 3-of-5 Ed25519 council multi-sig. M-2 domain separation provided at the actionHash layer. | ✅ **PRODUCTION** — superseded on Preview by v7 |
 | [`multisig/multisig-v6.2-ed25519.compact`](./multisig/multisig-v6.2-ed25519.compact) | H-3 hardening of v6: hard-capped admin set (7), threshold coupled to set size (atomic, strict majority), majority floors on init + setThreshold. Built on the v6 production base (no Poseidon-in-app cost). | 🛠️ **STAGED** — compiles clean (compactc 0.30.0 `--skip-zk`), not yet deployed. See [UNBOUNDED-ADMIN-FINDING](./multisig/UNBOUNDED-ADMIN-FINDING.md). |
 | [`multisig/multisig-v6.1-ed25519.compact`](./multisig/multisig-v6.1-ed25519.compact) | In-circuit contractTag variant. Redundant with actionHash-layer separation; forces Poseidon into the mobile app. | 📐 **DESIGN ARTIFACT** — not deployed. See [M2-MITIGATION-NOTE](./multisig/M2-MITIGATION-NOTE.md). |
 | [`multisig/multisig-v5.compact`](./multisig/multisig-v5.compact) | Multisig v5. Single-admin self-governance. | ❌ **DEPRECATED** — H-2 finding: any single admin can mutate the admin set. See [migration plan](./multisig/H2-MIGRATION-PLAN.md). |
-| [`producer-registry/producer-registry-v1.compact`](./producer-registry/producer-registry-v1.compact) | Council-gated registry of approved producers. Pre-flight check before any EBT mint. | ✅ **PRODUCTION** — *pilot-mock admins active* |
+| [`producer-registry/producer-registry-v2.compact`](./producer-registry/producer-registry-v2.compact) | **Producer Registry v2 — current registry.** Council-gated (3-of-5) list of approved meters with the contract address domain-bound into each `approve()` / `executeAddMeter()` action. Pre-flight check before any EBT mint. | ✅ **PRODUCTION (Preview)** — deployed 2026-07-05, *pilot-mock admins active* |
+| [`producer-registry/producer-registry-v1.compact`](./producer-registry/producer-registry-v1.compact) | Council-gated registry of approved producers. Pre-flight check before any EBT mint. | ✅ **PRODUCTION** — superseded on Preview by v2 |
 | [`community-poll/community-poll-v2.compact`](./community-poll/community-poll-v2.compact) | KYC'd, Sybil-resistant community polls with witness-bound ZK voting. | ✅ **PRODUCTION** — deployed 2026-06-12, smoke-tested on-chain |
 | [`community-poll/community-poll.compact`](./community-poll/community-poll.compact) | Community Poll v1. No real ZK guarantees despite comments claiming otherwise. | ❌ **RESEARCH PREVIEW** — C-2 finding: unlimited Sybil voting. See [V2-SPEC](./community-poll/V2-SPEC.md). |
-| [`living-dividend/living-dividend-v1.compact`](./living-dividend/living-dividend-v1.compact) | Cumulative-points accumulator distributing a fraction of every EBT mint to every KYC-verified living member of the network. Downstream of EBT v7.1 via MIP-0002 event pattern. Claim-on-demand + graceful death filter (180-day inactivity threshold, 30-day prune grace). | 🛠️ **STAGED** — compile-clean on compactc 0.31.0 (full ZK). Awaits EBT v7.1 event patch and deploy ceremony. See [DESIGN](./living-dividend/DESIGN.md) and [DEPLOY-RUNBOOK](./living-dividend/DEPLOY-RUNBOOK.md). |
+| [`living-dividend/living-dividend-v2.2.1.compact`](./living-dividend/living-dividend-v2.2.1.compact) | **Living Dividend v2.2.1 — current dividend pool.** Cumulative-`accPerShare` accumulator distributing a fraction of every EBT mint to every KYC-verified living member. Domain-bound (LD-3: contract address in all five signed payloads), claim-on-demand + graceful death filter (180-day inactivity, 30-day prune grace). Members register, the keeper bumps the accumulator on each dividend mint, members claim, and an off-chain batch payer settles the payouts. | ✅ **PRODUCTION (Preview)** — deployed + full 5-member payout loop validated 2026-07-05 |
+| [`living-dividend/living-dividend-v1.compact`](./living-dividend/living-dividend-v1.compact) | Living Dividend v1 — original cumulative-points accumulator design. Downstream of EBT v7.1 via MIP-0002 event pattern. | 📐 **DESIGN ARTIFACT** — superseded by the deployed v2.2.1. See [DESIGN](./living-dividend/DESIGN.md). |
 
 ---
 
 ## On-chain addresses (Midnight Preview)
 
-### Current production
+### Current production — v7.4 contract generation (2026-07-05) {#the-v74-contract-generation-2026-07-05}
+
+The four-contract domain-bound stack, deployed and validated end-to-end on Preview. Council authority `e11cd3e8…ca0b`, threshold 3-of-5.
 
 | Contract | Address | Deployed |
 |---|---|---|
-| **EBT v7** | `667d7f2aad9fac8613604df544d608ee2956f1771e440cc0c666592e80bec2b4` | 2026-06-17 |
-| **Multisig v6** | `f7192a504e186e6a418bcb3f42291ee1a3c032b8c0724c4fab54cc3f62745c3a` | 2026-05-08 |
-| **Community Poll v2** | `8fcb540d96f34ed18d37ab637f0393341cf4eba2759d09e1e07675fc4f4fea63` | 2026-06-12 |
-| **ProducerRegistry v1** | `c6730596dd7770dd69bd5051a769e8c42d34dc99c47228f751cae38f00b2ff1d` | 2026-05-09 |
+| **EBT v7.4.2** | `8df41314e78720d8229b64dbeafff36d05b8b3578d2464cffcb271ccebb3c415` | 2026-07-05 |
+| **Living Dividend v2.2.1** | `9c12e8b12fa6c6180e86b986dddd46c049e9c2e46724ed2309debf2c19af069a` | 2026-07-05 |
+| **Producer Registry v2** | `d1eefe13f238c456d7cda017feb046a104f05cfedbc2259e97f4d703b9d0a740` | 2026-07-05 |
+| **Multisig v7 (Ed25519)** | `e03478718030d07eb1e7d8fa4fd322751e000fa48195b67ea442ec8b29f47ce5` | 2026-07-05 |
+| Living Dividend v2.2.1 (genesis demo) | `702dc89a1409d58d8b309533269aae5a4f36535ef21b31d1bbc20ceff3a998ed` | 2026-07-05 |
+
+> The **genesis demo** contract is a fresh zero-state Living Dividend deployed for the 2026-07-05 end-to-end validation (5 members register → settle → dividend mint → 5 claims → all 5 paid on-chain).
+
+### Prior production (2026-06 generation, on chain)
+
+| Contract | Address | Deployed |
+|---|---|---|
+| EBT v7 | `667d7f2aad9fac8613604df544d608ee2956f1771e440cc0c666592e80bec2b4` | 2026-06-17 |
+| Multisig v6 | `f7192a504e186e6a418bcb3f42291ee1a3c032b8c0724c4fab54cc3f62745c3a` | 2026-05-08 |
+| Community Poll v2 | `8fcb540d96f34ed18d37ab637f0393341cf4eba2759d09e1e07675fc4f4fea63` | 2026-06-12 |
+| ProducerRegistry v1 | `c6730596dd7770dd69bd5051a769e8c42d34dc99c47228f751cae38f00b2ff1d` | 2026-05-09 |
 
 ### Legacy (on chain, not active production path)
 
@@ -108,17 +128,21 @@ EBT cannot be minted unless every party with a role agrees, by signature. No sin
 
 v7's unshielded contract-mint model means a third party (the producer) provably receives contract-minted value without trusting the submitter — the capability the earlier shielded design could not deliver. Three independent signing roles; no single party completes the path alone.
 
+**The dividend loop (EBT v7.4.2 + Living Dividend v2.2.1, validated live 2026-07-05):** on each sale, `claimSplit()` mints the dividend slice into the Living Dividend pool. A keeper bumps the pool's `accPerShare` accumulator across all living members, each member claims their accrued share on demand, and an off-chain batch payer settles the payouts. On 2026-07-05 this ran end-to-end from a zero-state pool — 5 members registered, 1 sale settled, and all 5 members claimed and were paid on-chain.
+
 ---
 
 ## Reading the contracts
 
 [Compact](https://docs.midnight.network/develop/tutorial/building) is the smart-contract language for Midnight, syntactically similar to TypeScript with ZK-aware semantics. The contracts are small enough to read in one sitting:
 
-- `ebt-v7.compact` — the production settlement contract (two signature verifications + BPS policy + unshielded mint)
-- `ebt-v5.2.compact` — ~560 lines (legacy; superseded by v7)
-- `multisig-v6.1-ed25519.compact` — ~300 lines
-- `community-poll-v2.compact` — ~290 lines
-- `producer-registry-v1.compact` — ~250 lines
+- `ebt-v7.4.2.compact` — the current settlement contract (two signature verifications + BPS policy + unshielded mint + domain-bound dividend salt)
+- `living-dividend-v2.2.1.compact` — the current dividend pool (`accPerShare` accumulator + claim-on-demand + death filter)
+- `multisig-v7-ed25519.compact` — the current 3-of-5 council multi-sig
+- `producer-registry-v2.compact` — the current council-gated meter registry
+- `community-poll-v2.compact` — KYC'd, Sybil-resistant community polls
+
+Earlier versions (v7, v7.1, v5.x; LD v1; Multisig v6.x; Registry v1.x) remain in-tree for provenance.
 
 Each subdirectory contains a `README.md` and supporting docs.
 

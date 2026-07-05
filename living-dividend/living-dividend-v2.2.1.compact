@@ -1,0 +1,585 @@
+// living-dividend-v2.2.1.compact
+// PollPower Living Dividend, v2.2.1 (block-size fit)
+//
+// v2.2.1 removes 6 pure-view exported circuits that were never called via callTx
+// (all off-chain reads use indexer queryContractState + ledger()). This reclaims
+// ~6 verifier keys to clear deploy-tx block limit error 1010. Signed-payload
+// domain labels, field order, and every mutating circuit are UNCHANGED from v2.2.
+//
+// Removed circuits: getSolvencyState, getStats, getMemberState, getClaimableAmount,
+// getPendingClaim, hasPendingPrune.
+//
+// living-dividend-v2.2.compact
+// PollPower Living Dividend, v2.2 (Option D)
+//
+// =============================================================================
+// OFF-CHAIN SIGNER CONTRACT — canonical signed-payload byte layouts (LD-3)
+// =============================================================================
+// persistentHash(Vector<N, Bytes<32>>, [field0, field1, ...]) in field order.
+// Off-chain builders MUST reproduce these bytes exactly or signatures fail.
+//
+// | Payload        | Domain label (pad 32)   | Field order (Bytes<32> each)     | Witness              |
+// |----------------|-------------------------|----------------------------------|----------------------|
+// | register       | "ld:register:v2"        | domain, self, member, kyc, time  | multisig (Ed25519)   |
+// | unregister     | "ld:unregister:v2"      | domain, self, member, time       | multisig (Ed25519)   |
+// | claim          | "ld:claim:v2"           | domain, self, member, time       | member (Midnight vk) |
+// | executePayout  | "ld:executePayout:v3"   | domain, self, claimId, time      | multisig (Ed25519)   |
+// | touchLiveness  | "ld:touch:v2"           | domain, self, member, time       | member (Midnight vk) |
+// | rotateAuth     | "ld:rotateAuth:v2"      | domain, self, newAuthHash, nonce, time | multisig (Ed25519) |
+//
+// self = disclose(kernel.self()).bytes (this LD deployment's ContractAddress).
+// member = disclose(member).bytes (UserAddress).
+// time = (currentTime as Field) as Bytes<32> on-chain; u64ToBytes32 off-chain.
+// kyc = kycAttestationHash (32 raw bytes).
+// claimId = (claimId as Field) as Bytes<32> on-chain; u64ToBytes32 off-chain.
+//
+// =============================================================================
+// WHAT CHANGES FROM V2.1 (Phase 2 — LD-3 + authority rotation)
+// =============================================================================
+//
+// Audit finding LD-3: signed payloads bound domain+member+time but not the LD
+// contract address → cross-deployment replay. v2.2 adds
+// disclose(kernel.self()).bytes as the second field in all five payloads above.
+// Domain labels bumped per Garrett decision (executePayout v2→v3).
+//
+// NEW (H-1 prep): `setMultisigAuthority` — multisig-gated in-place rotation
+// of `_multisigAuthority`. Same security model as EBT v7.4 rotateAuth.
+// Domain: "ld:rotateAuth:v2"; Vector<5> field order:
+//   [domain, self, newAuthHash, nonce, time].
+//
+// UNCHANGED: bumpOnMint, propose/executePrune, witnesses, constructor,
+// all other non-signed logic. Toolchain: compactc 0.30.0, language 0.22.0.
+//
+// v2.1 change (session 4): gate _claimCount + _claimLog inside owed>0 branch,
+// so counter/log only record claims that actually produced a PendingClaim.
+// Fixes session-3 quirk where _claimCount incremented on zero-owed calls.
+// Everything else UNCHANGED from v2.
+//
+// Depends on: EBT v7.3+ (has setDividendRecipient multisig setter). Runs
+// downstream via EBT DividendMintedEntry ledger-log. Actual EBT does NOT
+// live in this contract; it lives in a threshold-custodied LD-pool wallet
+// controlled off-chain by the admin ring (Shamir Secret Sharing in app).
+//
+// See ../memory/2026-07-02-e2e-smoke.md for why v1's on-chain-solvency
+// design is unbuildable today (Midnight runtime rejects unshielded mint to
+// ContractAddress — same C2C limitation that killed EBT v6 Option A).
+//
+// Base: living-dividend-v2.1.compact (contracts/dev/living-dividend-v2.1/).
+//
+// =============================================================================
+// WHAT CHANGES FROM V1
+// =============================================================================
+//
+// v1 assumed LD held EBT in its own contract balance and paid members via
+// inline `sendUnshielded` from that balance in `claim()`. That design is
+// unbuildable today — see the 2026-07-02 E2E report for details.
+//
+// v2 (Option D) splits accounting from custody:
+//
+//   - Accounting stays on-chain in this contract (accumulator, member roll,
+//     claims, prunes, everything).
+//   - Actual EBT lives in an off-chain LD-pool wallet (Shamir-shared across
+//     admin phones).
+//   - `claim()` no longer sends EBT. It writes a PendingClaim entry to a
+//     public `_pendingClaims` map.
+//   - A new multisig-gated `executePayout(claimId, currentTime)` marks a
+//     claim as PAID after the off-chain batch payer confirms the
+//     `sendUnshielded` from LD-pool landed. This creates an on-chain audit
+//     trail matching each on-chain payout tx to its claim.
+//   - `bumpOnMint`'s solvency assert is dropped. The invariant that used to
+//     hold (LD.unshieldedBalance >= totalReceived - totalClaimed) becomes an
+//     off-chain reconciliation between v7.3's DividendMintedEntry stream and
+//     LD-pool wallet balance.
+//
+// EVERYTHING ELSE IS UNCHANGED FROM V1: cumulative-points accumulator,
+// register/unregister multisig gating, touchLiveness, propose/executePrune,
+// witness surface (divmod, multisig sig, member sig, blocktime).
+//
+// Compile target: compactc 0.30.0 (language 0.22.0, runtime 0.15.0).
+
+pragma language_version >= 0.16 && <= 0.22;
+import CompactStandardLibrary;
+
+// ─── constants ────────────────────────────────
+pure circuit SCALE(): Uint<128> {
+  return 1000000000000000000 as Uint<128>;  // 10^18
+}
+pure circuit INACTIVITY_THRESHOLD_T(): Uint<64> {
+  return 15552000 as Uint<64>;  // 180 days in seconds
+}
+pure circuit PRUNE_GRACE_PERIOD(): Uint<64> {
+  return 2592000 as Uint<64>;  // 30 days in seconds
+}
+
+// ─── structs ──────────────────────────────────
+struct MemberState {
+  accPerShareAtCheckpoint: Uint<128>;
+  lastSeen:                Uint<64>;
+  registeredAt:            Uint<64>;
+  isLive:                  Boolean;
+}
+
+struct RegistrationEntry {
+  member:             UserAddress;
+  kycAttestationHash: Bytes<32>;
+  registeredAt:       Uint<64>;
+}
+
+struct ClaimEntry {
+  member:      UserAddress;
+  amount:      Uint<128>;
+  claimedAt:   Uint<64>;
+}
+
+// v2 (Option D): pending-claim entry. Written by `claim()`, drained by the
+// off-chain batch payer via `executePayout()`. Status is a tag:
+//   0 = PENDING (created, waiting for batch payer)
+//   1 = PAID    (executePayout marked it done; sendUnshielded from LD-pool
+//                landed at member wallet)
+// Reserved for future: 2 = REVOKED (governance-cancelled), 3 = FAILED
+// (batch payer reported a permanent failure). Not implemented in v2.
+struct PendingClaim {
+  member:      UserAddress;
+  amount:      Uint<128>;
+  requestedAt: Uint<64>;
+  paidAt:      Uint<64>;
+  status:      Uint<8>;
+}
+
+struct PendingPrune {
+  member:      UserAddress;
+  proposedAt:  Uint<64>;
+}
+
+struct DivResult {
+  quotient:  Uint<128>;
+  remainder: Uint<128>;
+}
+
+// ─── ledger state ─────────────────────────────
+export sealed ledger _initialized: Boolean;
+export sealed ledger _ebtColor: Bytes<32>;
+export ledger _multisigAuthority: Bytes<32>;
+export ledger _authorityRotationNonce: Counter;
+
+export ledger _accPerShare: Uint<128>;
+export ledger _totalLivingMembers: Uint<64>;
+export ledger _totalPoolReceived: Uint<128>;
+export ledger _totalClaimed: Uint<128>;
+
+export ledger _members: Map<UserAddress, MemberState>;
+export ledger _seenKycJobHashes: Set<Bytes<32>>;
+export ledger _processedSalts: Set<Bytes<32>>;
+export ledger _pendingPrunes: Map<UserAddress, PendingPrune>;
+
+export ledger _registrationCount: Counter;
+export ledger _claimCount: Counter;
+export ledger _bumpCount: Counter;
+export ledger _pruneCount: Counter;
+export ledger _registrationLog: Map<Uint<64>, RegistrationEntry>;
+export ledger _claimLog: Map<Uint<64>, ClaimEntry>;
+
+// v2 (Option D): pending-claims queue drained by the off-chain batch payer.
+// Every claim creates a new entry keyed by monotone claimId. Batch payer
+// reads PENDING entries, submits sendUnshielded from LD-pool, then calls
+// executePayout() to mark PAID and increment _totalClaimed.
+export ledger _pendingClaims: Map<Uint<64>, PendingClaim>;
+export ledger _pendingClaimCount: Counter;
+export ledger _payoutExecCount: Counter;
+
+// ─── witnesses (prover-side) ──────────────────
+witness witness_divmod(numerator: Field, divisor: Field): DivResult;
+witness witness_multisigSignatureValid(payload: Bytes<32>, authorityHash: Bytes<32>): Boolean;
+witness witness_memberSignatureValid(member: UserAddress, payload: Bytes<32>): Boolean;
+witness witness_blockTimeGte(t: Uint<64>): Boolean;
+
+// ─── in-circuit divide with witness verification ─
+pure circuit checkedDivide(numeratorF: Field, divisorF: Field, r: DivResult): Uint<128> {
+  const qF = r.quotient as Field;
+  const remF = r.remainder as Field;
+  assert(numeratorF == qF * divisorF + remF, "checkedDivide: equation fails");
+  const marginF = divisorF - remF - (1 as Field);
+  const _range = marginF as Uint<128>;  // runtime-fails if remainder >= divisor
+  return r.quotient;
+}
+
+// ─── constructor (deploy-time init) ───────────
+constructor(ebtColor: Bytes<32>, multisigAuthority: Bytes<32>) {
+  _ebtColor = disclose(ebtColor);
+  _multisigAuthority = disclose(multisigAuthority);
+  _initialized = true;
+}
+
+// ─── mutating circuits ────────────────────────
+
+export circuit register(
+  member:             UserAddress,
+  kycAttestationHash: Bytes<32>,
+  currentTime:        Uint<64>,
+): [] {
+  assert(_initialized, "register: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "register: timestamp in future");
+
+  // LD-3 signed payload: [domain, self, member, kyc, time] → Vector<5>
+  const payload = persistentHash<Vector<5, Bytes<32>>>([
+    pad(32, "ld:register:v2"),
+    disclose(kernel.self()).bytes,
+    disclose(member).bytes,
+    disclose(kycAttestationHash),
+    disclose(currentTime as Field) as Bytes<32>,
+  ]);
+  assert(disclose(witness_multisigSignatureValid(payload, _multisigAuthority)),
+         "register: multisig signature invalid");
+
+  assert(!_members.member(disclose(member)) ||
+         !_members.lookup(disclose(member)).isLive,
+         "register: address already registered");
+
+  assert(!_seenKycJobHashes.member(disclose(kycAttestationHash)),
+         "register: KYC job already used");
+
+  const newState = MemberState {
+    accPerShareAtCheckpoint: _accPerShare,
+    lastSeen:                disclose(currentTime),
+    registeredAt:            disclose(currentTime),
+    isLive:                  true,
+  };
+  _members.insert(disclose(member), newState);
+  _seenKycJobHashes.insert(disclose(kycAttestationHash));
+  _totalLivingMembers = (_totalLivingMembers + 1 as Uint<64>) as Uint<64>;
+
+  const entry = RegistrationEntry {
+    member: disclose(member),
+    kycAttestationHash: disclose(kycAttestationHash),
+    registeredAt: disclose(currentTime),
+  };
+  _registrationLog.insert(_registrationCount.read() as Uint<64>, entry);
+  _registrationCount.increment(1);
+}
+
+export circuit unregister(
+  member:      UserAddress,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "unregister: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "unregister: timestamp in future");
+
+  // LD-3 signed payload: [domain, self, member, time] → Vector<4>
+  const payload = persistentHash<Vector<4, Bytes<32>>>([
+    pad(32, "ld:unregister:v2"),
+    disclose(kernel.self()).bytes,
+    disclose(member).bytes,
+    disclose(currentTime as Field) as Bytes<32>,
+  ]);
+  assert(disclose(witness_multisigSignatureValid(payload, _multisigAuthority)),
+         "unregister: multisig signature invalid");
+
+  assert(_members.member(disclose(member)),
+         "unregister: not a registered member");
+  const state = _members.lookup(disclose(member));
+  assert(state.isLive, "unregister: member already inactive");
+
+  const closed = MemberState {
+    accPerShareAtCheckpoint: state.accPerShareAtCheckpoint,
+    lastSeen:                state.lastSeen,
+    registeredAt:            state.registeredAt,
+    isLive:                  false,
+  };
+  _members.insert(disclose(member), closed);
+  _totalLivingMembers = (_totalLivingMembers - 1 as Uint<64>) as Uint<64>;
+}
+
+// v2.2: multisig-gated council authority rotation (H-1 prep).
+//
+// Sitting council signs succession; payload binds kernel.self(), nonce, time.
+// Signature verified against OLD _multisigAuthority; state swap LAST.
+export circuit setMultisigAuthority(
+  newAuthorityHash: Bytes<32>,
+  nonceIn:          Uint<64>,
+  currentTime:      Uint<64>,
+): [] {
+  assert(_initialized, "setMultisigAuthority: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "setMultisigAuthority: timestamp in future");
+
+  const zeroAuth = pad(32, "");
+  const disclosedNew = disclose(newAuthorityHash);
+  // VERIFY: compile-check pending (Joi) — Bytes<32> != idiom
+  assert(disclosedNew != zeroAuth,
+         "setMultisigAuthority: zero hash rejected");
+  assert(disclosedNew != _multisigAuthority,
+         "setMultisigAuthority: no-op rotation");
+
+  const expectedNonce = (_authorityRotationNonce.read() + 1 as Uint<64>) as Uint<64>;
+  assert(disclose(nonceIn) == expectedNonce,
+         "setMultisigAuthority: invalid nonce");
+
+  const payload = persistentHash<Vector<5, Bytes<32>>>([
+    pad(32, "ld:rotateAuth:v2"),
+    disclose(kernel.self()).bytes,
+    disclosedNew,
+    disclose(nonceIn as Field) as Bytes<32>,
+    disclose(currentTime as Field) as Bytes<32>,
+  ]);
+  assert(disclose(witness_multisigSignatureValid(payload, _multisigAuthority)),
+         "setMultisigAuthority: multisig signature invalid");
+
+  _multisigAuthority = disclosedNew;
+  _authorityRotationNonce.increment(1);
+}
+
+export circuit bumpOnMint(
+  sourceTxSalt: Bytes<32>,
+  amount:       Uint<128>,
+  currentTime:  Uint<64>,
+): [] {
+  assert(_initialized, "bumpOnMint: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "bumpOnMint: timestamp in future");
+
+  assert(!_processedSalts.member(disclose(sourceTxSalt)),
+         "bumpOnMint: salt already processed");
+  assert(_totalLivingMembers > 0 as Uint<64>,
+         "bumpOnMint: no members registered");
+
+  // v2 (Option D): solvency assert dropped. LD does not hold EBT; it can't
+  // be checked here. Solvency becomes an off-chain reconciliation:
+  //   LD_pool_wallet.unshieldedBalance(ebtColor) >=
+  //     _totalPoolReceived - _totalClaimed
+  // The batch payer runs this check before submitting each batch and refuses
+  // to sign if the pool is under-funded. Ring holders see the reconciliation
+  // result in the batch proposal shown by the admin app.
+
+  const amountF = disclose(amount) as Field;
+  const scaleF = SCALE() as Field;
+  const divisorF = _totalLivingMembers as Field;
+  const numeratorF = amountF * scaleF;
+  const divResult = witness_divmod(numeratorF, divisorF);
+  const delta = checkedDivide(numeratorF, divisorF, divResult);
+
+  _accPerShare = (_accPerShare + disclose(delta)) as Uint<128>;
+  _totalPoolReceived = (_totalPoolReceived + disclose(amount)) as Uint<128>;
+  _processedSalts.insert(disclose(sourceTxSalt));
+  _bumpCount.increment(1);
+}
+
+export circuit claim(
+  member:      UserAddress,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "claim: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "claim: timestamp in future");
+
+  assert(_members.member(disclose(member)),
+         "claim: not a registered member");
+  const state = _members.lookup(disclose(member));
+  assert(state.isLive, "claim: member is inactive; re-register");
+
+  // LD-3 signed payload: [domain, self, member, time] → Vector<4>
+  const payload = persistentHash<Vector<4, Bytes<32>>>([
+    pad(32, "ld:claim:v2"),
+    disclose(kernel.self()).bytes,
+    disclose(member).bytes,
+    disclose(currentTime as Field) as Bytes<32>,
+  ]);
+  assert(disclose(witness_memberSignatureValid(disclose(member), payload)),
+         "claim: member signature invalid");
+
+  const growth = (_accPerShare - state.accPerShareAtCheckpoint) as Uint<128>;
+  const growthF = growth as Field;
+  const scaleF = SCALE() as Field;
+  const divResult = witness_divmod(growthF, scaleF);
+  const owed = disclose(checkedDivide(growthF, scaleF, divResult));
+
+  // v2 (Option D): queue a PendingClaim entry instead of sending EBT.
+  // The off-chain batch payer will:
+  //   1. Read _pendingClaims via the indexer
+  //   2. Group PENDING entries into a batch
+  //   3. Propose the batch to Multisig v6
+  //   4. On threshold-approval, reconstruct LD-pool wallet seed via Shamir
+  //      threshold, submit sendUnshielded per PendingClaim from LD-pool
+  //   5. Call executePayout(claimId) to mark PAID and increment _totalClaimed
+  //
+  // Zero-owed claims skip the queue (no point queueing a 0-amount payout).
+  // v2.1: gate _pendingClaims, _claimLog, and _claimCount all inside owed>0.
+  // Zero-owed claims are no-ops: no queue entry, no log entry, no counter bump.
+  // The MemberState checkpoint update still happens unconditionally so the
+  // member's accumulator-position advances (otherwise repeated zero-owed
+  // claims would keep accumulating over the same growth window).
+  if (disclose(owed > 0 as Uint<128>)) {
+    const pending = PendingClaim {
+      member:      disclose(member),
+      amount:      disclose(owed),
+      requestedAt: disclose(currentTime),
+      paidAt:      0 as Uint<64>,
+      status:      0 as Uint<8>,       // 0 = PENDING
+    };
+    _pendingClaims.insert(_pendingClaimCount.read() as Uint<64>, pending);
+    _pendingClaimCount.increment(1);
+
+    const entry = ClaimEntry {
+      member: disclose(member),
+      amount: disclose(owed),
+      claimedAt: disclose(currentTime),
+    };
+    _claimLog.insert(_claimCount.read() as Uint<64>, entry);
+    _claimCount.increment(1);
+  }
+
+  const updated = MemberState {
+    accPerShareAtCheckpoint: _accPerShare,
+    lastSeen:                disclose(currentTime),
+    registeredAt:            state.registeredAt,
+    isLive:                  true,
+  };
+  _members.insert(disclose(member), updated);
+}
+
+// v2 (Option D): mark a queued claim as paid.
+//
+// Called by the batch payer AFTER the off-chain sendUnshielded from LD-pool
+// to the member has landed on chain. Multisig-gated: the ring must approve
+// each executePayout as part of the batch approval that authorized the send.
+//
+// This produces an on-chain audit trail matching each PendingClaim to its
+// on-chain payout tx (via the timestamp/blocktime alignment) and increments
+// _totalClaimed so the accumulator's per-member arithmetic stays honest.
+//
+// Payload includes the claimId so a single multisig approval can't be replayed
+// against a different PendingClaim.
+export circuit executePayout(
+  claimId:     Uint<64>,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "executePayout: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "executePayout: timestamp in future");
+
+  assert(_pendingClaims.member(disclose(claimId)),
+         "executePayout: no such claim");
+  const pc = _pendingClaims.lookup(disclose(claimId));
+  assert(pc.status == 0 as Uint<8>,
+         "executePayout: claim is not PENDING");
+
+  // LD-3 signed payload: [domain, self, claimId, time] → Vector<4>
+  const domainSep = pad(32, "ld:executePayout:v3");
+  const claimIdBytes = (disclose(claimId) as Field) as Bytes<32>;
+  const timeBytes = (disclose(currentTime) as Field) as Bytes<32>;
+  const payload = persistentHash<Vector<4, Bytes<32>>>([
+    domainSep,
+    disclose(kernel.self()).bytes,
+    claimIdBytes,
+    timeBytes,
+  ]);
+  assert(disclose(witness_multisigSignatureValid(payload, _multisigAuthority)),
+         "executePayout: multisig signature invalid");
+
+  // Update the pending entry to PAID, bump totals.
+  const paid = PendingClaim {
+    member:      pc.member,
+    amount:      pc.amount,
+    requestedAt: pc.requestedAt,
+    paidAt:      disclose(currentTime),
+    status:      1 as Uint<8>,          // 1 = PAID
+  };
+  _pendingClaims.insert(disclose(claimId), paid);
+  _totalClaimed = (_totalClaimed + pc.amount) as Uint<128>;
+  _payoutExecCount.increment(1);
+}
+
+export circuit touchLiveness(
+  member:      UserAddress,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "touchLiveness: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "touchLiveness: timestamp in future");
+
+  assert(_members.member(disclose(member)),
+         "touchLiveness: not a registered member");
+  const state = _members.lookup(disclose(member));
+  assert(state.isLive, "touchLiveness: member is inactive; re-register");
+
+  // LD-3 signed payload: [domain, self, member, time] → Vector<4>
+  const payload = persistentHash<Vector<4, Bytes<32>>>([
+    pad(32, "ld:touch:v2"),
+    disclose(kernel.self()).bytes,
+    disclose(member).bytes,
+    disclose(currentTime as Field) as Bytes<32>,
+  ]);
+  assert(disclose(witness_memberSignatureValid(disclose(member), payload)),
+         "touchLiveness: member signature invalid");
+
+  const updated = MemberState {
+    accPerShareAtCheckpoint: state.accPerShareAtCheckpoint,
+    lastSeen:                disclose(currentTime),
+    registeredAt:            state.registeredAt,
+    isLive:                  true,
+  };
+  _members.insert(disclose(member), updated);
+}
+
+export circuit proposePrune(
+  member:      UserAddress,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "proposePrune: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "proposePrune: timestamp in future");
+
+  assert(_members.member(disclose(member)),
+         "proposePrune: not a registered member");
+  const state = _members.lookup(disclose(member));
+  assert(state.isLive, "proposePrune: member already inactive");
+
+  const threshold = (state.lastSeen + INACTIVITY_THRESHOLD_T()) as Uint<64>;
+  assert(disclose(currentTime) >= threshold,
+         "proposePrune: member is within threshold T");
+
+  assert(!_pendingPrunes.member(disclose(member)),
+         "proposePrune: prune already pending");
+
+  _pendingPrunes.insert(disclose(member),
+    PendingPrune {
+      member: disclose(member),
+      proposedAt: disclose(currentTime),
+    }
+  );
+}
+
+export circuit executePrune(
+  member:      UserAddress,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "executePrune: not initialized");
+  assert(disclose(witness_blockTimeGte(disclose(currentTime))),
+         "executePrune: timestamp in future");
+
+  assert(_pendingPrunes.member(disclose(member)),
+         "executePrune: no pending prune");
+  const pending = _pendingPrunes.lookup(disclose(member));
+
+  const graceEnd = (pending.proposedAt + PRUNE_GRACE_PERIOD()) as Uint<64>;
+  assert(disclose(currentTime) >= graceEnd,
+         "executePrune: grace period not elapsed");
+
+  const state = _members.lookup(disclose(member));
+
+  if (disclose(state.lastSeen > pending.proposedAt)) {
+    _pendingPrunes.remove(disclose(member));
+  } else {
+    const closed = MemberState {
+      accPerShareAtCheckpoint: state.accPerShareAtCheckpoint,
+      lastSeen:                state.lastSeen,
+      registeredAt:            state.registeredAt,
+      isLive:                  false,
+    };
+    _members.insert(disclose(member), closed);
+    _pendingPrunes.remove(disclose(member));
+    _totalLivingMembers = (_totalLivingMembers - 1 as Uint<64>) as Uint<64>;
+    _pruneCount.increment(1);
+  }
+}
