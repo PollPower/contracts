@@ -1,9 +1,9 @@
 // =============================================================================
-// v7-smoke-test.mjs — offline smoke tests for multisig-v7-federated
+// federated-v1-smoke-test.mjs - offline smoke tests for multisig-federated-v1
 //
 // Run on kenya (needs the compiled build + settlement-api node_modules):
 //   cd /opt/pollpower/settlement-api
-//   node /path/to/v7-smoke-test.mjs /path/to/msv7-build/contract/index.js
+//   node /path/to/federated-v1-smoke-test.mjs /path/to/build/contract/index.js
 //
 // Pattern: contracts/dev/multisig-ed25519/poc-runtime-test.mjs (Phase 2b POC).
 // Covers: initialize, direct approve (epoch+self-bound msg), federated approve
@@ -45,21 +45,21 @@ const H = (n, arr) => cr.persistentHash(vec(n), arr);
 
 // signing messages (must byte-match the contract's in-circuit recomputation)
 const directMsg = (self, epoch, ah) =>
-  H(4, [dsel('pp:msv7:approve:direct'), self, u2b(epoch), ah]);
+  H(4, [dsel('pp:msfed:v1:approve:direct'), self, u2b(epoch), ah]);
 const fedMsg = (self, seat, epoch, ah) =>
-  H(5, [dsel('pp:msv7:approve:fed'), self, seat, u2b(epoch), ah]);
+  H(5, [dsel('pp:msfed:v1:approve:fed'), self, seat, u2b(epoch), ah]);
 const constMsg = (self, epoch, ah) =>
-  H(4, [dsel('pp:msv7:constitutional'), self, u2b(epoch), ah]);
+  H(4, [dsel('pp:msfed:v1:constitutional'), self, u2b(epoch), ah]);
 const conveneMsg = (self, epoch, incoming, seed) =>
-  H(9, [dsel('pp:msv7:convene'), self, u2b(epoch), ...incoming, seed]);
+  H(9, [dsel('pp:msfed:v1:convene'), self, u2b(epoch), ...incoming, seed]);
 
 // action hashes
 const setThresholdAH = (self, t, nonce) =>
-  H(4, [dsel('pp:msv7:setThreshold'), self, u2b(BigInt(t)), u2b(nonce)]);
+  H(4, [dsel('pp:msfed:v1:setThreshold'), self, u2b(BigInt(t)), u2b(nonce)]);
 const setAttestorAH = (self, seat, att, nonce) =>
-  H(5, [dsel('pp:msv7:setSeatAttestor'), self, seat, att, u2b(nonce)]);
+  H(5, [dsel('pp:msfed:v1:setSeatAttestor'), self, seat, att, u2b(nonce)]);
 const rotateAH = (self, out, inc, seed, nonce) =>
-  H(14, [dsel('pp:msv7:rotateSeats'), self, ...out, ...inc, seed, u2b(nonce)]);
+  H(14, [dsel('pp:msfed:v1:rotateSeats'), self, ...out, ...inc, seed, u2b(nonce)]);
 
 // --- test scaffolding --------------------------------------------------------
 let passed = 0, failed = 0;

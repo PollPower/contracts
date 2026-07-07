@@ -1,33 +1,35 @@
 // =============================================================================
-// v7-actionhash.ts — canonical off-chain actionHash + signing-message
-// construction for PollPowerMultiSig v7-federated (DEV DRAFT, rev 3).
+// federated-v1-actionhash.ts - canonical off-chain actionHash + signing-
+// message construction for PollPowerMultiSigFederated v1 (DEV DRAFT, rev 4).
+// (Renamed from v7-actionhash.ts; "v7" belongs to the deployed 2026-07-05
+// self-bound multisig lineage. Domain separators are pp:msfed:v1:*.)
 //
-// Companion to multisig/multisig-v7-federated.compact. Every hash here MUST
+// Companion to multisig/multisig-federated-v1.compact. Every hash here MUST
 // match what the contract recomputes in-circuit, byte-for-byte, or approvals
 // won't aggregate under the same key and isApproved() fails at execute time.
 //
-// v7-federated DIFFERENCES FROM v6.2 (tooling-visible):
+// federated-v1 DIFFERENCES FROM v6.2 (tooling-visible):
 //   1. SELF-ADDRESS BINDING (rev 3). Every actionHash and signing message
 //      folds the deployment's contract address (kernel.self().bytes) in as
 //      the second field: [opSel|domain, self, ...]. Closes cross-deployment
-//      replay (M-2 class) with one in-circuit mechanism — no contractTag.
+//      replay (M-2 class) with one in-circuit mechanism - no contractTag.
 //   2. EPOCH BINDING. Approval messages are NOT the bare actionHash:
-//        direct:  H(domain("pp:msv7:approve:direct") ‖ self ‖ epoch ‖ actionHash)
-//        fed:     H(domain("pp:msv7:approve:fed") ‖ self ‖ seatId ‖ epoch ‖ actionHash)
+//        direct:  H(domain("pp:msfed:v1:approve:direct") ‖ self ‖ epoch ‖ actionHash)
+//        fed:     H(domain("pp:msfed:v1:approve:fed") ‖ self ‖ seatId ‖ epoch ‖ actionHash)
 //      Rotation increments the epoch and instantly invalidates all sigs.
 //   3. NEW OPS: rotateSeats (14-field), setSeatAttestor (5-field),
 //      setThreshold / setConstAuthority / setParentAuthority (4-field),
 //      conveneRotation (parent-signed message, no council actionHash).
 //   4. CONSTITUTIONAL ATTESTATION. The three constitutional ops additionally
 //      need the constitutional authority's signature over
-//      H(domain("pp:msv7:constitutional") ‖ self ‖ epoch ‖ actionHash).
+//      H(domain("pp:msfed:v1:constitutional") ‖ self ‖ epoch ‖ actionHash).
 //   5. addAdmin/removeAdmin are GONE (fixed 5-seat council, wholesale rotation).
 //
 // GENERIC execute(actionHash) CONVENTION (L-2, unchanged limitation): the
 // contract cannot recompute caller-defined hashes. Generic actionHashes MUST
 // be built with computeGenericActionHash() below, which binds self + nonce.
 //
-// Poseidon scheme (persistentHash) throughout — same as the v6.2 ceremony
+// Poseidon scheme (persistentHash) throughout - same as the v6.2 ceremony
 // path, NOT the SHA-256 scheme in apps/admin/services/actionHash.ts.
 // =============================================================================
 
@@ -48,23 +50,23 @@ const Vec14Bytes32 = new CompactTypeVector(14, Bytes32);
 
 // v7 op selectors + signing domains. MUST match pad(32, "...") in the contract.
 export const V7_OP = {
-  setSeatAttestor: 'pp:msv7:setSeatAttestor',
-  rotateSeats: 'pp:msv7:rotateSeats',
-  setThreshold: 'pp:msv7:setThreshold',
-  setConstAuthority: 'pp:msv7:setConstAuthority',
-  setParentAuthority: 'pp:msv7:setParentAuthority',
-  generic: 'pp:msv7:generic',
+  setSeatAttestor: 'pp:msfed:v1:setSeatAttestor',
+  rotateSeats: 'pp:msfed:v1:rotateSeats',
+  setThreshold: 'pp:msfed:v1:setThreshold',
+  setConstAuthority: 'pp:msfed:v1:setConstAuthority',
+  setParentAuthority: 'pp:msfed:v1:setParentAuthority',
+  generic: 'pp:msfed:v1:generic',
 } as const;
 
 export const V7_DOMAIN = {
-  approveDirect: 'pp:msv7:approve:direct',
-  approveFederated: 'pp:msv7:approve:fed',
-  constitutional: 'pp:msv7:constitutional',
-  convene: 'pp:msv7:convene',
+  approveDirect: 'pp:msfed:v1:approve:direct',
+  approveFederated: 'pp:msfed:v1:approve:fed',
+  constitutional: 'pp:msfed:v1:constitutional',
+  convene: 'pp:msfed:v1:convene',
 } as const;
 
 export const COUNCIL_SIZE = 5;
-export const CONVENE_PERIOD_SECONDS = 2_592_000n; // 30 days — matches contract
+export const CONVENE_PERIOD_SECONDS = 2_592_000n; // 30 days - matches contract
 
 function padToBytes32(asciiTag: string): Uint8Array {
   const bytes = new Uint8Array(32);
@@ -190,10 +192,10 @@ export function computeSetParentAuthorityActionHash(
 }
 
 /**
- * Generic operational actionHash for execute(actionHash) — L-2 convention.
+ * Generic operational actionHash for execute(actionHash) - L-2 convention.
  * The contract does NOT recompute this; every off-chain signer MUST build
  * generic hashes this way so self + nonce are always bound:
- *   H([opSel("pp:msv7:generic"), self, payloadHash, nonceBytes])
+ *   H([opSel("pp:msfed:v1:generic"), self, payloadHash, nonceBytes])
  * @param payloadHash 32-byte hash of the operation payload (caller-defined)
  */
 export function computeGenericActionHash(
@@ -209,12 +211,12 @@ export function computeGenericActionHash(
 }
 
 // =============================================================================
-// Signing messages (what keys actually sign — self- and epoch-bound)
+// Signing messages (what keys actually sign - self- and epoch-bound)
 // =============================================================================
 
 /**
  * Message a DIRECT seat's Ed25519 key signs to approve an action:
- *   H([H(pad("pp:msv7:approve:direct")), self, epochBytes, actionHash])
+ *   H([H(pad("pp:msfed:v1:approve:direct")), self, epochBytes, actionHash])
  * @param epoch the contract's _epoch counter value AT SIGNING TIME
  */
 export function computeDirectApprovalMessage(
@@ -232,7 +234,7 @@ export function computeDirectApprovalMessage(
 /**
  * Message a FEDERATION seat's attestor signs after observing lower-tier
  * quorum on the same actionHash:
- *   H([H(pad("pp:msv7:approve:fed")), self, seatId, epochBytes, actionHash])
+ *   H([H(pad("pp:msfed:v1:approve:fed")), self, seatId, epochBytes, actionHash])
  * seatId = the lower-tier council's contract address (as registered in _seats).
  */
 export function computeFederatedApprovalMessage(
@@ -252,7 +254,7 @@ export function computeFederatedApprovalMessage(
 /**
  * Message the CONSTITUTIONAL AUTHORITY signs to attest a passed referendum
  * for a constitutional action:
- *   H([H(pad("pp:msv7:constitutional")), self, epochBytes, actionHash])
+ *   H([H(pad("pp:msfed:v1:constitutional")), self, epochBytes, actionHash])
  */
 export function computeConstitutionalMessage(
   selfAddress: Uint8Array,
@@ -269,8 +271,8 @@ export function computeConstitutionalMessage(
 /**
  * Message the PARENT AUTHORITY signs for dead-council recovery
  * (executeConveneRotation):
- *   H([H(pad("pp:msv7:convene")), self, epochBytes, in0..in4, seedCommitment])
- * NOTE: no nonce — replay protection comes from the epoch, which increments
+ *   H([H(pad("pp:msfed:v1:convene")), self, epochBytes, in0..in4, seedCommitment])
+ * NOTE: no nonce - replay protection comes from the epoch, which increments
  * on execution, invalidating the signed message immediately; self prevents
  * cross-deployment replay.
  */
@@ -298,7 +300,7 @@ export function computeConveneMessage(
 }
 
 // =============================================================================
-// Approval-map key (off-chain mirror of the contract's approvalKey) — useful
+// Approval-map key (off-chain mirror of the contract's approvalKey) - useful
 // for indexer queries / debugging pending-approval state.
 //   H([epochBytes, actionHash])
 // =============================================================================
@@ -309,7 +311,7 @@ export function computeApprovalKey(actionHash: Uint8Array, epoch: bigint): Uint8
 }
 
 // =============================================================================
-// Validation helpers — mirror contract asserts so ceremonies fail BEFORE any
+// Validation helpers - mirror contract asserts so ceremonies fail BEFORE any
 // on-chain transaction.
 // =============================================================================
 
@@ -323,7 +325,7 @@ function assertDistinct(label: string, ids: Uint8Array[]): void {
   for (const id of ids) {
     const hex = Buffer.from(id).toString('hex');
     if (seen.has(hex)) {
-      throw new Error(`${label}: duplicate seat id ${hex.slice(0, 16)}…`);
+      throw new Error(`${label}: duplicate seat id ${hex.slice(0, 16)}...`);
     }
     seen.add(hex);
   }

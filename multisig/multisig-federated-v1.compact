@@ -1,24 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// PollPowerMultiSig v7 (DEV DRAFT, rev 2) — Federated council with
+// PollPowerMultiSigFederated v1 (DEV DRAFT, rev 4) - Federated council with
 // constitutional floor, epoch-bound sortition seats, attested federation
 // seats, and parent-convened dead-council recovery.
 //
-// Status:  DEV DRAFT — NOT deployed, NOT production. Design exploration for
+// RENAMED from "multisig-v7-federated" (rev 4, 2026-07-08): a SEPARATE
+// "multisig v7" (v6 + self-address binding) was already DEPLOYED to preview
+// on 2026-07-05 at e03478718030d07eb1e7d8fa4fd322751e000fa48195b67ea442ec8b29f47ce5
+// (multisig-v7-deployment.public.json on kenya, settlement-api repo,
+// dev/multisig-ed25519-v7). That lineage owns the "v7" name. This contract
+// is a NEW LINE: "federated-v1". Domain separators bumped pp:msv7:* →
+// pp:msfed:v1:* so the two contracts can never share signed preimages.
+//
+// Status:  DEV DRAFT - NOT deployed, NOT production. Design exploration for
 //          the Fractal Federation (whitepaper section, 2026-07-07).
 // Author:  Joi (with Garrett)
 // Date:    2026-07-08 (rev 3, same night)
 // Related: ~/compile-scratch/multisig-v7/multisig-v7-ed25519.compact on kenya
-//          (2026-07-04, dev/multisig-ed25519-v7 lineage) — a SEPARATE "v7"
+//          (2026-07-04, dev/multisig-ed25519-v7 lineage) - a SEPARATE "v7"
 //          exploring self-address binding on the v6 base. Rev 3 adopts its
-//          key idea (kernel.self() folded into every actionHash — closes
+//          key idea (kernel.self() folded into every actionHash - closes
 //          cross-deployment replay, supersedes the v6.1 contractTag approach)
 //          so the two lineages can be reconciled later without a re-audit of
 //          the preimage scheme. NAMING NOTE: these two "v7"s must be merged
 //          or renamed before either deploys.
 // Base:    multisig-v6.2-ed25519.compact (H-3 hardened)
 // Tooling: tooling/v7-actionhash.ts (companion, this PR)
-// Design:  workspace/deliverables/fractal-federation.md — implements:
+// Design:  workspace/deliverables/fractal-federation.md - implements:
 //            §1  Constitutional floor
 //            §4  Parent-convened recovery (NEW in rev 2)
 //            §7  Sortition / epoch-bound seats
@@ -28,7 +36,7 @@
 // DESIGN NOTES (why this differs from v6.2)
 // =============================================================================
 //
-// 1. FIXED COUNCIL OF 5, ROTATED — addAdmin/removeAdmin are REMOVED.
+// 1. FIXED COUNCIL OF 5, ROTATED - addAdmin/removeAdmin are REMOVED.
 //    Councils are re-drawn by per-epoch sortition from the tier's membership
 //    (fractal-federation §7). executeRotateSeats replaces the whole seat set
 //    atomically, binding a seedCommitment so the sortition draw is auditable
@@ -36,8 +44,8 @@
 //
 // 2. EPOCH-KEYED APPROVALS. Every approval is recorded under
 //    hash(epoch ‖ actionHash) and every signature binds the epoch. Rotation
-//    increments the epoch, so all pending approvals — and all signatures
-//    collected under the old council — die instantly.
+//    increments the epoch, so all pending approvals - and all signatures
+//    collected under the old council - die instantly.
 //
 // 3. CONSTITUTIONAL FLOOR (fractal-federation §1, §6). Rule-changing
 //    operations (threshold, constitutional authority) require BOTH council
@@ -45,15 +53,15 @@
 //    authority that a network-wide member referendum passed.
 //
 //    AUTHORITY KEY ROADMAP (resolves open question #2 of rev 1):
-//      pilot      — single service key, held like the Meter Authority key
+//      pilot      - single service key, held like the Meter Authority key
 //                   (encrypted at rest, relay-side, never in git).
-//      production — the referendum instrument is community-poll v2 (already
+//      production - the referendum instrument is community-poll v2 (already
 //                   production). The authority service signs the attestation
 //                   IFF a designated poll contract shows the measure passed
-//                   with required turnout — reducing the trust bound from
+//                   with required turnout - reducing the trust bound from
 //                   "trust one key" to "trust one key to honestly relay an
 //                   on-chain-verifiable poll result", which is auditable.
-//      horizon    — the authority key becomes FROST threshold-held.
+//      horizon    - the authority key becomes FROST threshold-held.
 //
 // 4. FEDERATION SEATS (fractal-federation §2b, §8). A seat id may be a
 //    lower-tier council CONTRACT ADDRESS instead of a person's pubkey.
@@ -64,7 +72,7 @@
 //
 // 5. PARENT-CONVENED RECOVERY (fractal-federation §4; NEW in rev 2, resolves
 //    open question #1). A council that loses 3+ seats can never again reach
-//    quorum — including for rotating itself. Recovery rule:
+//    quorum - including for rotating itself. Recovery rule:
 //
 //      If NO council execute* action has landed for CONVENE_PERIOD (30 days,
 //      block-time validated), the registered parent authority may trigger a
@@ -72,7 +80,7 @@
 //
 //    "Convene, never appoint": the parent's signature binds the incoming
 //    seats AND the seedCommitment of the sortition draw that produced them.
-//    The draw is auditable off-chain exactly like a normal rotation — anyone
+//    The draw is auditable off-chain exactly like a normal rotation - anyone
 //    can recompute the draw from the revealed seed and verify the incoming
 //    seats match. A parent that appoints cronies produces an unverifiable
 //    seed, which is publicly visible misbehavior. (Cryptographic enforcement
@@ -83,7 +91,7 @@
 //    execute* with a caller-supplied, block-time-validated (L-3 pattern),
 //    monotonically non-decreasing currentTime. An executor could pass a
 //    stale-but-monotonic time, but doing so only ages the council toward
-//    convene-ability — it hurts the council, not the parent, and any honest
+//    convene-ability - it hurts the council, not the parent, and any honest
 //    council action resets the clock.
 //
 // 6. WITNESS TRUST (unchanged from v6.2): signature_valid is verified by the
@@ -94,14 +102,14 @@
 //    lineage). Every recomputed actionHash folds kernel.self().bytes in as
 //    the second field: [opSel, self, ...params, nonce]. Without this, an
 //    identical action approved on deployment A could be replayed on
-//    deployment B (same seats, same nonce state) — the M-2 class of attack.
+//    deployment B (same seats, same nonce state) - the M-2 class of attack.
 //    One mechanism, in-circuit, no separate contractTag layer. The convene
 //    message binds self directly (it has no actionHash); approval messages
 //    bind self transitively through the actionHash.
 //
 //    L-2 NOTE (generic execute): execute(actionHash) cannot recompute a
 //    caller-defined hash in-circuit. Off-chain signers MUST include the
-//    deployment address in generic actionHashes — enforced by convention in
+//    deployment address in generic actionHashes - enforced by convention in
 //    tooling/v7-actionhash.ts, same limitation as every prior version.
 //
 // =============================================================================
@@ -192,7 +200,7 @@ circuit approvalKey(actionHash: Bytes<32>): Bytes<32> {
 
 // Message a DIRECT seat signs: domain ‖ self ‖ epoch ‖ actionHash.
 circuit directApprovalMsg(actionHash: Bytes<32>): Bytes<32> {
-  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msv7:approve:direct"));
+  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:approve:direct"));
   const epochBytes = (_epoch.read() as Field) as Bytes<32>;
   return persistentHash<Vector<4, Bytes<32>>>([domain, selfBytes(), epochBytes, actionHash]);
 }
@@ -200,14 +208,14 @@ circuit directApprovalMsg(actionHash: Bytes<32>): Bytes<32> {
 // Message a federation seat's ATTESTOR signs: domain ‖ seatId ‖ epoch ‖
 // actionHash. Binding seatId prevents attestor-signature replay across seats.
 circuit federatedApprovalMsg(seatId: Bytes<32>, actionHash: Bytes<32>): Bytes<32> {
-  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msv7:approve:fed"));
+  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:approve:fed"));
   const epochBytes = (_epoch.read() as Field) as Bytes<32>;
   return persistentHash<Vector<5, Bytes<32>>>([domain, selfBytes(), seatId, epochBytes, actionHash]);
 }
 
 // Message the CONSTITUTIONAL AUTHORITY signs to attest a passed referendum.
 circuit constitutionalMsg(actionHash: Bytes<32>): Bytes<32> {
-  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msv7:constitutional"));
+  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:constitutional"));
   const epochBytes = (_epoch.read() as Field) as Bytes<32>;
   return persistentHash<Vector<4, Bytes<32>>>([domain, selfBytes(), epochBytes, actionHash]);
 }
@@ -223,7 +231,7 @@ circuit touchCouncilClock(currentTime: Uint<64>): [] {
 }
 
 // =============================================================================
-// Initialization — 5 seats, strict-majority threshold, authority keys
+// Initialization - 5 seats, strict-majority threshold, authority keys
 // =============================================================================
 export circuit initialize(
   seat1: Bytes<32>,
@@ -262,7 +270,7 @@ export circuit initialize(
 }
 
 // =============================================================================
-// Approve — direct seat (Ed25519, epoch-bound message)
+// Approve - direct seat (Ed25519, epoch-bound message)
 // =============================================================================
 export circuit approve(
   actionHash: Bytes<32>,
@@ -287,7 +295,7 @@ export circuit approve(
 }
 
 // =============================================================================
-// Approve — federation seat (attested lower-tier quorum; fractal-fed §8)
+// Approve - federation seat (attested lower-tier quorum; fractal-fed §8)
 // =============================================================================
 export circuit approveFederated(
   actionHash: Bytes<32>,
@@ -353,7 +361,7 @@ export circuit isApproved(actionHash: Bytes<32>): Boolean {
 }
 
 // =============================================================================
-// Execute — generic operational action (council quorum only)
+// Execute - generic operational action (council quorum only)
 // =============================================================================
 export circuit execute(actionHash: Bytes<32>, currentTime: Uint<64>): [] {
   assert(_initialized, "Not initialized");
@@ -378,7 +386,7 @@ export circuit executeSetSeatAttestor(
   const dAttestor = disclose(attestorPubkey);
   assert(_seats.member(dSeat), "Unknown seat");
 
-  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msv7:setSeatAttestor"));
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:setSeatAttestor"));
   const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
   const actionHash = persistentHash<Vector<5, Bytes<32>>>(
     [opSel, selfBytes(), dSeat, dAttestor, nextNonce]);
@@ -410,7 +418,7 @@ export circuit executeRotateSeats(
   const dIn = disclose(incoming);
   const dSeed = disclose(seedCommitment);
 
-  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msv7:rotateSeats"));
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:rotateSeats"));
   const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
   const actionHash = persistentHash<Vector<14, Bytes<32>>>([
     opSel, selfBytes(),
@@ -450,10 +458,10 @@ export circuit executeRotateSeats(
 // RECOVERY: parent-convened rotation of a dead council (fractal-fed §4)
 // =============================================================================
 //
-// No council quorum required — that's the point: the council is dead. Gated
+// No council quorum required - that's the point: the council is dead. Gated
 // instead on (a) CONVENE_PERIOD of provable council inactivity and (b) the
 // parent authority's signature over the incoming seats + sortition seed.
-// The parent CONVENES (attests to an auditable draw); it does not appoint —
+// The parent CONVENES (attests to an auditable draw); it does not appoint -
 // see header note 5 for the auditability argument and its limits.
 export circuit executeConveneRotation(
   incoming: Vector<5, Bytes<32>>,
@@ -479,7 +487,7 @@ export circuit executeConveneRotation(
   // Parent signs: domain ‖ self ‖ epoch ‖ incoming[0..4] ‖ seed. Epoch
   // binding prevents replay across rotations (epoch increments below);
   // self binding prevents replay across deployments.
-  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msv7:convene"));
+  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:convene"));
   const epochBytes = (_epoch.read() as Field) as Bytes<32>;
   const msg = persistentHash<Vector<9, Bytes<32>>>([
     domain, selfBytes(), epochBytes,
@@ -518,7 +526,7 @@ export circuit executeSetThreshold(
          "Threshold must be a majority of the 5 seats");
 
   const dThreshold = disclose(newThreshold);
-  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msv7:setThreshold"));
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:setThreshold"));
   const thresholdBytes = (dThreshold as Field) as Bytes<32>;
   const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
   const actionHash = persistentHash<Vector<4, Bytes<32>>>(
@@ -527,7 +535,7 @@ export circuit executeSetThreshold(
   // Gate 1: council quorum.
   assert(isApproved(actionHash), "setThreshold: not enough approvals");
 
-  // Gate 2: constitutional floor — referendum attestation.
+  // Gate 2: constitutional floor - referendum attestation.
   const msg = constitutionalMsg(actionHash);
   const sigOk = signature_valid(_constitutionalAuthority, msg, authoritySignature);
   assert(disclose(sigOk), "setThreshold: bad constitutional attestation");
@@ -550,7 +558,7 @@ export circuit executeSetConstitutionalAuthority(
   assert(_initialized, "Not initialized");
 
   const dAuthority = disclose(newAuthority);
-  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msv7:setConstAuthority"));
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:setConstAuthority"));
   const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
   const actionHash = persistentHash<Vector<4, Bytes<32>>>(
     [opSel, selfBytes(), dAuthority, nextNonce]);
@@ -575,7 +583,7 @@ export circuit executeSetConstitutionalAuthority(
 // =============================================================================
 //
 // Dual-gated: council quorum + constitutional attestation. The parent
-// relationship is a rule of the tree, not an operational knob — a captured
+// relationship is a rule of the tree, not an operational knob - a captured
 // council must not be able to re-point its own recovery authority.
 export circuit executeSetParentAuthority(
   newParent: Bytes<32>,
@@ -585,7 +593,7 @@ export circuit executeSetParentAuthority(
   assert(_initialized, "Not initialized");
 
   const dParent = disclose(newParent);
-  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msv7:setParentAuthority"));
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:setParentAuthority"));
   const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
   const actionHash = persistentHash<Vector<4, Bytes<32>>>(
     [opSel, selfBytes(), dParent, nextNonce]);
