@@ -45,12 +45,13 @@ const Bytes32 = new CompactTypeBytes(32);
 const Vec2Bytes32 = new CompactTypeVector(2, Bytes32);
 const Vec4Bytes32 = new CompactTypeVector(4, Bytes32);
 const Vec5Bytes32 = new CompactTypeVector(5, Bytes32);
-const Vec9Bytes32 = new CompactTypeVector(9, Bytes32);
+const Vec10Bytes32 = new CompactTypeVector(10, Bytes32);
 const Vec14Bytes32 = new CompactTypeVector(14, Bytes32);
 
 // v7 op selectors + signing domains. MUST match pad(32, "...") in the contract.
 export const V7_OP = {
   setSeatAttestor: 'pp:msfed:v1:setSeatAttestor',
+  clearSeatAttestor: 'pp:msfed:v1:clearSeatAttestor',
   rotateSeats: 'pp:msfed:v1:rotateSeats',
   setThreshold: 'pp:msfed:v1:setThreshold',
   setConstAuthority: 'pp:msfed:v1:setConstAuthority',
@@ -269,18 +270,36 @@ export function computeConstitutionalMessage(
 }
 
 /**
+ * executeClearSeatAttestor actionHash:
+ *   H([opSel, self, seatId, nonceBytes])
+ */
+export function computeClearSeatAttestorActionHash(
+  selfAddress: Uint8Array,
+  seatId: Uint8Array,
+  nextNonce: bigint,
+): Uint8Array {
+  assert32('selfAddress', selfAddress);
+  assert32('seatId', seatId);
+  const opSel = domainSel(V7_OP.clearSeatAttestor);
+  const nonceBytes = uintToBytes32(nextNonce, 'v7 nonce');
+  return persistentHash(Vec4Bytes32, [opSel, selfAddress, seatId, nonceBytes]);
+}
+
+/**
  * Message the PARENT AUTHORITY signs for dead-council recovery
  * (executeConveneRotation):
- *   H([H(pad("pp:msfed:v1:convene")), self, epochBytes, in0..in4, seedCommitment])
- * NOTE: no nonce - replay protection comes from the epoch, which increments
- * on execution, invalidating the signed message immediately; self prevents
- * cross-deployment replay.
+ *   H([H(pad("pp:msfed:v1:convene")), self, epochBytes, timeBytes, in0..in4, seedCommitment])
+ * Replay protection: epoch (increments on execution) + self (deployment) +
+ * currentTime (F-2: the signature attests to one exact convene time, so a
+ * pre-signed convene cannot be held and replayed in a later dead-window
+ * within the same epoch).
  */
 export function computeConveneMessage(
   selfAddress: Uint8Array,
   incoming: Uint8Array[],
   seedCommitment: Uint8Array,
   epoch: bigint,
+  currentTime: bigint,
 ): Uint8Array {
   assert32('selfAddress', selfAddress);
   if (incoming.length !== COUNCIL_SIZE) throw new Error('incoming must have 5 seats');
@@ -290,10 +309,12 @@ export function computeConveneMessage(
 
   const domain = domainSel(V7_DOMAIN.convene);
   const epochBytes = uintToBytes32(epoch, 'v7 epoch');
-  return persistentHash(Vec9Bytes32, [
+  const timeBytes = uintToBytes32(currentTime, 'v7 conveneTime');
+  return persistentHash(Vec10Bytes32, [
     domain,
     selfAddress,
     epochBytes,
+    timeBytes,
     ...incoming,
     seedCommitment,
   ]);

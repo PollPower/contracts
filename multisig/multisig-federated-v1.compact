@@ -404,6 +404,38 @@ export circuit executeSetSeatAttestor(
 }
 
 // =============================================================================
+// OPERATIONAL: clear a federation seat's attestor (revert to direct seat)
+// =============================================================================
+//
+// F-1 (adversarial review 2026-07-08): without this, federating a seat was
+// irreversible — _federated persists across rotations for the same id, so a
+// mis-federated seat could never approve directly again. Council-approved,
+// symmetric with executeSetSeatAttestor.
+export circuit executeClearSeatAttestor(
+  seatId: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const dSeat = disclose(seatId);
+  assert(_federated.member(dSeat), "Not a federation seat");
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:clearSeatAttestor"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<4, Bytes<32>>>(
+    [opSel, selfBytes(), dSeat, nextNonce]);
+
+  assert(isApproved(actionHash), "clearSeatAttestor: not enough approvals");
+  touchCouncilClock(currentTime);
+
+  _federated.remove(dSeat);
+  _attestors.remove(dSeat);
+
+  _approvals.remove(approvalKey(actionHash));
+  _nonce.increment(1);
+}
+
+// =============================================================================
 // OPERATIONAL: rotate the seat set (sortition epoch turn; fractal-fed §7)
 // =============================================================================
 export circuit executeRotateSeats(
@@ -484,13 +516,17 @@ export circuit executeConveneRotation(
   const dIn = disclose(incoming);
   const dSeed = disclose(seedCommitment);
 
-  // Parent signs: domain ‖ self ‖ epoch ‖ incoming[0..4] ‖ seed. Epoch
-  // binding prevents replay across rotations (epoch increments below);
-  // self binding prevents replay across deployments.
+  // Parent signs: domain ‖ self ‖ epoch ‖ time ‖ incoming[0..4] ‖ seed.
+  // Epoch binding prevents replay across rotations (epoch increments below);
+  // self binding prevents replay across deployments; time binding (F-2,
+  // adversarial review 2026-07-08) prevents a pre-signed convene from being
+  // held and replayed in a later dead-window within the same epoch — the
+  // signature is only valid for the exact currentTime it attests to.
   const domain = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:convene"));
   const epochBytes = (_epoch.read() as Field) as Bytes<32>;
-  const msg = persistentHash<Vector<9, Bytes<32>>>([
-    domain, selfBytes(), epochBytes,
+  const timeBytes = (disclose(currentTime) as Field) as Bytes<32>;
+  const msg = persistentHash<Vector<10, Bytes<32>>>([
+    domain, selfBytes(), epochBytes, timeBytes,
     dIn[0], dIn[1], dIn[2], dIn[3], dIn[4],
     dSeed,
   ]);

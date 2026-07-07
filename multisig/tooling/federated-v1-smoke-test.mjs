@@ -50,14 +50,16 @@ const fedMsg = (self, seat, epoch, ah) =>
   H(5, [dsel('pp:msfed:v1:approve:fed'), self, seat, u2b(epoch), ah]);
 const constMsg = (self, epoch, ah) =>
   H(4, [dsel('pp:msfed:v1:constitutional'), self, u2b(epoch), ah]);
-const conveneMsg = (self, epoch, incoming, seed) =>
-  H(9, [dsel('pp:msfed:v1:convene'), self, u2b(epoch), ...incoming, seed]);
+const conveneMsg = (self, epoch, time, incoming, seed) =>
+  H(10, [dsel('pp:msfed:v1:convene'), self, u2b(epoch), u2b(time), ...incoming, seed]);
 
 // action hashes
 const setThresholdAH = (self, t, nonce) =>
   H(4, [dsel('pp:msfed:v1:setThreshold'), self, u2b(BigInt(t)), u2b(nonce)]);
 const setAttestorAH = (self, seat, att, nonce) =>
   H(5, [dsel('pp:msfed:v1:setSeatAttestor'), self, seat, att, u2b(nonce)]);
+const clearAttestorAH = (self, seat, nonce) =>
+  H(4, [dsel('pp:msfed:v1:clearSeatAttestor'), self, seat, u2b(nonce)]);
 const rotateAH = (self, out, inc, seed, nonce) =>
   H(14, [dsel('pp:msfed:v1:rotateSeats'), self, ...out, ...inc, seed, u2b(nonce)]);
 
@@ -299,11 +301,44 @@ test('old-epoch signatures are dead after rotation', () => {
   call('approve', ah, nextSeats[0].pk, ed.sign(newMsg, nextSeats[0].sk));
 });
 
+// --- clearSeatAttestor (F-1) ---------------------------------------------------
+test('clearSeatAttestor: federation seat reverts to direct (F-1)', () => {
+  // seats[4] was federated pre-rotation; its id is out of _seats now, but
+  // _federated persists. Re-federate a CURRENT seat first, then clear it.
+  const nonce1 = peek('getNonce') + 1n;
+  const ah1 = setAttestorAH(selfBytes, nextSeats[3].pk, attestor.pk, nonce1);
+  const msg1 = directMsg(selfBytes, 1n, ah1);
+  call('approve', ah1, nextSeats[0].pk, ed.sign(msg1, nextSeats[0].sk));
+  call('approve', ah1, nextSeats[1].pk, ed.sign(msg1, nextSeats[1].sk));
+  call('approve', ah1, nextSeats[2].pk, ed.sign(msg1, nextSeats[2].sk));
+  call('executeSetSeatAttestor', nextSeats[3].pk, attestor.pk, NOW);
+  if (peek('isFederatedSeat', nextSeats[3].pk) !== true) throw new Error('should be federated');
+
+  const nonce2 = peek('getNonce') + 1n;
+  const ah2 = clearAttestorAH(selfBytes, nextSeats[3].pk, nonce2);
+  const msg2 = directMsg(selfBytes, 1n, ah2);
+  call('approve', ah2, nextSeats[0].pk, ed.sign(msg2, nextSeats[0].sk));
+  call('approve', ah2, nextSeats[1].pk, ed.sign(msg2, nextSeats[1].sk));
+  call('approve', ah2, nextSeats[2].pk, ed.sign(msg2, nextSeats[2].sk));
+  call('executeClearSeatAttestor', nextSeats[3].pk, NOW);
+  if (peek('isFederatedSeat', nextSeats[3].pk) !== false) throw new Error('should be direct again');
+
+  // and the seat can approve directly once more
+  const ah3 = (() => { const b = new Uint8Array(32); b.fill(0x33); return b; })();
+  const msg3 = directMsg(selfBytes, 1n, ah3);
+  call('approve', ah3, nextSeats[3].pk, ed.sign(msg3, nextSeats[3].sk));
+});
+
+test('clearSeatAttestor: rejected for non-federated seat', () => {
+  expectThrow(() => call('executeClearSeatAttestor', nextSeats[0].pk, NOW),
+    'not a federation seat', 'clear-non-fed');
+});
+
 // --- convene (dead-council recovery) -------------------------------------------
 test('conveneRotation: rejected while council is alive (period not elapsed)', () => {
   const incoming = seats.map((s) => s.pk); // rotate the originals back in
   const seed = (() => { const b = new Uint8Array(32); b.fill(0xAB); return b; })();
-  const msg = conveneMsg(selfBytes, 1n, incoming, seed);
+  const msg = conveneMsg(selfBytes, 1n, NOW, incoming, seed);
   expectThrow(
     () => call('executeConveneRotation', incoming, seed, NOW, ed.sign(msg, parent.sk)),
     'not dead', 'convene-too-early');
