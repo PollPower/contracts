@@ -1,0 +1,650 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPowerMultiSigFederated v1 (DEV DRAFT, rev 4) - Federated council with
+// constitutional floor, epoch-bound sortition seats, attested federation
+// seats, and parent-convened dead-council recovery.
+//
+// RENAMED from "multisig-v7-federated" (rev 4, 2026-07-08): a SEPARATE
+// "multisig v7" (v6 + self-address binding) was already DEPLOYED to preview
+// on 2026-07-05 at e03478718030d07eb1e7d8fa4fd322751e000fa48195b67ea442ec8b29f47ce5
+// (multisig-v7-deployment.public.json on kenya, settlement-api repo,
+// dev/multisig-ed25519-v7). That lineage owns the "v7" name. This contract
+// is a NEW LINE: "federated-v1". Domain separators bumped pp:msv7:* →
+// pp:msfed:v1:* so the two contracts can never share signed preimages.
+//
+// Status:  DEV DRAFT - NOT deployed, NOT production. Design exploration for
+//          the Fractal Federation (whitepaper section, 2026-07-07).
+// Author:  Joi (with Garrett)
+// Date:    2026-07-08 (rev 3, same night)
+// Related: ~/compile-scratch/multisig-v7/multisig-v7-ed25519.compact on kenya
+//          (2026-07-04, dev/multisig-ed25519-v7 lineage) - a SEPARATE "v7"
+//          exploring self-address binding on the v6 base. Rev 3 adopts its
+//          key idea (kernel.self() folded into every actionHash - closes
+//          cross-deployment replay, supersedes the v6.1 contractTag approach)
+//          so the two lineages can be reconciled later without a re-audit of
+//          the preimage scheme. NAMING NOTE: these two "v7"s must be merged
+//          or renamed before either deploys.
+// Base:    multisig-v6.2-ed25519.compact (H-3 hardened)
+// Tooling: tooling/v7-actionhash.ts (companion, this PR)
+// Design:  workspace/deliverables/fractal-federation.md - implements:
+//            §1  Constitutional floor
+//            §4  Parent-convened recovery (NEW in rev 2)
+//            §7  Sortition / epoch-bound seats
+//            §8  Federation seats via attested-quorum witness
+//
+// =============================================================================
+// DESIGN NOTES (why this differs from v6.2)
+// =============================================================================
+//
+// 1. FIXED COUNCIL OF 5, ROTATED - addAdmin/removeAdmin are REMOVED.
+//    Councils are re-drawn by per-epoch sortition from the tier's membership
+//    (fractal-federation §7). executeRotateSeats replaces the whole seat set
+//    atomically, binding a seedCommitment so the sortition draw is auditable
+//    off-chain. Structurally eliminates H-3: the set size is always 5.
+//
+// 2. EPOCH-KEYED APPROVALS. Every approval is recorded under
+//    hash(epoch ‖ actionHash) and every signature binds the epoch. Rotation
+//    increments the epoch, so all pending approvals - and all signatures
+//    collected under the old council - die instantly.
+//
+// 3. CONSTITUTIONAL FLOOR (fractal-federation §1, §6). Rule-changing
+//    operations (threshold, constitutional authority) require BOTH council
+//    quorum AND an Ed25519 attestation from the registered constitutional
+//    authority that a network-wide member referendum passed.
+//
+//    AUTHORITY KEY ROADMAP (resolves open question #2 of rev 1):
+//      pilot      - single service key, held like the Meter Authority key
+//                   (encrypted at rest, relay-side, never in git).
+//      production - the referendum instrument is community-poll v2 (already
+//                   production). The authority service signs the attestation
+//                   IFF a designated poll contract shows the measure passed
+//                   with required turnout - reducing the trust bound from
+//                   "trust one key" to "trust one key to honestly relay an
+//                   on-chain-verifiable poll result", which is auditable.
+//      horizon    - the authority key becomes FROST threshold-held.
+//
+// 4. FEDERATION SEATS (fractal-federation §2b, §8). A seat id may be a
+//    lower-tier council CONTRACT ADDRESS instead of a person's pubkey.
+//    The lower tier's quorum enters as an ATTESTED observation: a registered
+//    attestor key co-signs (seatId ‖ epoch ‖ actionHash) after observing
+//    on-chain quorum at the lower tier (Meter Authority pattern). Faking a
+//    cluster's approval requires compromising that cluster's attestor key.
+//
+// 5. PARENT-CONVENED RECOVERY (fractal-federation §4; NEW in rev 2, resolves
+//    open question #1). A council that loses 3+ seats can never again reach
+//    quorum - including for rotating itself. Recovery rule:
+//
+//      If NO council execute* action has landed for CONVENE_PERIOD (30 days,
+//      block-time validated), the registered parent authority may trigger a
+//      rotation WITHOUT council quorum via executeConveneRotation.
+//
+//    "Convene, never appoint": the parent's signature binds the incoming
+//    seats AND the seedCommitment of the sortition draw that produced them.
+//    The draw is auditable off-chain exactly like a normal rotation - anyone
+//    can recompute the draw from the revealed seed and verify the incoming
+//    seats match. A parent that appoints cronies produces an unverifiable
+//    seed, which is publicly visible misbehavior. (Cryptographic enforcement
+//    of the draw itself is future work; the auditability commitment is the
+//    same one regular rotation already relies on.)
+//
+//    Liveness clock: _lastCouncilActionTime is updated by every successful
+//    execute* with a caller-supplied, block-time-validated (L-3 pattern),
+//    monotonically non-decreasing currentTime. An executor could pass a
+//    stale-but-monotonic time, but doing so only ages the council toward
+//    convene-ability - it hurts the council, not the parent, and any honest
+//    council action resets the clock.
+//
+// 6. WITNESS TRUST (unchanged from v6.2): signature_valid is verified by the
+//    off-chain prover; the contract pins WHICH key must have signed. A lying
+//    prover can only impersonate the key it already holds.
+//
+// 7. SELF-ADDRESS BINDING (rev 3; adopted from the dev/multisig-ed25519-v7
+//    lineage). Every recomputed actionHash folds kernel.self().bytes in as
+//    the second field: [opSel, self, ...params, nonce]. Without this, an
+//    identical action approved on deployment A could be replayed on
+//    deployment B (same seats, same nonce state) - the M-2 class of attack.
+//    One mechanism, in-circuit, no separate contractTag layer. The convene
+//    message binds self directly (it has no actionHash); approval messages
+//    bind self transitively through the actionHash.
+//
+//    L-2 NOTE (generic execute): execute(actionHash) cannot recompute a
+//    caller-defined hash in-circuit. Off-chain signers MUST include the
+//    deployment address in generic actionHashes - enforced by convention in
+//    tooling/v7-actionhash.ts, same limitation as every prior version.
+//
+// =============================================================================
+// ACCEPTED / DOCUMENTED INVARIANTS (resolves open question #3 of rev 1)
+// =============================================================================
+//
+//   INVARIANT (stale attestor entries are inert): _federated and _attestors
+//   entries for rotated-out seats are NOT garbage-collected (Compact sets and
+//   maps cannot be iterated in-circuit). This is SAFE because both approval
+//   paths (approve, approveFederated) hard-require _seats membership of the
+//   seat id, and _seats is wholesale-replaced at rotation. A stale attestor
+//   key can therefore never contribute an approval. Cost: a few dead map
+//   entries per rotation. Retained federation seats keep their attestor
+//   across epochs (intended: the cluster persists, its council rotates).
+//
+//   INVARIANT (council size): _seats.size() == 5 at all times after
+//   initialize(); asserted at initialize, rotateSeats, and conveneRotation.
+//
+// =============================================================================
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Witness: Ed25519 signature verification (same shape + trust bound as v6.2)
+// =============================================================================
+witness signature_valid(
+  pubkey: Bytes<32>,
+  messageHash: Bytes<32>,
+  signature: Bytes<64>,
+): Boolean;
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+// Seat identifiers. Direct seat: an Ed25519 pubkey. Federation seat: the
+// lower-tier council's contract address (32 bytes either way).
+export ledger _seats: Set<Bytes<32>>;
+
+// Which seat ids are federation seats (approve via attestor, not raw sig).
+export ledger _federated: Set<Bytes<32>>;
+
+// Federation seat -> attestor Ed25519 pubkey.
+export ledger _attestors: Map<Bytes<32>, Bytes<32>>;
+
+// Council threshold. Strict majority of the fixed 5 seats (>= 3).
+export ledger _threshold: Uint<8>;
+
+// Seat epoch. Incremented by rotation; kills all pending approvals.
+export ledger _epoch: Counter;
+
+// Nonce for action replay protection.
+export ledger _nonce: Counter;
+
+// Pending approvals: hash(epoch ‖ actionHash) -> set of approving seat ids.
+export ledger _approvals: Map<Bytes<32>, Set<Bytes<32>>>;
+
+// Constitutional authority pubkey (referendum attestation key; see roadmap).
+export ledger _constitutionalAuthority: Bytes<32>;
+
+// Parent-tier authority pubkey (dead-council recovery; fractal-fed §4).
+// At the network root this should be set to the constitutional authority.
+export ledger _parentAuthority: Bytes<32>;
+
+// Liveness clock for dead-council detection. Updated by every execute*.
+export ledger _lastCouncilActionTime: Uint<64>;
+
+// Initialization guard.
+export ledger _initialized: Boolean;
+
+// =============================================================================
+// Internal helpers
+// =============================================================================
+
+// This deployment's contract address (self-address binding; header note 7).
+circuit selfBytes(): Bytes<32> {
+  return disclose(kernel.self()).bytes;
+}
+
+// Approval-map key: binds the current epoch so rotation invalidates
+// everything pending.
+circuit approvalKey(actionHash: Bytes<32>): Bytes<32> {
+  const epochBytes = (_epoch.read() as Field) as Bytes<32>;
+  return persistentHash<Vector<2, Bytes<32>>>([epochBytes, actionHash]);
+}
+
+// Message a DIRECT seat signs: domain ‖ self ‖ epoch ‖ actionHash.
+circuit directApprovalMsg(actionHash: Bytes<32>): Bytes<32> {
+  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:approve:direct"));
+  const epochBytes = (_epoch.read() as Field) as Bytes<32>;
+  return persistentHash<Vector<4, Bytes<32>>>([domain, selfBytes(), epochBytes, actionHash]);
+}
+
+// Message a federation seat's ATTESTOR signs: domain ‖ seatId ‖ epoch ‖
+// actionHash. Binding seatId prevents attestor-signature replay across seats.
+circuit federatedApprovalMsg(seatId: Bytes<32>, actionHash: Bytes<32>): Bytes<32> {
+  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:approve:fed"));
+  const epochBytes = (_epoch.read() as Field) as Bytes<32>;
+  return persistentHash<Vector<5, Bytes<32>>>([domain, selfBytes(), seatId, epochBytes, actionHash]);
+}
+
+// Message the CONSTITUTIONAL AUTHORITY signs to attest a passed referendum.
+circuit constitutionalMsg(actionHash: Bytes<32>): Bytes<32> {
+  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:constitutional"));
+  const epochBytes = (_epoch.read() as Field) as Bytes<32>;
+  return persistentHash<Vector<4, Bytes<32>>>([domain, selfBytes(), epochBytes, actionHash]);
+}
+
+// L-3 pattern + monotonicity: validate a caller-supplied time and advance
+// the council liveness clock. Called by every execute* circuit.
+circuit touchCouncilClock(currentTime: Uint<64>): [] {
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "timestamp cannot be in the future");
+  assert(disclose(currentTime) >= _lastCouncilActionTime,
+         "timestamp must be monotonically non-decreasing");
+  _lastCouncilActionTime = disclose(currentTime);
+}
+
+// =============================================================================
+// Initialization - 5 seats, strict-majority threshold, authority keys
+// =============================================================================
+export circuit initialize(
+  seat1: Bytes<32>,
+  seat2: Bytes<32>,
+  seat3: Bytes<32>,
+  seat4: Bytes<32>,
+  seat5: Bytes<32>,
+  threshold: Uint<8>,
+  constitutionalAuthority: Bytes<32>,
+  parentAuthority: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assert(!_initialized, "Already initialized");
+  assert(threshold > 0 as Uint<8>, "Threshold must be > 0");
+  assert(threshold <= 5 as Uint<8>, "Threshold must be <= seat count (5)");
+  // Strict-majority floor (v6.2 Fix 3): threshold*2 > 5  =>  threshold >= 3.
+  assert((threshold as Uint<64>) * 2 as Uint<64> > 5 as Uint<64>,
+         "Initial threshold must be a majority of the 5 seats");
+  // Seed the liveness clock at deploy time so a freshly-deployed council is
+  // not immediately convene-able by the parent (clock starts NOW, not at 0).
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "timestamp cannot be in the future");
+
+  _seats.insert(disclose(seat1));
+  _seats.insert(disclose(seat2));
+  _seats.insert(disclose(seat3));
+  _seats.insert(disclose(seat4));
+  _seats.insert(disclose(seat5));
+  assert(_seats.size() == 5 as Uint<64>, "Initial seats must be 5 distinct ids");
+
+  _threshold = disclose(threshold);
+  _constitutionalAuthority = disclose(constitutionalAuthority);
+  _parentAuthority = disclose(parentAuthority);
+  _lastCouncilActionTime = disclose(currentTime);
+  _initialized = disclose(true);
+}
+
+// =============================================================================
+// Approve - direct seat (Ed25519, epoch-bound message)
+// =============================================================================
+export circuit approve(
+  actionHash: Bytes<32>,
+  signerPubkey: Bytes<32>,
+  signature: Bytes<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const dSigner = disclose(signerPubkey);
+  assert(_seats.member(dSigner), "Signer is not a seat");
+  assert(!_federated.member(dSigner), "Federation seat must use approveFederated");
+
+  const msg = directApprovalMsg(disclose(actionHash));
+  const sigOk = signature_valid(signerPubkey, msg, signature);
+  assert(disclose(sigOk), "Bad Ed25519 signature");
+
+  const key = approvalKey(disclose(actionHash));
+  if (!_approvals.member(key)) {
+    _approvals.insertDefault(key);
+  }
+  _approvals.lookup(key).insert(dSigner);
+}
+
+// =============================================================================
+// Approve - federation seat (attested lower-tier quorum; fractal-fed §8)
+// =============================================================================
+export circuit approveFederated(
+  actionHash: Bytes<32>,
+  seatId: Bytes<32>,
+  attestorSignature: Bytes<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const dSeat = disclose(seatId);
+  assert(_seats.member(dSeat), "Unknown seat");
+  assert(_federated.member(dSeat), "Not a federation seat");
+
+  const attestor = _attestors.lookup(dSeat);
+  const msg = federatedApprovalMsg(dSeat, disclose(actionHash));
+  const sigOk = signature_valid(attestor, msg, attestorSignature);
+  assert(disclose(sigOk), "Bad attestor signature");
+
+  const key = approvalKey(disclose(actionHash));
+  if (!_approvals.member(key)) {
+    _approvals.insertDefault(key);
+  }
+  _approvals.lookup(key).insert(dSeat);
+}
+
+// =============================================================================
+// Read circuits
+// =============================================================================
+
+export circuit isSeat(account: Bytes<32>): Boolean {
+  return _seats.member(disclose(account));
+}
+
+export circuit isFederatedSeat(account: Bytes<32>): Boolean {
+  return _federated.member(disclose(account));
+}
+
+export circuit getThreshold(): Uint<8> {
+  return _threshold;
+}
+
+export circuit getEpoch(): Uint<64> {
+  return _epoch.read();
+}
+
+export circuit getNonce(): Uint<64> {
+  return _nonce.read();
+}
+
+export circuit getLastCouncilActionTime(): Uint<64> {
+  return _lastCouncilActionTime;
+}
+
+export circuit getApprovalCount(actionHash: Bytes<32>): Uint<64> {
+  const key = approvalKey(disclose(actionHash));
+  if (_approvals.member(key)) {
+    return _approvals.lookup(key).size();
+  }
+  return 0 as Uint<64>;
+}
+
+export circuit isApproved(actionHash: Bytes<32>): Boolean {
+  return getApprovalCount(actionHash) >= (_threshold as Uint<64>);
+}
+
+// =============================================================================
+// Execute - generic operational action (council quorum only)
+// =============================================================================
+export circuit execute(actionHash: Bytes<32>, currentTime: Uint<64>): [] {
+  assert(_initialized, "Not initialized");
+  assert(isApproved(actionHash), "Not enough approvals");
+
+  touchCouncilClock(currentTime);
+  _approvals.remove(approvalKey(disclose(actionHash)));
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// OPERATIONAL: register a federation seat's attestor
+// =============================================================================
+export circuit executeSetSeatAttestor(
+  seatId: Bytes<32>,
+  attestorPubkey: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const dSeat = disclose(seatId);
+  const dAttestor = disclose(attestorPubkey);
+  assert(_seats.member(dSeat), "Unknown seat");
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:setSeatAttestor"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<5, Bytes<32>>>(
+    [opSel, selfBytes(), dSeat, dAttestor, nextNonce]);
+
+  assert(isApproved(actionHash), "setSeatAttestor: not enough approvals");
+  touchCouncilClock(currentTime);
+
+  if (!_federated.member(dSeat)) {
+    _federated.insert(dSeat);
+  }
+  _attestors.insert(dSeat, dAttestor);
+
+  _approvals.remove(approvalKey(actionHash));
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// OPERATIONAL: clear a federation seat's attestor (revert to direct seat)
+// =============================================================================
+//
+// F-1 (adversarial review 2026-07-08): without this, federating a seat was
+// irreversible — _federated persists across rotations for the same id, so a
+// mis-federated seat could never approve directly again. Council-approved,
+// symmetric with executeSetSeatAttestor.
+export circuit executeClearSeatAttestor(
+  seatId: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const dSeat = disclose(seatId);
+  assert(_federated.member(dSeat), "Not a federation seat");
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:clearSeatAttestor"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<4, Bytes<32>>>(
+    [opSel, selfBytes(), dSeat, nextNonce]);
+
+  assert(isApproved(actionHash), "clearSeatAttestor: not enough approvals");
+  touchCouncilClock(currentTime);
+
+  _federated.remove(dSeat);
+  _attestors.remove(dSeat);
+
+  _approvals.remove(approvalKey(actionHash));
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// OPERATIONAL: rotate the seat set (sortition epoch turn; fractal-fed §7)
+// =============================================================================
+export circuit executeRotateSeats(
+  outgoing: Vector<5, Bytes<32>>,
+  incoming: Vector<5, Bytes<32>>,
+  seedCommitment: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const dOut = disclose(outgoing);
+  const dIn = disclose(incoming);
+  const dSeed = disclose(seedCommitment);
+
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:rotateSeats"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<14, Bytes<32>>>([
+    opSel, selfBytes(),
+    dOut[0], dOut[1], dOut[2], dOut[3], dOut[4],
+    dIn[0], dIn[1], dIn[2], dIn[3], dIn[4],
+    dSeed,
+    nextNonce,
+  ]);
+
+  assert(isApproved(actionHash), "rotateSeats: not enough approvals");
+  touchCouncilClock(currentTime);
+
+  // The outgoing vector must be exactly the current council.
+  assert(_seats.member(dOut[0]), "rotateSeats: outgoing[0] not a seat");
+  assert(_seats.member(dOut[1]), "rotateSeats: outgoing[1] not a seat");
+  assert(_seats.member(dOut[2]), "rotateSeats: outgoing[2] not a seat");
+  assert(_seats.member(dOut[3]), "rotateSeats: outgoing[3] not a seat");
+  assert(_seats.member(dOut[4]), "rotateSeats: outgoing[4] not a seat");
+
+  _seats.resetToDefault();
+  _seats.insert(dIn[0]);
+  _seats.insert(dIn[1]);
+  _seats.insert(dIn[2]);
+  _seats.insert(dIn[3]);
+  _seats.insert(dIn[4]);
+
+  assert(_seats.size() == 5 as Uint<64>, "rotateSeats: seat set must be 5 distinct ids");
+
+  // New epoch: every pending approval and old-epoch signature dies here.
+  _epoch.increment(1);
+
+  _approvals.remove(approvalKey(actionHash));
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// RECOVERY: parent-convened rotation of a dead council (fractal-fed §4)
+// =============================================================================
+//
+// No council quorum required - that's the point: the council is dead. Gated
+// instead on (a) CONVENE_PERIOD of provable council inactivity and (b) the
+// parent authority's signature over the incoming seats + sortition seed.
+// The parent CONVENES (attests to an auditable draw); it does not appoint -
+// see header note 5 for the auditability argument and its limits.
+export circuit executeConveneRotation(
+  incoming: Vector<5, Bytes<32>>,
+  seedCommitment: Bytes<32>,
+  currentTime: Uint<64>,
+  parentSignature: Bytes<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  // L-3 validation of the claimed time.
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "timestamp cannot be in the future");
+
+  // Dead-council gate: 30 days (2592000 s) with no successful execute*.
+  const convenePeriod = 2592000 as Uint<64>;
+  const deadline = (_lastCouncilActionTime + convenePeriod) as Uint<64>;
+  assert(disclose(currentTime) >= deadline,
+         "conveneRotation: council is not dead (convene period not elapsed)");
+
+  const dIn = disclose(incoming);
+  const dSeed = disclose(seedCommitment);
+
+  // Parent signs: domain ‖ self ‖ epoch ‖ time ‖ incoming[0..4] ‖ seed.
+  // Epoch binding prevents replay across rotations (epoch increments below);
+  // self binding prevents replay across deployments; time binding (F-2,
+  // adversarial review 2026-07-08) prevents a pre-signed convene from being
+  // held and replayed in a later dead-window within the same epoch — the
+  // signature is only valid for the exact currentTime it attests to.
+  const domain = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:convene"));
+  const epochBytes = (_epoch.read() as Field) as Bytes<32>;
+  const timeBytes = (disclose(currentTime) as Field) as Bytes<32>;
+  const msg = persistentHash<Vector<10, Bytes<32>>>([
+    domain, selfBytes(), epochBytes, timeBytes,
+    dIn[0], dIn[1], dIn[2], dIn[3], dIn[4],
+    dSeed,
+  ]);
+  const sigOk = signature_valid(_parentAuthority, msg, parentSignature);
+  assert(disclose(sigOk), "conveneRotation: bad parent authority signature");
+
+  _seats.resetToDefault();
+  _seats.insert(dIn[0]);
+  _seats.insert(dIn[1]);
+  _seats.insert(dIn[2]);
+  _seats.insert(dIn[3]);
+  _seats.insert(dIn[4]);
+  assert(_seats.size() == 5 as Uint<64>, "conveneRotation: seat set must be 5 distinct ids");
+
+  _lastCouncilActionTime = disclose(currentTime);
+  _epoch.increment(1);
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// CONSTITUTIONAL: change threshold (council quorum + referendum attestation)
+// =============================================================================
+export circuit executeSetThreshold(
+  newThreshold: Uint<8>,
+  authoritySignature: Bytes<64>,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+  assert(newThreshold > 0 as Uint<8>, "Threshold must be > 0");
+  assert(newThreshold <= 5 as Uint<8>, "Threshold must be <= seat count (5)");
+  // Strict-majority floor preserved (v6.2 Fix 4).
+  assert((newThreshold as Uint<64>) * 2 as Uint<64> > 5 as Uint<64>,
+         "Threshold must be a majority of the 5 seats");
+
+  const dThreshold = disclose(newThreshold);
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:setThreshold"));
+  const thresholdBytes = (dThreshold as Field) as Bytes<32>;
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<4, Bytes<32>>>(
+    [opSel, selfBytes(), thresholdBytes, nextNonce]);
+
+  // Gate 1: council quorum.
+  assert(isApproved(actionHash), "setThreshold: not enough approvals");
+
+  // Gate 2: constitutional floor - referendum attestation.
+  const msg = constitutionalMsg(actionHash);
+  const sigOk = signature_valid(_constitutionalAuthority, msg, authoritySignature);
+  assert(disclose(sigOk), "setThreshold: bad constitutional attestation");
+
+  touchCouncilClock(currentTime);
+  _threshold = dThreshold;
+
+  _approvals.remove(approvalKey(actionHash));
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// CONSTITUTIONAL: replace the constitutional authority key
+// =============================================================================
+export circuit executeSetConstitutionalAuthority(
+  newAuthority: Bytes<32>,
+  authoritySignature: Bytes<64>,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const dAuthority = disclose(newAuthority);
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:setConstAuthority"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<4, Bytes<32>>>(
+    [opSel, selfBytes(), dAuthority, nextNonce]);
+
+  // Gate 1: council quorum.
+  assert(isApproved(actionHash), "setConstAuthority: not enough approvals");
+
+  // Gate 2: referendum attestation under the OLD authority key.
+  const msg = constitutionalMsg(actionHash);
+  const sigOk = signature_valid(_constitutionalAuthority, msg, authoritySignature);
+  assert(disclose(sigOk), "setConstAuthority: bad constitutional attestation");
+
+  touchCouncilClock(currentTime);
+  _constitutionalAuthority = dAuthority;
+
+  _approvals.remove(approvalKey(actionHash));
+  _nonce.increment(1);
+}
+
+// =============================================================================
+// CONSTITUTIONAL: replace the parent authority key
+// =============================================================================
+//
+// Dual-gated: council quorum + constitutional attestation. The parent
+// relationship is a rule of the tree, not an operational knob - a captured
+// council must not be able to re-point its own recovery authority.
+export circuit executeSetParentAuthority(
+  newParent: Bytes<32>,
+  authoritySignature: Bytes<64>,
+  currentTime: Uint<64>,
+): [] {
+  assert(_initialized, "Not initialized");
+
+  const dParent = disclose(newParent);
+  const opSel = persistentHash<Bytes<32>>(pad(32, "pp:msfed:v1:setParentAuthority"));
+  const nextNonce = (_nonce.read() + 1 as Uint<64>) as Field as Bytes<32>;
+  const actionHash = persistentHash<Vector<4, Bytes<32>>>(
+    [opSel, selfBytes(), dParent, nextNonce]);
+
+  // Gate 1: council quorum.
+  assert(isApproved(actionHash), "setParentAuthority: not enough approvals");
+
+  // Gate 2: constitutional attestation.
+  const msg = constitutionalMsg(actionHash);
+  const sigOk = signature_valid(_constitutionalAuthority, msg, authoritySignature);
+  assert(disclose(sigOk), "setParentAuthority: bad constitutional attestation");
+
+  touchCouncilClock(currentTime);
+  _parentAuthority = dParent;
+
+  _approvals.remove(approvalKey(actionHash));
+  _nonce.increment(1);
+}
