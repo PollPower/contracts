@@ -523,7 +523,69 @@ can make them **enforced**.
 
 ---
 
-## 10. Open items before this could leave DEV DRAFT
+## 10. Future extensions (proposed, beyond the pilot)
+
+Two ideas that are **not** needed for the mechanism to work, but strengthen
+its legitimacy and capture-resistance. Both are DEV DRAFT / for discussion.
+Build only after real humans have used the simpler version — keep them as
+tunable modules, not load-bearing walls.
+
+### 10.1 Turnout-scaled constitutional floor
+
+The constitutional floor (§ contract; rule changes need a passed member
+referendum via Community Poll v2) currently treats a referendum as a binary
+pass/fail. But in a member network, **who *didn't* vote is as meaningful as
+who did.** A rule change that "passes" on 12% turnout is not a mandate — it is
+apathy that a motivated minority exploited.
+
+**Proposal:** require a **turnout floor that scales with the magnitude of the
+change.** Low-stakes operations (e.g. rotating the Meter Authority) need only
+modest participation; high-stakes changes (e.g. rewriting the dividend split,
+the eligibility gate, or the constitutional authority itself) require
+supermajority *participation*, not just a majority of those who bothered.
+
+**Cost:** near-zero on-chain — Community Poll v2 already counts votes and
+knows the eligible-member denominator. The constitutional-authority attestation
+simply checks turnout ≥ the class-specific floor before signing. It is the
+difference between "technically passed" and "the community actually decided,"
+and it closes the failure mode where a captured-but-quorate council pushes a
+rule change past a sleepy electorate. **Recommended as a pre-mainnet inclusion.**
+
+### 10.2 Community-seeded randomness
+
+The draw seed (§3) is proposed as a commit-reveal value or a future block-hash
+beacon. A stronger, and more *fitting*, source: derive the seed from the
+**community's own aggregate settlement activity** for the epoch — e.g.
+`seed = H("pp:sortition:beacon:v2" ‖ aggregateSettlementDigest_e)`, where the
+digest commits the epoch's real metered sessions across all gateways.
+
+**Why it's better, not just poetic:**
+
+- **Capture-resistance.** To grind a block-hash beacon you attack the chain;
+  to grind *this* you would have to control the entire epoch's real energy
+  trading across every village — vastly harder, and self-defeating (you'd have
+  to transact honestly at scale to move it).
+- **Legitimacy story.** The "dice roll" that chooses a tier's governors is
+  literally *made of that community's own economic life that month.* The
+  randomness is theirs, not an external oracle's.
+
+**Caveats (why it's exploratory, not recommended-yet):**
+
+- **Grindability at the margin.** A large player could try to nudge the digest
+  by timing/shaping their own sessions near the epoch boundary. With enough
+  participants the marginal influence is negligible, but it **must be modelled**
+  before trusting it — the snapshot-timing discipline (§3) and a large-`n`
+  precondition apply doubly here.
+- **Determinism.** The aggregate digest must be a canonical, replayable
+  function of on-chain settlement state at a fixed height, or the whole draw
+  loses its "everyone recomputes the same result" property.
+
+**Status:** prototype and adversarially model before trusting; keep the
+block-hash beacon (§3 option B) as the default until then.
+
+---
+
+## 11. Open items before this could leave DEV DRAFT
 
 1. Pin the concrete hash + Merkle arity + padding in a versioned
    `SORTITION-DRAW-SPEC` companion (so off-chain auditors and any future
@@ -545,7 +607,14 @@ can make them **enforced**.
    single consistent view (KYC status, distinct-session count, LD maturity /
    `accPerShare` checkpoint, live/pruned flag) — spans v2-api + settlement-api
    + LD contract state.
-7. Independent review — like `multisig-federated-v1` itself, this is the
+7. §10.1 turnout-scaled floor: define the change-magnitude classes and their
+   participation thresholds; wire the turnout check into the
+   constitutional-authority attestation path (Community Poll v2 already has
+   the vote counts + eligible denominator).
+8. §10.2 community-seeded randomness: model the marginal-grindability of the
+   aggregate settlement digest at pilot `n` before adopting it over the
+   block-hash beacon; define the canonical replayable digest function.
+9. Independent review — like `multisig-federated-v1` itself, this is the
    author specifying the author; it needs the same external audit bar as the
    2026-06-10 findings before anything ships.
 
