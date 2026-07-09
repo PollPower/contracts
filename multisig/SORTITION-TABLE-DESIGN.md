@@ -5,11 +5,14 @@
 > `multisig-federated-v1.compact` (itself a DEV DRAFT: not deployed, not
 > audited, not on the pilot's critical path — the pilot runs on flat
 > Multisig v7). Nothing here has been built, compiled, or reviewed. It
-> proposes **one small contract addition** (a `membershipRoot` bound
-> alongside the existing `seedCommitment`) plus a body of **off-chain
-> table-construction rules**. No change to the council mechanism, the
-> quorum logic, the constitutional floor, the federation-seat path, or the
-> recovery path is required or proposed.
+> proposes **one small multisig contract addition** (a `membershipRoot`
+> bound alongside the existing `seedCommitment`) plus a body of **off-chain
+> table-construction rules**, and an **accept/decline + service-reward**
+> policy (§7) whose only on-chain footprint — a temporary Living-Dividend
+> share multiplier for members who serve — lands in the **LD contract**, not
+> the multisig. No change to the council mechanism, the quorum logic, the
+> constitutional floor, the federation-seat path, or the recovery path is
+> required or proposed.
 
 ---
 
@@ -345,16 +348,131 @@ opts its federation seats into rotation too.
 
 ---
 
-## 7. What must be true for the table to be valid (preconditions)
+## 7. Accept / decline & the service reward
+
+Sortition is **jury duty**: being drawn is not the same as agreeing to serve.
+The draw (§2) *summons* 5 winners; it does not conscript them. Not everyone
+can (or should) serve every time they're drawn — someone is travelling, ill,
+or simply unwilling — so the design needs a real accept/decline step. The
+challenge is to allow declining **without** letting service quietly collapse
+into "only the eager serve," which would re-introduce the self-selection that
+sortition exists to defeat.
+
+### 7.1 Acceptance window
+
+After the draw yields `selected[0..4]`, each winner has a fixed **acceptance
+window** (pilot default: a few days) to confirm. This is **opt-out, not
+opt-in**: silence past the window counts as a decline. Acceptance is a signed
+message from the drawn member's key (or, for a federation seat, the lower-tier
+council's attestor per the existing §8-federation path).
+
+### 7.2 Declining is free; backfill continues the *same* draw
+
+A member may decline for any reason, with **no justification required and no
+direct penalty**. That is the honest "not everyone can participate" reality;
+punishing a plain decline would either coerce unwilling members into being bad
+councillors or push people to avoid qualifying at all.
+
+A decline (or a window timeout) is simply **another reason to advance the
+draw**. The §2 procedure already advances `k` on a collision; a decline is
+treated identically — keep drawing from the **same frozen table and the same
+revealed seed**, advancing `k`, until 5 members have accepted. This is
+critical for auditability: backfill must **never** trigger a re-draw with a
+new seed (that would open a grinding window, §3). Same `(table, seed)` +
+the public ordered list of declines ⇒ the same final 5 acceptances for every
+observer.
+
+> **Precondition tightens (see §8):** because declines consume draw slots,
+> the table needs enough eligible members that 5 will still accept after
+> expected declines — not merely `n >= 5`. A tier with exactly 5 eligible
+> members and any decline cannot fill the council; it must defer rotation or
+> widen eligibility.
+
+### 7.3 Consequences — asymmetric and mild
+
+| event | consequence |
+|---|---|
+| **Not qualifying** (novice / below the §4 gate) | **None.** Being unproven is not a fault; the gate is a gate, not a punishment. |
+| **Decline within the window** | **No penalty**, but a short **decline cooldown** (N epochs, pilot default 1) before the table may draw the member again. This is not punitive — it stops the draw repeatedly landing on someone who has said no, and gives others a turn. |
+| **Accept then ghost** (confirm, then fail to sign the epoch's quorum actions) | The material one, because a no-show is 20% of a 5-seat quorum. Removal via the constitutional / parent-convene path (§ contract) **and** a longer eligibility cooldown. **Not** a funds slash — governance dereliction is a broken commitment, not theft. |
+
+Governing consequences reuse existing contract machinery: a ghosting seat is
+removed by the same rotation/convene paths that already exist; no new
+penalty primitive is proposed.
+
+### 7.4 The service reward — a temporary LD share multiplier
+
+Garrett's design (2026-07-10): reward the *act of serving* by **boosting the
+serving member's Living-Dividend share for a bounded time**, rather than
+minting a separate stipend. A councillor who demonstrably serves epoch `e`
+receives a **multiplier on their LD accrual** (e.g. 1.5× for the served epoch,
+or 1.25× for the next N epochs) — paid *through the dividend pool they are
+already in*, not as a new token.
+
+**Why a share multiplier is the right shape:**
+
+- **It self-selects toward need — without measuring need.** A boosted share is
+  worth more, in real terms, to whoever depends more on the dividend. A
+  comfortable member is near-indifferent to a 1.5× boost; a member who relies
+  on the dividend finds it genuinely worth accepting the seat for. So the
+  "those more in need serve more willingly" effect emerges **organically from
+  the market**, with **no need-proxy, no means-test, and no farmable
+  neediness signal** for the system to infer. (This is strictly better than an
+  inverse-`accPerShare` bonus, which was farmable and paternalistic.)
+- **It fits the LD contract's existing shape.** LD already pays each member as
+  `accPerShare` × their share weight. A service boost is a temporary bump to
+  that member's effective share weight (or a claim-time multiplier) for the
+  boost window — close to the accumulator the pool already runs.
+
+**Load-bearing constraint — the tilt goes on the *payout*, never the *draw*.**
+The draw stays a flat, gated, equal-weight lottery (§4). We do **not** make
+needier members more likely to be *drawn* — that would rebuild plutocracy
+upside-down (selection tracking a wealth signal, with "neediness" as the new
+farm target). Need influences only *how much a served seat is worth to you*,
+via a reward that anyone drawn can earn equally. Selection fairness is
+untouched.
+
+**Guardrails (all pilot-calibration parameters):**
+
+1. **Earned by participation, not by acceptance.** The multiplier activates
+   only for an epoch the member **demonstrably served** (signed at least the
+   quorum actions), not merely by being drawn and confirming. This makes it
+   **clawback-free**: a ghosting councillor's boost simply never activates, so
+   there is nothing to reclaim. It also aligns the reward with §7.3's
+   accept-then-ghost consequence.
+2. **Bounded total boost.** A boosted member is a larger slice of a fixed pie,
+   so every non-serving member's slice shrinks slightly while boosts are live.
+   That is intended (the commons pays its stewards) but must be **capped**:
+   with rotation, this epoch's 5 and recent epochs' boosted members can be
+   active simultaneously, so a ceiling on *total concurrent boost* must
+   guarantee the non-serving majority is never diluted below a floor. The
+   per-epoch service-reward budget needs an explicit maximum.
+3. **Concave / capped magnitude.** Keep the multiplier modest and fixed
+   (a small constant, not a slope), so the reward is an incentive, not a
+   windfall that would distort the dividend's core purpose.
+
+**Interlock with anti-incumbency (§6).** These two mechanisms protect each
+other. The reward makes service attractive; the §6 last-epoch cooldown means
+you **cannot** serve again the very next epoch, so the boost **cannot compound
+into "serve forever, earn double forever."** The cooldown naturally caps how
+often anyone collects the reward — reward and cooldown together make service
+*attractive but non-rent-seeking*.
+
+---
+
+## 8. What must be true for the table to be valid (preconditions)
 
 An auditor rejects a rotation whose table violates any of:
 
-1. **`n >= 5` distinct eligible members** after the §4 gate and §6 cooldown
-   are applied. With fewer than 5, the fixed-5 council cannot be filled by a
-   distinct-member draw. (Operational implication: a tier must reach 5+
-   qualified, non-cooling members before it can run sortition; until then it
-   runs the flat council or defers rotation. This bounds how early a young
-   tier can decentralise.)
+1. **Enough eligible members to fill 5 seats after expected declines** — a
+   hard floor of `n >= 5` distinct eligible members after the §4 gate, §6
+   anti-incumbency cooldown, and §7.2 decline cooldowns are applied, and in
+   practice a margin above 5 so the §7.2 accept/decline backfill can still
+   reach 5 acceptances. With too few, the fixed-5 council cannot be filled by
+   a distinct-member draw. (Operational implication: a tier must reach a
+   comfortable pool of qualified, non-cooling members before it can run
+   sortition; until then it runs the flat council or defers rotation. This
+   bounds how early a young tier can decentralise.)
 2. **Canonical order** (§1.2) — leaves sorted by `memberAddr`, indices
    contiguous, `cumulative` monotone, `cumulative[last] == totalWeight`.
 3. **Snapshot timing** (§3) — every eligibility input is dated at/before the
@@ -366,7 +484,7 @@ An auditor rejects a rotation whose table violates any of:
 
 ---
 
-## 8. Minimal on-chain change (proposed)
+## 9. Minimal on-chain change (proposed)
 
 The **only** contract change this design needs is to bind the eligibility
 snapshot alongside the seed that's already bound. Concretely (proposed, not
@@ -385,9 +503,16 @@ implemented):
   bound actionHash / signed message and in the public table publication).
 
 Everything else in this note — table construction, ordering, the draw, the
-gate, cooldown, timing — is **off-chain rule + tooling**, exactly parallel to
+gate, cooldown, accept/decline, service reward, timing — is **off-chain rule +
+tooling**, exactly parallel to
 how the seed's draw is "auditable off-chain" today. No quorum, constitutional,
 federation, or recovery mechanism changes.
+
+The **service reward** (§7.4) touches the **LD contract**, not the multisig:
+it is a temporary share multiplier on the dividend pool, so its on-chain
+footprint (if built) lands in `living-dividend-v*`, gated on demonstrated
+service in the epoch. It is **not** part of the multisig `membershipRoot`
+change above and is specified here as policy, not implemented.
 
 **Not proposed here:** full **in-circuit** enforcement of the draw and the
 gate (proving `incoming` was derived from `seed` over a Merkle-proven eligible
@@ -398,7 +523,7 @@ can make them **enforced**.
 
 ---
 
-## 9. Open items before this could leave DEV DRAFT
+## 10. Open items before this could leave DEV DRAFT
 
 1. Pin the concrete hash + Merkle arity + padding in a versioned
    `SORTITION-DRAW-SPEC` companion (so off-chain auditors and any future
@@ -408,11 +533,19 @@ can make them **enforced**.
    tooling has on Midnight.
 3. Calibrate the §4 gate thresholds (X sessions, Y days) and the §6 cooldown
    length per tier — pilot defaults here are placeholders.
-4. Confirm the eligibility data sources are queryable at snapshot time from a
+4. Calibrate the §7 accept/decline + service-reward parameters — acceptance
+   window length, §7.3 decline cooldown (N epochs) and accept-then-ghost
+   cooldown, the §7.4 share-multiplier magnitude + duration, and the total
+   concurrent-boost ceiling (dilution floor for non-serving members). All
+   pilot defaults here are placeholders needing Garrett's calibration.
+5. Decide where the §7.4 service reward is enforced in the LD contract
+   (effective-share bump vs claim-time multiplier) and how "demonstrably
+   served this epoch" is proven to it (which quorum-action signatures count).
+6. Confirm the eligibility data sources are queryable at snapshot time from a
    single consistent view (KYC status, distinct-session count, LD maturity /
    `accPerShare` checkpoint, live/pruned flag) — spans v2-api + settlement-api
    + LD contract state.
-5. Independent review — like `multisig-federated-v1` itself, this is the
+7. Independent review — like `multisig-federated-v1` itself, this is the
    author specifying the author; it needs the same external audit bar as the
    2026-06-10 findings before anything ships.
 
