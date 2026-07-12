@@ -95,6 +95,37 @@ Two honest caveats the plan does not paper over:
 
 ---
 
+## 0.3 Decisions taken (2026-07-12, Garrett)
+
+Two Tier-0/Tier-1 questions were decided in-session on 2026-07-12; the work
+breakdown below reflects them.
+
+- **D-1 (resolves A-2 direction / WI-01 scope):** backing fiat lives in a
+  **protocol-controlled national escrow pool**. Operators originate consumer
+  payments into it and instruct splits out of it; they never own the float.
+  WI-01 is therefore no longer a *whether* question — its remaining scope is
+  the *how*: legal wrapper per nation, solvency accounting, operator-insolvency
+  isolation, wind-down interaction (C-9), and the regulatory posture.
+- **D-2 (re-scopes WI-04/WI-12):** **SmileID is the sole KYC provider going
+  forward** for the Kenya market; other markets get their own investigation
+  when they exist. Consequences:
+  - The C-4 cross-provider duplicate hole is closed *operationally* (one
+    provider ⇒ no second door), not cryptographically. The binding invariant
+    becomes: **the off-chain pipeline's national-ID-number dedup is sound**
+    — auditable, and now a named review item for WI-05/WI-11.
+  - WI-04 and WI-12 are **deferred until a second market or second provider
+    is real**. They stay specified (the designs in the onboarding doc remain
+    valid) but are off the critical path.
+  - WI-05/WI-11 (cohort registration) lose their WI-04 dependency and key
+    cohort-member uniqueness on the existing `hash(providerTag, jobIdHash)`
+    scheme with providerTag fixed to SmileID.
+  - The constitutional principle *"multiple KYC doors, never the only door"*
+    (NATIONAL-ONBOARDING §1) is **unchanged as a design commitment** —
+    SmileID-only is operational reality, not a constitutional amendment. The
+    anti-identity-lever posture stays intact for the government conversation.
+
+---
+
 ## 1. Work breakdown
 
 Legend — **Size:** S / M / L. **Risk:** 💰 touches-funds · 🏛 governance ·
@@ -106,7 +137,7 @@ Legend — **Size:** S / M / L. **Risk:** 💰 touches-funds · 🏛 governance 
 
 | ID | Item | Scope | Size | Risk | Exec | Depends on | Blocks |
 |----|------|-------|------|------|------|-----------|--------|
-| **WI-01** | **A-2: National escrow / custody of backing fiat** | Design doc: protocol-controlled national escrow (or ring-fenced trust per nation). Operators originate payments in and instruct splits out; they never own the float. Custody model, solvency accounting, regulatory/legal posture, operator-insolvency isolation, wind-down interaction (C-9). | L | 💰 | BIG + GARRETT | — | WI-02, WI-03, WI-14, onboarding Phase 2 wallet tiers, C-9 |
+| **WI-01** | **A-2: National escrow / custody of backing fiat** — **direction DECIDED per D-1** (protocol-controlled national escrow pool; operators never own the float). Remaining scope is the *how*: legal wrapper per nation, solvency accounting, regulatory posture, operator-insolvency isolation, wind-down interaction (C-9). | L | 💰 | BIG + GARRETT | — (direction set) | WI-02, WI-03, WI-14, onboarding Phase 2 wallet tiers, C-9 |
 | **WI-02** | **A-1: Intra-national clearinghouse** | Design doc: inter-operator netting when EBT earned on grid A is redeemed on grid B. Continuous netting in EBT terms, periodic fiat true-up, who carries the inter-operator book (protocol-operated vs licensed role), credit-risk limits. Ports the §7.3 border mechanism inward. Lands as a §3.5-class addition to the architecture doc. | L | 💰 | BIG + GARRETT | WI-01 | WI-14, second-operator onboarding |
 | **WI-03** | **B-1: Fungibility stance amendment** | Amend architecture doc with an explicit stance: per-coin backing metadata is an *audit* artifact; *redemption value* is pooled at the national escrow (or the explicit alternative if Garrett rules otherwise). Also resolves C-3 (who can read the tariff path — poverty-marker privacy). | S | 📖 | BIG | WI-01 | WI-14 redemption semantics |
 
@@ -114,8 +145,8 @@ Legend — **Size:** S / M / L. **Risk:** 💰 touches-funds · 🏛 governance 
 
 | ID | Item | Scope | Size | Risk | Exec | Depends on | Blocks |
 |----|------|-------|------|------|------|-----------|--------|
-| **WI-04** | **C-4: Canonical-person identifier scheme** | Privacy-preserving uniqueness across KYC providers: salted commitment over national-ID number vs cross-provider dedup attestation. Threat model: state linkage, dictionary attack on ID-space, provider collusion. Output: spec + chosen commitment construction. | M | 🏛 | BIG + GARRETT | — | WI-05, WI-11, WI-12 |
-| **WI-05** | **B-3: Cohort-registration circuit spec** | Full spec for Merkle-cohort LD registration (NATIONAL-ONBOARDING Phase 3): leaf encoding, root submission by delegated registrar, federation countersignature, quota accounting, challenge window, prove-in-at-first-claim flow, revocation. Trust-shape mirrors ProducerRegistry gating one level down. | L | 💰 | BIG | WI-04 | WI-11 |
+| **WI-04** | **C-4: Canonical-person identifier scheme** — **DEFERRED per D-2** (single-provider posture makes it moot until a second market/provider). Spec retained for that day: salted commitment over national-ID number vs cross-provider dedup attestation; threat model: state linkage, dictionary attack on ID-space, provider collusion. | M | 🏛 | BIG + GARRETT | second market | WI-12 (deferred with it) |
+| **WI-05** | **B-3: Cohort-registration circuit spec** | Full spec for Merkle-cohort LD registration (NATIONAL-ONBOARDING Phase 3): leaf encoding, root submission by delegated registrar, federation countersignature, quota accounting, challenge window, prove-in-at-first-claim flow, revocation. Trust-shape mirrors ProducerRegistry gating one level down. Uniqueness keyed on the existing SmileID `hash(providerTag, jobIdHash)` per D-2; pipeline ID-number dedup soundness is a named review item. | L | 💰 | BIG | — | WI-11 |
 | **WI-06** | **TariffSchedule / SplitPolicy data model + validator spec** | Canonical serialization of the schedule tree (§3.1–3.2), the registration-time validator algorithm (every path × every cascaded floor × sanity band × statutory applicability), epoch-versioning rules (I-4). Includes the C-6 band-indexation rule and C-7 lifeline cross-subsidy accounting stance. | M | 🏛 | BIG | — | WI-07, WI-13, WI-16, WI-17 |
 | **WI-07** | **StatutoryLane extension spec** | `statutoryLanes` lane class on WI-06's model (STATUTORY-LANES §2): per-class applicability, remitAddress semantics for both remittance options, statute-to-lane change ceremony (R-3). | S | 🏛 | BIG | WI-06 | WI-13, WI-14 |
 | **WI-08** | **B-2: Sortition-gate revision** | Revise SORTITION-TABLE-DESIGN §4/§5: sessions must span operators, or per-operator caps on gate-countable sessions, or LD-maturity-weighted gating — kill the session-printing → governance-stacking path. Doc rev only. | S | 🏛 | BIG | — | WI-15 gate logic |
@@ -128,8 +159,8 @@ Legend — **Size:** S / M / L. **Risk:** 💰 touches-funds · 🏛 governance 
 | ID | Item | Scope | Size | Risk | Exec | Depends on | Blocks |
 |----|------|-------|------|------|------|-----------|--------|
 | **WI-10** | **msfed-v1 rev 5: membershipRoot binding** | The one small contract addition SORTITION-TABLE-DESIGN §9 proposes: bind `membershipRoot` alongside `seedCommitment` in both rotation circuits (`executeRotateSeats` Vector<14>→<15>, `executeConveneRotation` Vector<10>→<11>). No mechanism change. Still DEV DRAFT after — this does not deploy anything. | S | 🏛 | CHEAP-OK (mechanical diff) + BIG review | WI-09 | honest rotations under the sortition spec |
-| **WI-11** | **LD vNext: cohort registration** | Implement WI-05 in the LD lineage: cohort-root ledger set, delegated-registrar authority (grant/revoke via multisig), quota counters, challenge window, `proveInAndRegister`-style claim-time membership proof. The single biggest LD change in the series. Bundle with WI-12 in one version bump. | L | 💰 | BIG | WI-05 (spec), WI-04 | national onboarding Phase 3 |
-| **WI-12** | **LD vNext: canonical-person uniqueness** | Replace `hash(providerTag, jobIdHash)` uniqueness key with WI-04's canonical-person commitment. Migration story for existing pilot members (SmileID-keyed) required. Bundles with WI-11. | M | 🏛 | BIG | WI-04 | multi-provider KYC (national ID as second door) |
+| **WI-11** | **LD vNext: cohort registration** | Implement WI-05 in the LD lineage: cohort-root ledger set, delegated-registrar authority (grant/revoke via multisig), quota counters, challenge window, `proveInAndRegister`-style claim-time membership proof. The single biggest LD change in the series. Keeps the SmileID-keyed uniqueness scheme per D-2. | L | 💰 | BIG | WI-05 (spec) | national onboarding Phase 3 |
+| **WI-12** | **LD vNext: canonical-person uniqueness** — **DEFERRED per D-2** (bundled with WI-04 when a second provider becomes real). Would replace `hash(providerTag, jobIdHash)` with a canonical-person commitment + migration story for SmileID-keyed pilot members. | M | 🏛 | BIG | WI-04 (deferred) | multi-provider KYC |
 | **WI-13** | **TariffRegistry contract (new lineage)** | New contract: registered TariffSchedules, epoch-bound versions, federation-gated branch operations (new company, new line), permissionless leaf operations (class retune within floors), on-chain commitment of the WI-06 validator's verdict. Node identities shared with WI-20 charters (§0.2 same-tree invariant). | L | 🏛 | BIG | WI-06, WI-07, WI-20 | WI-14 |
 | **WI-14** | **EBT vNext: tariff-path metadata + multi-lane split + statutory lanes** | The settlement-side implementation: per-coin backing metadata (§2), split resolution against a registered schedule path, statutory-lane routing at settle-time, escrow-aware redemption semantics per WI-01/03. Furthest-out contract item; do not start before Tier 0 closes. | L | 💰 | BIG | WI-01, WI-02, WI-03, WI-07, WI-13 | multi-operator settlement |
 | **WI-21** | **Cross-tier attestation service** | Off-chain keeper-class service producing the attested-quorum witness when a child council votes as a federation seat in its parent (`approveFederated` path). Attestor key lifecycle, child-quorum verification, replay guards. | M | 🏛 | BIG design, CHEAP-OK scaffolding | WI-20 | live multi-tier federation |
@@ -173,14 +204,15 @@ WI-01 (escrow)  ──►  WI-02 (clearinghouse)  ──►  WI-14 (EBT vNext)
                         WI-06 ──► WI-07 ──► WI-13 ─┘
 ```
 
-WI-01 is the single most consequential unstated decision in the whole series
-(A-2's own words) and it gates the entire settlement-side build. It is
-design + legal work, not code — start it first, expect it to take the
-longest, and let everything below proceed in parallel while it cooks.
+WI-01's direction is now decided (D-1: protocol escrow) — what remains is
+design + legal work on the *how*. It still gates WI-02/03/14, but the
+clearinghouse design (WI-02) can begin sooner since the "where does the fiat
+sit" prerequisite is answered.
 
 ### 2.2 Parallel lanes (startable immediately, no Tier-0 dependency)
 
-- **Identity lane:** WI-04 → WI-05 → (WI-11 + WI-12 bundled)
+- **Identity lane:** WI-05 → WI-11 (WI-04/WI-12 deferred per D-2 — lane
+  unblocked, starts at the cohort spec directly)
 - **Governance lane:** WI-08, WI-09 → WI-10, WI-15; WI-20 + WI-23 → WI-21, WI-22
 - **Tariff-spec lane:** WI-06 → WI-07, WI-16, WI-17 (contract WI-13 waits on
   WI-20 for shared node identity)
@@ -194,8 +226,9 @@ longest, and let everything below proceed in parallel while it cooks.
 4. WI-18 (eligibility snapshot service) — after WI-08's gate revision lands
 5. WI-08 (gate revision) — BIG-model doc rev, small
 
-Meanwhile Garrett + BIG session drive WI-01 and WI-04, which are the two
-decisions everything expensive hangs off.
+Meanwhile Garrett + BIG session drive WI-01's *how* (escrow legal/solvency
+design) and WI-05 (cohort spec) — with D-1 and D-2 taken, those are the two
+items everything expensive now hangs off.
 
 ---
 
@@ -216,7 +249,7 @@ never a guessed value.
 | CAL-7 | Decline cooldown, acceptance window, ghost cooldown (sortition §7) | WI-15 |
 | CAL-8 | Statute-to-lane ceremony: quorum, review window, publication (R-3) | WI-07 |
 | CAL-9 | One national LD pool vs federated county pools (B-4/§3) | WI-11, WI-19 informs |
-| CAL-10 | Canonical-person scheme choice (commitment vs dedup attestation) | WI-04 output, gates WI-05/11/12 |
+| CAL-10 | ~~Canonical-person scheme choice~~ **RESOLVED by D-2** (SmileID-only posture; revisit at second market) | WI-04/12 when revived |
 | CAL-11 | Remittance default: option 1 (fiat door) vs option 2 (on-chain lane) | WI-07, WI-14 |
 | CAL-12 | Citizenship vs residence basis for the roll (W-5) | onboarding policy |
 
@@ -439,7 +472,9 @@ calls. The failure mode this protects against is a mediocre model being
 
 | ID | Status | PR | Notes |
 |----|--------|----|----|
-| WI-01..23 | ☐ not started | — | Plan merged; first wave per §2.3 |
+| WI-01 | ◐ direction decided (D-1) | — | Protocol escrow pool; *how* design pending |
+| WI-04, WI-12 | ⧖ deferred (D-2) | — | Revive at second market/provider |
+| all others | ☐ not started | — | Plan merged; first wave per §2.3 |
 
 ---
 
