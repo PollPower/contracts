@@ -183,7 +183,7 @@ For non-power-of-two `n`, extend the leaf array to `nextPow2(n)` slots by
 appending copies of the sentinel:
 
 ```
-pad = SHA-256("pp:sortition:pad:v1")     # 20 bytes ASCII, no other inputs
+pad = SHA-256("pp:sortition:pad:v1")     # 19 bytes ASCII, no other inputs
 ```
 
 The sentinel is a constant. Padded slots have **weight 0**, do not appear on
