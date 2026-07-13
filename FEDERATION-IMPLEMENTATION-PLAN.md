@@ -510,12 +510,13 @@ calls. The failure mode this protects against is a mediocre model being
 | WI-15 | ✓ merged | #18 | Table builder + draw auditor CLI; 2nd independent impl, all vectors byte-match |
 | WI-18 | ✓ merged | #19 | Eligibility snapshot service spec + ref impl; §5.1 gate verified in fixtures |
 | WI-19 | ✓ merged | #16 | Dilution/throughput/DUST models; CAL-9 comparison delivered → D-3 |
-| WI-06 | ✓ done, in review | #20 | TariffSchedule/SplitPolicy model + cascading-floor validator spec; +D-4 governance-first ID; unblocks WI-07/13/16/17 |
+| WI-06 | ✓ merged | #20 | TariffSchedule/SplitPolicy model + cascading-floor validator spec; +D-4 governance-first ID; unblocks WI-07/13/16/17 |
 | WI-07 | ✓ merged | #21 | StatutoryLane extension on WI-06; folds into S1' sum-to-10000; per-class applicability; B-1/B-4 structural; unblocks WI-13/14 |
-| WI-20 | ✓ done, in review | (this PR) | Federation charter/instantiation + climb protocol; implements D-4; unblocks WI-21/22 |
-| WI-23 | ✓ done, in review | (this PR) | Governance-standing rules (§4 of WI-20 doc): no-corporate-seats, C-2 recusal, B-2 pool-stacking guard |
+| WI-20 | ✓ merged | #22 | Federation charter/instantiation + climb protocol; implements D-4; unblocks WI-21/22 |
+| WI-23 | ✓ merged | #22 | Governance-standing rules: no-corporate-seats, C-2 recusal, B-2 pool-stacking guard |
+| WI-05 | ✓ done, in review | (this PR) | Cohort-registration circuit spec (B-3); submitCohortRoot + proveInAndRegister; accrual@prove-in / tenure@intent; unblocks WI-11 |
 | WI-11 | design-space narrowed (D-3) | — | National pool only; no federated-pool variant |
-| all others | ☐ not started | — | Next: BIG design items — WI-05 cohort spec, WI-06 tariff model, WI-01 escrow *how* |
+| all others | ☐ not started | — | Next: WI-02 clearinghouse, WI-21/22 governance finish, WI-13/14 contract builds |
 
 ---
 
