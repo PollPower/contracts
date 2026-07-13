@@ -150,6 +150,18 @@ breakdown below reflects them.
   notice**; minted EBT always backed, members always belong to the network not
   the operator. This resolves A-2 and unblocks WI-02 (clearinghouse), WI-14
   (settlement redemption), and onboarding Phase-2 wallet tiers.
+- **D-10 (energy-denominated fungibility; resolves WI-02's redemption question
+  + closes B-1):** EBT is fungible **on the energy axis** (1 EBT = 1 kWh,
+  every coin identical, I-1) and its **fiat face floats per coin**. In the
+  project end-state, goods/services are priced **in EBT (= kWh)**, not fiat, so
+  essentially all transaction volume is energy-axis, where coins are identical
+  and Gresham's Law cannot fire. Fiat cash-out is a peripheral, shrinking exit
+  ramp; each coin redeems for the fiat recorded in its **own backing metadata**
+  (per-coin, not pooled) — fiat fungibility is deliberately *not* preserved
+  because fiat is not the denominating unit. Divergence bounded by the sanity
+  band (§7.2). This supersedes the P1/P2 pooled-vs-origin framing (a fiat-brained
+  question) and makes the per-coin backing metadata (WI-06 §2) the fiat
+  redemption value. Recorded in `CLEARINGHOUSE-DESIGN.md` §3; closes CAL-REDEEM.
 - **D-2 (re-scopes WI-04/WI-12):** **SmileID is the sole KYC provider going
   forward** for the Kenya market; other markets get their own investigation
   when they exist. Consequences:
@@ -530,6 +542,7 @@ calls. The failure mode this protects against is a mediocre model being
 | WI-20 | ✓ merged | #22 | Federation charter/instantiation + climb protocol; implements D-4; unblocks WI-21/22 |
 | WI-23 | ✓ merged | #22 | Governance-standing rules: no-corporate-seats, C-2 recusal, B-2 pool-stacking guard |
 | WI-05 | ✓ merged | #23 | Cohort-registration circuit spec (B-3); submitCohortRoot + proveInAndRegister; accrual@prove-in / tenure@intent; unblocks WI-11 |
+| WI-02 | ✓ done, in review | (this PR) | Clearinghouse (A-1); WI-01 pooling removes inter-operator credit risk → attribution ledger + periodic true-up; unblocks WI-14 |
 | WI-11 | design-space narrowed (D-3) | — | National pool only; no federated-pool variant |
 | all others | ☐ not started | — | Next: WI-02 clearinghouse, WI-21/22 governance finish, WI-13/14 contract builds |
 
