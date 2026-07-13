@@ -1,6 +1,12 @@
 # Sortition Table — draw-integrity & eligibility design
 
 > **STATUS: DEV DRAFT — PROPOSED, NOT IMPLEMENTED.**
+> **Rev 2 (2026-07-13):** added §5.1 closing finding B-2 (session-farming →
+> governance-stacking, a cross-document attack from
+> `FEDERATED-TARIFF-OPEN-QUESTIONS.md`); the original per-input farmability
+> argument is now §5.2. Gate-construction change only — no circuit/ledger/draw
+> impact, inert at pilot scale. (§1 companion `SORTITION-DRAW-SPEC.md` shipped
+> via WI-09.)
 > This is a policy + verification layer specified on top of the existing
 > `multisig-federated-v1.compact` (itself a DEV DRAFT: not deployed, not
 > audited, not on the pilot's critical path — the pilot runs on flat
@@ -256,7 +262,7 @@ A member is **eligible for epoch `e`** iff **all** of:
 | gate condition        | threshold (pilot default, tune per tier) | data source (verified to exist) |
 |-----------------------|------------------------------------------|---------------------------------|
 | **KYC'd**             | verified, one human ⇒ one membership     | KYC pipeline (Smile-ID) + the LD contract's `_seenKycJobHashes` Sybil guard (`living-dividend-v2.2.x`). |
-| **≥ X distinct settlement sessions** | X = 3 (pilot) | EBT settlement history — count **distinct session IDs**, the same replay-guarded session identity `settle()` consumes. |
+| **≥ X distinct settlement sessions** | X = 3 (pilot) | EBT settlement history — count **distinct session IDs**, the same replay-guarded session identity `settle()` consumes. **Cross-operator caveat (finding B-2): gate-countable sessions are constrained per §5.1 so an operator cannot manufacture governance eligibility for its own community at will.** |
 | **≥ Y days LD maturity** | Y = 30 (pilot) | `registeredAt` (tenure since LD enrolment) + a non-trivial LD `accPerShare` checkpoint proving real accrued share. |
 | **currently live**    | not pruned / not marked dead             | LD living-member set (the death filter that `claimSplit`/keeper already respect). |
 
@@ -289,7 +295,84 @@ recommendation — the recommendation is flat `weight = 1`.
 ## 5. Farmability mitigations
 
 Every gate input is chosen so that buying more of it is either impossible or
-economically pointless:
+economically pointless. §5.1 addresses a cross-document attack (finding B-2)
+that is invisible when this note is read alone; §5.2 is the original
+per-input argument.
+
+### 5.1 The session-farming → governance-stacking attack (finding B-2)
+
+**The attack.** Invariant I-2 of the tariff architecture makes *mint*
+inflation expensive: fake consumption costs real fiat and leaks the LD+ops
+floors on every wash cycle. But the eligibility gate above counts *distinct
+settlement sessions* as evidence of being a proven, non-novice member — and
+an operator does not have to *forge* sessions to abuse this. It can
+**legitimately generate cheap real sessions for its own community**, at
+whatever session cadence it controls (many small metered draws instead of
+few large ones), pushing its own people over the `X`-session gate en masse.
+The operator thereby manufactures governance-eligible members at scale and
+**stacks a cluster's sortition pool** with a bloc it effectively sponsors.
+
+The tariff architecture hands operators a session-cadence dial; the
+governance gate treats session count as personhood-adjacent evidence.
+Neither document is wrong alone; the interaction is the hole. This is the
+same class of finding as the fungibility/clearinghouse pair — a property
+that only appears when two layers are composed.
+
+**Why raw §5.2 mitigations don't cover it.** §5.2 argues sessions are hard to
+*forge* (each needs a gateway signature + Meter Authority attestation). True,
+and irrelevant to this attack: the sessions here are *genuine*. The operator
+is not defeating the attestation path; it is driving it legitimately, for a
+bloc it controls, to convert its market position into governance weight.
+
+**Mitigation (normative for any tier whose sortition pool spans more than one
+operator).** Apply **all** of the following to the `≥ X distinct settlement
+sessions` gate condition; a session counts toward the gate only if it
+survives every filter:
+
+1. **Per-operator cap on gate-countable sessions.** At most `S_cap` of a
+   member's gate-countable sessions may originate from any single operator
+   (`S_cap < X`, e.g. `S_cap = ⌈X/2⌉`). A member whose entire session
+   history is with one operator cannot clear the gate on that history alone
+   — clearing it **requires settlement activity spanning at least two
+   operators**. The operator's session-cadence dial then only moves its own
+   members up to `S_cap`, not over the line. `S_cap` and `X` are per-tier
+   `TODO(calibration)` parameters (owned by Garrett); at pilot scale, where
+   a cluster is a single operator, the cross-operator requirement is
+   **suspended** (there is no second operator to span) and the gate falls
+   back to the plain `≥ X` count — this mitigation activates only once a
+   tier's pool is genuinely multi-operator.
+2. **LD-maturity as the load-bearing gate, sessions as corroboration.** Weight
+   the qualification toward the inputs an operator *cannot* cheaply generate
+   for a bloc: `≥ Y days LD maturity` and a non-trivial `accPerShare`
+   checkpoint (§4). Real accrued dividend share is downstream of genuine,
+   diversified settled sales flowing through the whole loop over wall-clock
+   time (§5.2), not something an operator conjures by dialing its own
+   community's session cadence for a few weeks before a rotation. Where
+   sessions and maturity disagree, **maturity governs**: a member with the
+   session count but not the maturity does not clear the gate.
+3. **Snapshot the gate over a trailing window, not an eligibility sprint.**
+   Count distinct sessions over a trailing window at least as long as the
+   maturity threshold `Y` (`TODO(calibration)`), so a burst of
+   operator-sponsored sessions in the run-up to a rotation cannot by itself
+   satisfy the gate — the sessions must have accumulated across the same
+   period the maturity clock was running.
+
+Interlock with §6: the last-epoch cooldown caps how often *any* eligible
+member (or sponsored bloc member) can actually be seated, so even a partially
+successful stack cannot compound into a standing governing bloc across
+consecutive epochs. B-2 mitigation (who *qualifies*) and §6 cooldown (who may
+*serve again*) protect each other, exactly as the §7 service-reward and
+cooldown do.
+
+This is a **gate-construction** change only: it constrains which sessions
+count toward eligibility in the off-chain §1 table build. It touches no
+circuit, no ledger field, and no draw mechanics, and it is inert at pilot
+scale (single operator per cluster). It becomes load-bearing at the exact
+moment the architecture intends — when a tier's governance pool spans
+multiple operators.
+
+### 5.2 Per-input farmability arguments
+
 
 - **Distinct settlement sessions, not raw amount.** The gate counts *how many
   separate metered sessions* a member has, not KES/EBT throughput. A whale can
@@ -400,14 +483,18 @@ can make them **enforced**.
 
 ## 9. Open items before this could leave DEV DRAFT
 
-1. Pin the concrete hash + Merkle arity + padding in a versioned
-   `SORTITION-DRAW-SPEC` companion (so off-chain auditors and any future
-   in-circuit prover agree bit-for-bit).
+1. ~~Pin the concrete hash + Merkle arity + padding in a versioned
+   `SORTITION-DRAW-SPEC` companion~~ — **DONE** (WI-09, merged):
+   [`SORTITION-DRAW-SPEC.md`](./SORTITION-DRAW-SPEC.md) + regenerable test
+   vectors at `tooling/draw-spec-vectors.json`.
 2. Decide seed source: commit-reveal (option A) vs future-block beacon
    (option B, preferred) — depends on what block-hash access the ceremony
    tooling has on Midnight.
-3. Calibrate the §4 gate thresholds (X sessions, Y days) and the §6 cooldown
-   length per tier — pilot defaults here are placeholders.
+3. Calibrate the §4 gate thresholds (X sessions, Y days), the §6 cooldown
+   length, and the §5.1 B-2 mitigation parameters (`S_cap` per-operator
+   session cap, trailing-window length) per tier — pilot defaults here are
+   placeholders. Note the §5.1 cross-operator requirement is *inert at pilot
+   scale* (single operator) and activates only for multi-operator pools.
 4. Confirm the eligibility data sources are queryable at snapshot time from a
    single consistent view (KYC status, distinct-session count, LD maturity /
    `accPerShare` checkpoint, live/pruned flag) — spans v2-api + settlement-api
@@ -418,7 +505,8 @@ can make them **enforced**.
 
 ---
 
-*Author: Joi. DEV DRAFT, 2026-07-10. Verified against
+*Author: Joi. DEV DRAFT, 2026-07-10; rev 2 2026-07-13 (§5.1 B-2 mitigation).
+Verified against
 `multisig/multisig-federated-v1.compact` rev 4 (executeRotateSeats L444–L487,
 executeConveneRotation L499–L545, ledger decls L152–L183, design-notes header
 L36–L135) — the contract binds `seedCommitment` for off-chain audit but does
