@@ -106,6 +106,23 @@ breakdown below reflects them.
   WI-01 is therefore no longer a *whether* question — its remaining scope is
   the *how*: legal wrapper per nation, solvency accounting, operator-insolvency
   isolation, wind-down interaction (C-9), and the regulatory posture.
+- **D-3 (resolves CAL-9 / B-4 policy):** the Living Dividend runs as **one
+  national pool, fairly distributed across all network participants** — not
+  federated per-cluster/county pools. Rationale (Garrett): federated pools
+  bind the dividend to *where you are*, and location is an off-chain fact the
+  trust model cannot verify — it creates a relocation/residence-gaming
+  incentive (register at a high-mint address, shell relocations, registrar
+  collusion on which county a member "belongs" to) hung on an attribute the
+  chain cannot check. National posture removes the attack surface: every
+  living member accrues equally regardless of region (exactly what the
+  contract's `accPerShare` does today). It also preserves the flagship
+  promise as network-wide ("your power pays you back" everywhere, not "if
+  you're in a rich grid") — the solidarity property is the point, not a side
+  effect. Consequences: finding B-4's policy branch is **closed**; the
+  "federated county pools" hybrid is **removed from WI-11's design space**;
+  WI-19's dilution math still stands as input to roll-follows-footprint
+  *pacing* (how per-member share moves as the roll grows), but the
+  *structural* choice is settled.
 - **D-2 (re-scopes WI-04/WI-12):** **SmileID is the sole KYC provider going
   forward** for the Kenya market; other markets get their own investigation
   when they exist. Consequences:
@@ -178,8 +195,10 @@ Legend — **Size:** S / M / L. **Risk:** 💰 touches-funds · 🏛 governance 
 
 ### Explicitly deferred (tracked, not scheduled)
 
-- **B-4 policy decision** (one national LD pool vs federated county pools) —
-  needs WI-19's model first; Garrett's call.
+- ~~**B-4 policy decision** (one national LD pool vs federated county pools)~~
+  — **RESOLVED by D-3: one national pool.** Off-chain relocation/residence
+  manipulation surface disqualifies federated pools; LD distributed fairly
+  across all participants.
 - **C-5** (cross-border swap atomicity / licensed-desk limits), **C-10**
   (gray-market monitoring) — post-national, pre-cross-border.
 - **C-9** (operator wind-down runbook) — resolves mostly inside WI-01's
@@ -248,7 +267,7 @@ never a guessed value.
 | CAL-6 | Tier-promotion thresholds (collective → county → national) | WI-22, WI-20 |
 | CAL-7 | Decline cooldown, acceptance window, ghost cooldown (sortition §7) | WI-15 |
 | CAL-8 | Statute-to-lane ceremony: quorum, review window, publication (R-3) | WI-07 |
-| CAL-9 | One national LD pool vs federated county pools (B-4/§3) | WI-11, WI-19 informs |
+| CAL-9 | RESOLVED by D-3 (one national pool; federated pools rejected — off-chain location-gaming surface) | WI-11 (design space narrowed) |
 | CAL-10 | ~~Canonical-person scheme choice~~ **RESOLVED by D-2** (SmileID-only posture; revisit at second market) | WI-04/12 when revived |
 | CAL-11 | Remittance default: option 1 (fiat door) vs option 2 (on-chain lane) | WI-07, WI-14 |
 | CAL-12 | Citizenship vs residence basis for the roll (W-5) | onboarding policy |
@@ -474,7 +493,10 @@ calls. The failure mode this protects against is a mediocre model being
 |----|--------|----|----|
 | WI-01 | ◐ direction decided (D-1) | — | Protocol escrow pool; *how* design pending |
 | WI-04, WI-12 | ⧖ deferred (D-2) | — | Revive at second market/provider |
-| all others | ☐ not started | — | Plan merged; first wave per §2.3 |
+| WI-09 | ✓ done, in review | #15 | Draw spec + 6 vectors + generator; BIG review pass done (one byte-count comment fixed) |
+| WI-19 | ✓ done, in review | #16 | Dilution/throughput/DUST models; math reviewed; CAL-9 comparison delivered → D-3 |
+| WI-11 | design-space narrowed (D-3) | — | National pool only; no federated-pool variant |
+| all others | ☐ not started | — | First wave: WI-15 (after #15 merges), WI-18 (after WI-08) |
 
 ---
 
