@@ -498,6 +498,7 @@ calls. The failure mode this protects against is a mediocre model being
 | WI-15 | ✓ merged | #18 | Table builder + draw auditor CLI; 2nd independent impl, all vectors byte-match |
 | WI-18 | ✓ merged | #19 | Eligibility snapshot service spec + ref impl; §5.1 gate verified in fixtures |
 | WI-19 | ✓ merged | #16 | Dilution/throughput/DUST models; CAL-9 comparison delivered → D-3 |
+| WI-06 | ✓ done, in review | (this PR) | TariffSchedule/SplitPolicy model + cascading-floor validator spec; unblocks WI-07/13/16/17 |
 | WI-11 | design-space narrowed (D-3) | — | National pool only; no federated-pool variant |
 | all others | ☐ not started | — | Next: BIG design items — WI-05 cohort spec, WI-06 tariff model, WI-01 escrow *how* |
 
