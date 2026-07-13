@@ -135,6 +135,21 @@ breakdown below reflects them.
   window where a priced schedule had no governing council. WI-20 owns the
   minting act; WI-13 enforces the charter-must-exist precondition. Recorded in
   `TARIFF-SCHEDULE-MODEL.md` §7.1.
+- **D-5..D-9 (WI-01 escrow *how* — the A-2 resolution, 2026-07-13):** recorded
+  in [`NATIONAL-ESCROW-DESIGN.md`](./NATIONAL-ESCROW-DESIGN.md). **D-5:** EBT is
+  regulated e-money redeemable for **both KES and kWh** (dual redemption is
+  thesis-critical; prepaid-energy-credit framing rejected; build for the vision,
+  CBK e-money authorization is a legal-team prerequisite not a design
+  constraint). **D-6:** custody = a CBK-regulated e-money **trust** float on the
+  M-Pesa model (held for EBT holders; operators never own it). **D-7:** fiat
+  releases on the **same replay-guarded attestation that mints EBT** (one
+  authorization), gated by a single operator-status predicate. **D-8:**
+  **published** on-chain solvency invariant (outstanding EBT backing == attested
+  trust balance), checkable by anyone. **D-9:** de-federation revokes future
+  mint/instruct only (in-flight = **drain window**); voluntary exit = **fixed
+  notice**; minted EBT always backed, members always belong to the network not
+  the operator. This resolves A-2 and unblocks WI-02 (clearinghouse), WI-14
+  (settlement redemption), and onboarding Phase-2 wallet tiers.
 - **D-2 (re-scopes WI-04/WI-12):** **SmileID is the sole KYC provider going
   forward** for the Kenya market; other markets get their own investigation
   when they exist. Consequences:
@@ -166,7 +181,7 @@ Legend — **Size:** S / M / L. **Risk:** 💰 touches-funds · 🏛 governance 
 
 | ID | Item | Scope | Size | Risk | Exec | Depends on | Blocks |
 |----|------|-------|------|------|------|-----------|--------|
-| **WI-01** | **A-2: National escrow / custody of backing fiat** — **direction DECIDED per D-1** (protocol-controlled national escrow pool; operators never own the float). Remaining scope is the *how*: legal wrapper per nation, solvency accounting, regulatory posture, operator-insolvency isolation, wind-down interaction (C-9). | L | 💰 | BIG + GARRETT | — (direction set) | WI-02, WI-03, WI-14, onboarding Phase 2 wallet tiers, C-9 |
+| **WI-01** | **A-2: National escrow / custody of backing fiat** — **DESIGNED (D-1 + D-5..D-9), see [`NATIONAL-ESCROW-DESIGN.md`](./NATIONAL-ESCROW-DESIGN.md).** CBK e-money trust float (M-Pesa model), dual KES/kWh redemption, release-on-mint-attestation, published solvency invariant, drain-window/fixed-notice operator lifecycle. Remaining: `TODO(legal)` license path + trust mechanics; C-9 runbook. | L | 💰 | BIG + GARRETT | — (designed) | WI-02, WI-03, WI-14, onboarding Phase 2 wallet tiers, C-9 |
 | **WI-02** | **A-1: Intra-national clearinghouse** | Design doc: inter-operator netting when EBT earned on grid A is redeemed on grid B. Continuous netting in EBT terms, periodic fiat true-up, who carries the inter-operator book (protocol-operated vs licensed role), credit-risk limits. Ports the §7.3 border mechanism inward. Lands as a §3.5-class addition to the architecture doc. | L | 💰 | BIG + GARRETT | WI-01 | WI-14, second-operator onboarding |
 | **WI-03** | **B-1: Fungibility stance amendment** | Amend architecture doc with an explicit stance: per-coin backing metadata is an *audit* artifact; *redemption value* is pooled at the national escrow (or the explicit alternative if Garrett rules otherwise). Also resolves C-3 (who can read the tariff path — poverty-marker privacy). | S | 📖 | BIG | WI-01 | WI-14 redemption semantics |
 
