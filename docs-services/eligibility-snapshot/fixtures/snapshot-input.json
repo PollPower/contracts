@@ -1,0 +1,140 @@
+{
+  "_comment": "Mock upstream state at t0. NOT REAL DATA. See ../SPEC.md §4 for source mapping. Six members exercise: (1) clear pass, (2) fail on sessions count, (3) fail on maturity, (4) not-live, (5) all-one-operator (fails §5.1 cross-operator), (6) federation-seat row.",
+
+  "specVersion": "pp:eligibility-snapshot-input:v1",
+  "epoch": 42,
+  "tierId": "cluster-west",
+  "t0": "2026-08-01T00:00:00Z",
+  "t0Unix": 1785801600,
+  "sources": {
+    "v2ApiRevision": "v2-api@fixture:mock-a",
+    "settlementApiRevision": "settlement-api@fixture:mock-a",
+    "ldContractBlock": 1234567
+  },
+  "config": {
+    "poolMode": "multi-operator",
+    "previousEpochOutgoing": []
+  },
+
+  "members": [
+    {
+      "_case": "1. clear pass — KYC ok, 4 sessions across 2 operators over a wide window, mature LD, live, no cooldown",
+      "memberAddr": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "kyc": { "verifiedOffChain": true, "onChainAttestationSeen": true, "providerTag": "SmileID" },
+      "sessions": [
+        { "sessionId": "0xaa01", "operatorId": "operator-west-a", "timestampUnix": 1783123200, "settlementApiRef": "sessions/aa01" },
+        { "sessionId": "0xaa02", "operatorId": "operator-west-a", "timestampUnix": 1783728000, "settlementApiRef": "sessions/aa02" },
+        { "sessionId": "0xbb01", "operatorId": "operator-west-b", "timestampUnix": 1784332800, "settlementApiRef": "sessions/bb01" },
+        { "sessionId": "0xbb02", "operatorId": "operator-west-b", "timestampUnix": 1785196800, "settlementApiRef": "sessions/bb02" }
+      ],
+      "ld": {
+        "registeredAt": 1780531200,
+        "accPerShareAtCheckpoint": "1000000000000000000",
+        "isLive": true,
+        "lastSeen": 1785196800
+      },
+      "pruning": { "hasPending": false, "proposedAtUnix": null },
+      "isFederationSeat": false
+    },
+
+    {
+      "_case": "2. fail on sessions — only 1 session, well below X",
+      "memberAddr": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "kyc": { "verifiedOffChain": true, "onChainAttestationSeen": true, "providerTag": "SmileID" },
+      "sessions": [
+        { "sessionId": "0xcc01", "operatorId": "operator-west-a", "timestampUnix": 1785196800, "settlementApiRef": "sessions/cc01" }
+      ],
+      "ld": {
+        "registeredAt": 1780531200,
+        "accPerShareAtCheckpoint": "1000000000000000000",
+        "isLive": true,
+        "lastSeen": 1785196800
+      },
+      "pruning": { "hasPending": false, "proposedAtUnix": null },
+      "isFederationSeat": false
+    },
+
+    {
+      "_case": "3. fail on maturity — registered too recently (t0 - registeredAt < Y days)",
+      "memberAddr": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "kyc": { "verifiedOffChain": true, "onChainAttestationSeen": true, "providerTag": "SmileID" },
+      "sessions": [
+        { "sessionId": "0xdd01", "operatorId": "operator-west-a", "timestampUnix": 1785110400, "settlementApiRef": "sessions/dd01" },
+        { "sessionId": "0xdd02", "operatorId": "operator-west-a", "timestampUnix": 1785196800, "settlementApiRef": "sessions/dd02" },
+        { "sessionId": "0xee01", "operatorId": "operator-west-b", "timestampUnix": 1785283200, "settlementApiRef": "sessions/ee01" },
+        { "sessionId": "0xee02", "operatorId": "operator-west-b", "timestampUnix": 1785369600, "settlementApiRef": "sessions/ee02" }
+      ],
+      "ld": {
+        "registeredAt": 1785196800,
+        "accPerShareAtCheckpoint": "10",
+        "isLive": true,
+        "lastSeen": 1785715200
+      },
+      "pruning": { "hasPending": false, "proposedAtUnix": null },
+      "isFederationSeat": false
+    },
+
+    {
+      "_case": "4. not-live — isLive=false at t0 (was unregistered or pruned)",
+      "memberAddr": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "kyc": { "verifiedOffChain": true, "onChainAttestationSeen": true, "providerTag": "SmileID" },
+      "sessions": [
+        { "sessionId": "0xff01", "operatorId": "operator-west-a", "timestampUnix": 1783123200, "settlementApiRef": "sessions/ff01" },
+        { "sessionId": "0xff02", "operatorId": "operator-west-b", "timestampUnix": 1783728000, "settlementApiRef": "sessions/ff02" },
+        { "sessionId": "0xff03", "operatorId": "operator-west-a", "timestampUnix": 1784332800, "settlementApiRef": "sessions/ff03" },
+        { "sessionId": "0xff04", "operatorId": "operator-west-b", "timestampUnix": 1785196800, "settlementApiRef": "sessions/ff04" }
+      ],
+      "ld": {
+        "registeredAt": 1780531200,
+        "accPerShareAtCheckpoint": "1000000000000000000",
+        "isLive": false,
+        "lastSeen": 1782739200
+      },
+      "pruning": { "hasPending": true, "proposedAtUnix": 1783344000 },
+      "isFederationSeat": false
+    },
+
+    {
+      "_case": "5. all-one-operator — enough sessions but ALL from operator-west-a; fails §5.1 cross-operator requirement in multi-operator pool mode",
+      "memberAddr": "0x5555555555555555555555555555555555555555555555555555555555555555",
+      "kyc": { "verifiedOffChain": true, "onChainAttestationSeen": true, "providerTag": "SmileID" },
+      "sessions": [
+        { "sessionId": "0x5a01", "operatorId": "operator-west-a", "timestampUnix": 1783123200, "settlementApiRef": "sessions/5a01" },
+        { "sessionId": "0x5a02", "operatorId": "operator-west-a", "timestampUnix": 1783728000, "settlementApiRef": "sessions/5a02" },
+        { "sessionId": "0x5a03", "operatorId": "operator-west-a", "timestampUnix": 1784332800, "settlementApiRef": "sessions/5a03" },
+        { "sessionId": "0x5a04", "operatorId": "operator-west-a", "timestampUnix": 1784937600, "settlementApiRef": "sessions/5a04" },
+        { "sessionId": "0x5a05", "operatorId": "operator-west-a", "timestampUnix": 1785196800, "settlementApiRef": "sessions/5a05" }
+      ],
+      "ld": {
+        "registeredAt": 1780531200,
+        "accPerShareAtCheckpoint": "1000000000000000000",
+        "isLive": true,
+        "lastSeen": 1785196800
+      },
+      "pruning": { "hasPending": false, "proposedAtUnix": null },
+      "isFederationSeat": false
+    },
+
+    {
+      "_case": "6. federation seat — a lower-tier council address, exempt from personal cooldown per §6. Sessions/LD-maturity are N/A for this row type; see comment in the code.",
+      "memberAddr": "0x6666666666666666666666666666666666666666666666666666666666666666",
+      "kyc": { "verifiedOffChain": true, "onChainAttestationSeen": true, "providerTag": "N/A-federation-seat" },
+      "sessions": [],
+      "ld": {
+        "registeredAt": 0,
+        "accPerShareAtCheckpoint": "0",
+        "isLive": true,
+        "lastSeen": 1785196800
+      },
+      "pruning": { "hasPending": false, "proposedAtUnix": null },
+      "isFederationSeat": true
+    }
+  ],
+
+  "globalLdState": {
+    "_comment": "The global _accPerShare read at t0 from the LD contract, used to compute the §4 'non-trivial accPerShare delta' check.",
+    "accPerShareAtT0": "2000000000000000000"
+  },
+
+  "previousSeats": []
+}
