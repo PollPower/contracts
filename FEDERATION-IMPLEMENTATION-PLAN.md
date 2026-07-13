@@ -123,6 +123,18 @@ breakdown below reflects them.
   WI-19's dilution math still stands as input to roll-follows-footprint
   *pacing* (how per-member share moves as the roll grows), but the
   *structural* choice is settled.
+- **D-4 (governance-first ID minting; makes the same-tree invariant
+  structural):** the canonical node id for a company/nation is minted by the
+  **governance act of chartering** it (WI-20), before any tariff schedule may
+  reference it. WI-13 (TariffRegistry) MUST reject a schedule whose
+  `operatorId`/`nationRef` is not already a chartered governance-tree node.
+  This makes plan §0.2's same-tree invariant impossible to violate rather than
+  merely checked: a tariff cannot exist for an ungoverned entity, so the
+  "floor guarding an empty room" failure cannot occur. Rejected alternative
+  (registry-first: schedule mints the id, governance attaches later) left a
+  window where a priced schedule had no governing council. WI-20 owns the
+  minting act; WI-13 enforces the charter-must-exist precondition. Recorded in
+  `TARIFF-SCHEDULE-MODEL.md` §7.1.
 - **D-2 (re-scopes WI-04/WI-12):** **SmileID is the sole KYC provider going
   forward** for the Kenya market; other markets get their own investigation
   when they exist. Consequences:
@@ -498,7 +510,8 @@ calls. The failure mode this protects against is a mediocre model being
 | WI-15 | ✓ merged | #18 | Table builder + draw auditor CLI; 2nd independent impl, all vectors byte-match |
 | WI-18 | ✓ merged | #19 | Eligibility snapshot service spec + ref impl; §5.1 gate verified in fixtures |
 | WI-19 | ✓ merged | #16 | Dilution/throughput/DUST models; CAL-9 comparison delivered → D-3 |
-| WI-06 | ✓ done, in review | (this PR) | TariffSchedule/SplitPolicy model + cascading-floor validator spec; unblocks WI-07/13/16/17 |
+| WI-06 | ✓ done, in review | #20 | TariffSchedule/SplitPolicy model + cascading-floor validator spec; +D-4 governance-first ID; unblocks WI-07/13/16/17 |
+| WI-07 | ✓ done, in review | (this PR) | StatutoryLane extension on WI-06; folds into S1' sum-to-10000; per-class applicability; B-1/B-4 structural; unblocks WI-13/14 |
 | WI-11 | design-space narrowed (D-3) | — | National pool only; no federated-pool variant |
 | all others | ☐ not started | — | Next: BIG design items — WI-05 cohort spec, WI-06 tariff model, WI-01 escrow *how* |
 
