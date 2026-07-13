@@ -1,0 +1,873 @@
+{
+  "specVersion": "pp-sortition-draw-spec/v1",
+  "hashPrimitive": "SHA-256",
+  "generator": "multisig/tooling/gen-draw-spec-vectors.mjs",
+  "notes": [
+    "Vectors are the source-of-truth output of the generator; do not edit by hand.",
+    "To regenerate: node multisig/tooling/gen-draw-spec-vectors.mjs > multisig/tooling/draw-spec-vectors.json",
+    "Every domain tag used here appears verbatim in multisig/SORTITION-TABLE-DESIGN.md."
+  ],
+  "domainTags": {
+    "leaf": "pp:sortition:leaf:v1",
+    "node": "pp:sortition:node:v1",
+    "pad": "pp:sortition:pad:v1",
+    "draw": "pp:sortition:draw:v1",
+    "beacon": "pp:sortition:beacon:v1"
+  },
+  "vectors": [
+    {
+      "id": "A",
+      "title": "minimal table n=5, equal weights",
+      "exercises": [
+        "minimal case",
+        "binary tree with n at power of two",
+        "no collisions expected"
+      ],
+      "table": {
+        "epoch": 7,
+        "n": 5,
+        "paddedLeafCount": 8,
+        "padSentinelLeafHash": "0x44f62bc37a8930f99b53cd15560ac4896e8d87020db9efbb71f03f3f91333d16",
+        "rows": [
+          {
+            "index": 0,
+            "memberAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "weight": 1,
+            "cumulative": 1,
+            "leafHash": "0xfe90b5642e17a77b2eeec1502895f885a25af29a1fbe7e074449f5c1b880fe17",
+            "note": null
+          },
+          {
+            "index": 1,
+            "memberAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "weight": 1,
+            "cumulative": 2,
+            "leafHash": "0x6bec6c718585fa8bd94906e2f174894e99ed791d8e75dec509b11e6b5c9ff854",
+            "note": null
+          },
+          {
+            "index": 2,
+            "memberAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "weight": 1,
+            "cumulative": 3,
+            "leafHash": "0xbe3041f19cc5c24ebc45eda02c40bc8371cd111ac0dad6ea8eb94339d533002c",
+            "note": null
+          },
+          {
+            "index": 3,
+            "memberAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "weight": 1,
+            "cumulative": 4,
+            "leafHash": "0x78e8a9231d776f279dd1e957a8ad568e358f0b13b655b0955a925681f883ebe1",
+            "note": null
+          },
+          {
+            "index": 4,
+            "memberAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "weight": 1,
+            "cumulative": 5,
+            "leafHash": "0xa04e8a4162759fdb48fb79ffc7185dee639167e4b48d7a6f78e788301e309bc1",
+            "note": null
+          }
+        ],
+        "totalWeight": 5,
+        "membershipRoot": "0x8407e8a69e7c6c7a4a1665ebc9c397aca5bcfc207ae7088a1a51e70449b40070"
+      },
+      "seed": "0x5787a73119ee9e2cc16a1245e27c981d6c1cd8248e5543b6c1fcb04c9ace2280",
+      "expected": {
+        "selected": [
+          "0x66000000000000000000000000000000000000000000000000000000000000f6",
+          "0x22000000000000000000000000000000000000000000000000000000000000b2",
+          "0x55000000000000000000000000000000000000000000000000000000000000e5",
+          "0x44000000000000000000000000000000000000000000000000000000000000d4",
+          "0x11000000000000000000000000000000000000000000000000000000000000a1"
+        ],
+        "kConsumed": 13,
+        "kSequence": [
+          {
+            "k": 0,
+            "hashHex": "0xf9242969f8074d4b2db2f5e4b3ad241a26ad9690201543560af4513a0b7a36be",
+            "pick": "4",
+            "winnerIndex": 4,
+            "winnerAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 1,
+            "hashHex": "0x923fa077e9e164ba47834b972d886dc139b42d95387f7f80aa340fa10bdad75a",
+            "pick": "4",
+            "winnerIndex": 4,
+            "winnerAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 2,
+            "hashHex": "0x0ef29d102a79f37f7a793147c96f6c25a4d534ca623a94787ff405d638803007",
+            "pick": "1",
+            "winnerIndex": 1,
+            "winnerAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 3,
+            "hashHex": "0x75e631127ea5676d8e82ef587e1fe15747fb6653d33df040dc347b08225be17f",
+            "pick": "3",
+            "winnerIndex": 3,
+            "winnerAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 4,
+            "hashHex": "0xa330c01a00933ecfdc03153cbf332eeaff92951ceb399bde13a7410f0f14f6b6",
+            "pick": "2",
+            "winnerIndex": 2,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 5,
+            "hashHex": "0xa9b6cf0e2c0aa6903aa3fc5c30afddc217bd7369cfc9e4bb333823a89ffc1b8c",
+            "pick": "2",
+            "winnerIndex": 2,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 6,
+            "hashHex": "0x2426fb96c64e1a8f01320e249ecb89fc9bba6bb0560856592dc8fa58a615059e",
+            "pick": "2",
+            "winnerIndex": 2,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 7,
+            "hashHex": "0xf9edd62dde9745a9be0140978ba4daa66297c73ff27aa750d9b0b23454c95a39",
+            "pick": "1",
+            "winnerIndex": 1,
+            "winnerAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 8,
+            "hashHex": "0xee9b92317a76d3ad8d6c91c52c9ba70eadcd00f6edb1a507e6de88667a5b9f86",
+            "pick": "4",
+            "winnerIndex": 4,
+            "winnerAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 9,
+            "hashHex": "0x191b87c4b2db259c31cc4bf3d4f19969b8190030df17a2d28214843ae5badec5",
+            "pick": "4",
+            "winnerIndex": 4,
+            "winnerAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 10,
+            "hashHex": "0x14327cf82616f40567e5b37ede1b47f03ad37c90e6c048b95242f822ba164759",
+            "pick": "2",
+            "winnerIndex": 2,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 11,
+            "hashHex": "0x627d4851374c4f9e462dbc3961da2d64e8b8b701e8a70929d35f86ba9ff7b8a3",
+            "pick": "2",
+            "winnerIndex": 2,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 12,
+            "hashHex": "0xae8958a91c7cc46503d382f23efc32d7222942bc794e31ed3d02061e5112befb",
+            "pick": "0",
+            "winnerIndex": 0,
+            "winnerAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "accepted": true,
+            "reason": "accepted"
+          }
+        ]
+      }
+    },
+    {
+      "id": "B",
+      "title": "non-power-of-two leaf count (n=6) — padding exercised",
+      "exercises": [
+        "sentinel padding leaf",
+        "root over 8-leaf tree with 2 pad slots"
+      ],
+      "table": {
+        "epoch": 8,
+        "n": 6,
+        "paddedLeafCount": 8,
+        "padSentinelLeafHash": "0x44f62bc37a8930f99b53cd15560ac4896e8d87020db9efbb71f03f3f91333d16",
+        "rows": [
+          {
+            "index": 0,
+            "memberAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "weight": 1,
+            "cumulative": 1,
+            "leafHash": "0xc650dfa0a7b522a81cd52188bfc80d6bfec46ad1aa612ef12cd6cc3e1a38f585",
+            "note": null
+          },
+          {
+            "index": 1,
+            "memberAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "weight": 1,
+            "cumulative": 2,
+            "leafHash": "0xb338957ea13046ffe12db5d046d4b6d40c6e46485c09962fe0493799e3446440",
+            "note": null
+          },
+          {
+            "index": 2,
+            "memberAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "weight": 1,
+            "cumulative": 3,
+            "leafHash": "0xea5de7649ad9757601af7df2ff03c69b85298f868033eb32ce000f4308ed044b",
+            "note": null
+          },
+          {
+            "index": 3,
+            "memberAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "weight": 1,
+            "cumulative": 4,
+            "leafHash": "0x63be3cc590cc9712afa53cdfa2562138061f9ccd1e34b2dca91e33f4e0430ba6",
+            "note": null
+          },
+          {
+            "index": 4,
+            "memberAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "weight": 1,
+            "cumulative": 5,
+            "leafHash": "0x18170a2353a61616258cb462a4057568448306651feab053b49f89c0e0d05b5c",
+            "note": null
+          },
+          {
+            "index": 5,
+            "memberAddr": "0x7700000000000000000000000000000000000000000000000000000000000077",
+            "weight": 1,
+            "cumulative": 6,
+            "leafHash": "0x91986714856a1200477621d24a94c805dc565c30a5ba885d474b24174a27d0c6",
+            "note": null
+          }
+        ],
+        "totalWeight": 6,
+        "membershipRoot": "0x9507df57c7d79dfbef1dca02882b90cf5ea94280cec010746d293c3eb021597f"
+      },
+      "seed": "0x0f0e8c99abf095298d9d591bbaa4fa9e295654a3f3be2041f050dc674ab01ceb",
+      "expected": {
+        "selected": [
+          "0x11000000000000000000000000000000000000000000000000000000000000a1",
+          "0x66000000000000000000000000000000000000000000000000000000000000f6",
+          "0x7700000000000000000000000000000000000000000000000000000000000077",
+          "0x44000000000000000000000000000000000000000000000000000000000000d4",
+          "0x22000000000000000000000000000000000000000000000000000000000000b2"
+        ],
+        "kConsumed": 5,
+        "kSequence": [
+          {
+            "k": 0,
+            "hashHex": "0xc0b5e2da7bb99ba6b70b0d8041eb9bad2ea81e362be05fc453ed423319af1cde",
+            "pick": "0",
+            "winnerIndex": 0,
+            "winnerAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 1,
+            "hashHex": "0x64e4fc9ad6e01c87bd959da7be132c0705b4c835588e1a6b64b7ccd89317ebc8",
+            "pick": "4",
+            "winnerIndex": 4,
+            "winnerAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 2,
+            "hashHex": "0x413faa1d902b27b351df68299ed8a4b2f688df37a5ed91d9abb8a79aa7ec34ad",
+            "pick": "5",
+            "winnerIndex": 5,
+            "winnerAddr": "0x7700000000000000000000000000000000000000000000000000000000000077",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 3,
+            "hashHex": "0x2e9f04e90b297b1512bcd718df2728311bd0c56fd51df1be6b22f0b667de3fd0",
+            "pick": "2",
+            "winnerIndex": 2,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 4,
+            "hashHex": "0xe9720188d6f87ae9ad3db0a7b0b8b995ec0f0c1d715a089820f27d03c09372d1",
+            "pick": "1",
+            "winnerIndex": 1,
+            "winnerAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "accepted": true,
+            "reason": "accepted"
+          }
+        ]
+      }
+    },
+    {
+      "id": "C",
+      "title": "seed forces at least one rejection (collision path)",
+      "exercises": [
+        "rejection sampling: advance k, do not re-pick"
+      ],
+      "table": {
+        "epoch": 9,
+        "n": 5,
+        "paddedLeafCount": 8,
+        "padSentinelLeafHash": "0x44f62bc37a8930f99b53cd15560ac4896e8d87020db9efbb71f03f3f91333d16",
+        "rows": [
+          {
+            "index": 0,
+            "memberAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "weight": 1,
+            "cumulative": 1,
+            "leafHash": "0x866f2d6c47172d6772b2c8e80c12fb074a077d2bc69da42dbedde8cac71f3b56",
+            "note": null
+          },
+          {
+            "index": 1,
+            "memberAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "weight": 1,
+            "cumulative": 2,
+            "leafHash": "0xe876a0b19bfc15f8b2749755277d4f7794facf177f3f1b50caf8349e1e8365f9",
+            "note": null
+          },
+          {
+            "index": 2,
+            "memberAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "weight": 1,
+            "cumulative": 3,
+            "leafHash": "0x5372034738eb1ae0e4c24ed13d786c479c86fedf9edc9e64b3606da898c8a1a2",
+            "note": null
+          },
+          {
+            "index": 3,
+            "memberAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "weight": 1,
+            "cumulative": 4,
+            "leafHash": "0x637b9d7e9354c65339ec89376918e99bf66934200fd7b487634c11d913501e67",
+            "note": null
+          },
+          {
+            "index": 4,
+            "memberAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "weight": 1,
+            "cumulative": 5,
+            "leafHash": "0xb50b3a6fe5ccebb2b10414df5d72e61e43e71f0c8c6e95ff361382c24fea0575",
+            "note": null
+          }
+        ],
+        "totalWeight": 5,
+        "membershipRoot": "0x0698edd9faab15651c33822a7d7fd2e8888adca6770aa7f9bc3400ef6d6e27c2"
+      },
+      "seedSearchLabel": "C",
+      "seedSearchTries": 1,
+      "seed": "0xf46b61cf994b7123d415a922909538f5499ab3c95012af18e1a0805d25bf8da7",
+      "expected": {
+        "selected": [
+          "0x22000000000000000000000000000000000000000000000000000000000000b2",
+          "0x44000000000000000000000000000000000000000000000000000000000000d4",
+          "0x66000000000000000000000000000000000000000000000000000000000000f6",
+          "0x11000000000000000000000000000000000000000000000000000000000000a1",
+          "0x55000000000000000000000000000000000000000000000000000000000000e5"
+        ],
+        "kConsumed": 10,
+        "kSequence": [
+          {
+            "k": 0,
+            "hashHex": "0x29723dda109529e2e755e19488cdd62aca1feff1b66d03c3442069db1d5aa8f6",
+            "pick": "1",
+            "winnerIndex": 1,
+            "winnerAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 1,
+            "hashHex": "0x161b6532dd3284bf9ed56fd51c6f586e1ee9f0debad4222d334d8389a4e67df4",
+            "pick": "2",
+            "winnerIndex": 2,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 2,
+            "hashHex": "0x016d9314b9049647739d84c760fe482b59398f888e039984bcd057548246d63c",
+            "pick": "1",
+            "winnerIndex": 1,
+            "winnerAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 3,
+            "hashHex": "0xeb0185fd61e49c91eca82c94be7733dd7efb6b8227d7f7c6644f8caa6e614f4c",
+            "pick": "4",
+            "winnerIndex": 4,
+            "winnerAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 4,
+            "hashHex": "0x2abc477d4d880bd219a146110b85454759aeb44d4fb2945a4b35756f0870d344",
+            "pick": "2",
+            "winnerIndex": 2,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 5,
+            "hashHex": "0x7cd6691237eb77ecc2f1324df09aa6e120f0f7f8a44be4d5243168dc30d08426",
+            "pick": "0",
+            "winnerIndex": 0,
+            "winnerAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 6,
+            "hashHex": "0xb3fc98802238973996f41e9f39fc620abba3ed2d0cb1573e2d6ae7b127d557b4",
+            "pick": "2",
+            "winnerIndex": 2,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 7,
+            "hashHex": "0x745c0fc3a4fb0ec57ed1849f3f86d1f1b03c678020a5d02145a801bbaf49439e",
+            "pick": "0",
+            "winnerIndex": 0,
+            "winnerAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 8,
+            "hashHex": "0x9f8c436c8a87a525346890072fe66cb0dba0e6b4e17d73f07fd431d42373be0b",
+            "pick": "2",
+            "winnerIndex": 2,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 9,
+            "hashHex": "0x1d23e8d393f7253e68a60908726b8330fa9b0572a7da153bb85c0fb4df9c27ee",
+            "pick": "3",
+            "winnerIndex": 3,
+            "winnerAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "accepted": true,
+            "reason": "accepted"
+          }
+        ],
+        "collisions": 5
+      }
+    },
+    {
+      "id": "D",
+      "title": "equal-weight gate policy (n=6, all weight=1) — spec §4 recommendation",
+      "exercises": [
+        "gate policy round-trip",
+        "weight=1 uniform distribution"
+      ],
+      "table": {
+        "epoch": 10,
+        "n": 6,
+        "paddedLeafCount": 8,
+        "padSentinelLeafHash": "0x44f62bc37a8930f99b53cd15560ac4896e8d87020db9efbb71f03f3f91333d16",
+        "rows": [
+          {
+            "index": 0,
+            "memberAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "weight": 1,
+            "cumulative": 1,
+            "leafHash": "0x057e3236e79f60fa0f7c17df9676e51b2c93e8f7045be56e7c2006ceafd255bb",
+            "note": null
+          },
+          {
+            "index": 1,
+            "memberAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "weight": 1,
+            "cumulative": 2,
+            "leafHash": "0xdcecf3582d4765841c1fc3cb21c8d1c16920fa5db6647c46421e4f2c8bb915b3",
+            "note": null
+          },
+          {
+            "index": 2,
+            "memberAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "weight": 1,
+            "cumulative": 3,
+            "leafHash": "0x92d3c73b8e1dc504cb293a4f43e9fb63269a20ece1b7fe57365bf2cb01e88b3b",
+            "note": null
+          },
+          {
+            "index": 3,
+            "memberAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "weight": 1,
+            "cumulative": 4,
+            "leafHash": "0x1a0147cd0bb979e711c643c9ff1f990a0e9c928acf87d5876f97c0cc590e1344",
+            "note": null
+          },
+          {
+            "index": 4,
+            "memberAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "weight": 1,
+            "cumulative": 5,
+            "leafHash": "0x13dae6aa114b63faf26b899cbbc47eb8aecf4c4881d1f8ce34beb8bf6682a72c",
+            "note": null
+          },
+          {
+            "index": 5,
+            "memberAddr": "0x8800000000000000000000000000000000000000000000000000000000000088",
+            "weight": 1,
+            "cumulative": 6,
+            "leafHash": "0x41fc398cf19c6f365af3eef6ff73272bfdffe6a302d98d60867784a5fe6aa045",
+            "note": null
+          }
+        ],
+        "totalWeight": 6,
+        "membershipRoot": "0x1e15c50c1a4d2673b9f9cef538caa29a926595987697abf649e1726a992b5491"
+      },
+      "seed": "0x3079cb12e28c7cf16cfb4b47b088654f824014c7a5d8fb9a8d242014c5652cc5",
+      "expected": {
+        "selected": [
+          "0x11000000000000000000000000000000000000000000000000000000000000a1",
+          "0x55000000000000000000000000000000000000000000000000000000000000e5",
+          "0x8800000000000000000000000000000000000000000000000000000000000088",
+          "0x66000000000000000000000000000000000000000000000000000000000000f6",
+          "0x22000000000000000000000000000000000000000000000000000000000000b2"
+        ],
+        "kConsumed": 8,
+        "kSequence": [
+          {
+            "k": 0,
+            "hashHex": "0x2d0958a45ff1c9db72ec16996423dabd959717adcf8614b09c0c52025b4f930a",
+            "pick": "0",
+            "winnerIndex": 0,
+            "winnerAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 1,
+            "hashHex": "0x39864d1732564a1d0a774042bc9ce41b78a0e84fb7ca4340572dd9e04ec675c7",
+            "pick": "3",
+            "winnerIndex": 3,
+            "winnerAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 2,
+            "hashHex": "0x9e22707240c43629b304417eaa0174fa56df840d69470edb798de72f40d0c951",
+            "pick": "5",
+            "winnerIndex": 5,
+            "winnerAddr": "0x8800000000000000000000000000000000000000000000000000000000000088",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 3,
+            "hashHex": "0xf8bbb7975bee6a1e69a788943c310fbb241dddf8e44ea6cedc29e98f0e36177b",
+            "pick": "3",
+            "winnerIndex": 3,
+            "winnerAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 4,
+            "hashHex": "0x449ff1e674b211a893a4527b31e212e7462e7647a8c75506930b10811362940e",
+            "pick": "4",
+            "winnerIndex": 4,
+            "winnerAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 5,
+            "hashHex": "0x6d9c5a3062db9bea147c713f8807ef0090307481f0f9ab51abdc766a00d8d40c",
+            "pick": "0",
+            "winnerIndex": 0,
+            "winnerAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 6,
+            "hashHex": "0x1f853aa60267be4953d4203d095752bf1cd824f1ed09b4861366424b80c10d59",
+            "pick": "3",
+            "winnerIndex": 3,
+            "winnerAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 7,
+            "hashHex": "0x93bdbae35883c04a4216b9fbf160ce392ac8758c477eebe4fab7cd5b143f7327",
+            "pick": "1",
+            "winnerIndex": 1,
+            "winnerAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "accepted": true,
+            "reason": "accepted"
+          }
+        ]
+      }
+    },
+    {
+      "id": "E",
+      "title": "federation-seat row present (lower-tier council address)",
+      "exercises": [
+        "structural equivalence of federation and personal seats in the table"
+      ],
+      "table": {
+        "epoch": 11,
+        "n": 6,
+        "paddedLeafCount": 8,
+        "padSentinelLeafHash": "0x44f62bc37a8930f99b53cd15560ac4896e8d87020db9efbb71f03f3f91333d16",
+        "rows": [
+          {
+            "index": 0,
+            "memberAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "weight": 1,
+            "cumulative": 1,
+            "leafHash": "0xbd6ead682d1ae570a012702832f128eeabd7a050091cbd1bfb09eeb464e4f1d5",
+            "note": null
+          },
+          {
+            "index": 1,
+            "memberAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "weight": 1,
+            "cumulative": 2,
+            "leafHash": "0xc55eb15ec3c29b510af78571b743dfe2140b1a84bdf7f1d446c829e0be8090d3",
+            "note": null
+          },
+          {
+            "index": 2,
+            "memberAddr": "0x33000000000000000000000000000000000000000000000000000000000000c3",
+            "weight": 1,
+            "cumulative": 3,
+            "leafHash": "0xe7e5779a64851affd060205be5f97ce3c7bbac1eaea8f707bc107b924963153d",
+            "note": "federation seat (lower-tier council address)"
+          },
+          {
+            "index": 3,
+            "memberAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "weight": 1,
+            "cumulative": 4,
+            "leafHash": "0x734f4e6e2e0d5da187caf84bbc264bac7e739f3dda7936f2bf97e0e03169e961",
+            "note": null
+          },
+          {
+            "index": 4,
+            "memberAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "weight": 1,
+            "cumulative": 5,
+            "leafHash": "0x0008f4622f6351bc555b919fe09de3500a55828e3001cf809219b759079d4886",
+            "note": null
+          },
+          {
+            "index": 5,
+            "memberAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "weight": 1,
+            "cumulative": 6,
+            "leafHash": "0xd28b218b768a56ca4704bdffc65bee33ead22f93e208e15181e466b84bb1354c",
+            "note": null
+          }
+        ],
+        "totalWeight": 6,
+        "membershipRoot": "0x655a79effc4e6b35f7ea303efa89824071b56f9c66ee79263aa504ad7d1abc21"
+      },
+      "seed": "0xa4c5679065fc690116c21ae103beb3defdd0822bbcdb249d0cc344c290649ab8",
+      "expected": {
+        "selected": [
+          "0x55000000000000000000000000000000000000000000000000000000000000e5",
+          "0x11000000000000000000000000000000000000000000000000000000000000a1",
+          "0x44000000000000000000000000000000000000000000000000000000000000d4",
+          "0x33000000000000000000000000000000000000000000000000000000000000c3",
+          "0x22000000000000000000000000000000000000000000000000000000000000b2"
+        ],
+        "kConsumed": 8,
+        "kSequence": [
+          {
+            "k": 0,
+            "hashHex": "0x81eb2d7e9f6bb376c1d4c1502c944cd76f0f74a6a0d30e716cd7c5cc8c3a5730",
+            "pick": "4",
+            "winnerIndex": 4,
+            "winnerAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 1,
+            "hashHex": "0xa900b5acb95755e162adfb39afe0292efcb0254daf2f7282595133eadf97fe90",
+            "pick": "0",
+            "winnerIndex": 0,
+            "winnerAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 2,
+            "hashHex": "0xdb37c6ffc26a4fab7976067455ff4aab26b516cd7e7489fc5d3267c8691418fc",
+            "pick": "4",
+            "winnerIndex": 4,
+            "winnerAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 3,
+            "hashHex": "0x82222acbd813653b5a3413f53c50da32021141946b3a182457d98f642bc519f6",
+            "pick": "4",
+            "winnerIndex": 4,
+            "winnerAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 4,
+            "hashHex": "0x3069487d0af692dd9e830e98dc97405c215f666ee4db98e3ef77c7158dbc568f",
+            "pick": "3",
+            "winnerIndex": 3,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 5,
+            "hashHex": "0xe1091a250eac00da229ca0f6bd2b072e1852b8a10cad316cf0db274898234911",
+            "pick": "3",
+            "winnerIndex": 3,
+            "winnerAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "accepted": false,
+            "reason": "collision (already selected) -> advance k"
+          },
+          {
+            "k": 6,
+            "hashHex": "0x7e178e204434073d91e4df921b5c6d363f188d28a59558435c10afb0833f9578",
+            "pick": "2",
+            "winnerIndex": 2,
+            "winnerAddr": "0x33000000000000000000000000000000000000000000000000000000000000c3",
+            "accepted": true,
+            "reason": "accepted"
+          },
+          {
+            "k": 7,
+            "hashHex": "0xd775678fd16625a00d6462534367a76412fa4bc6c101a28af8223ceb9f4833e5",
+            "pick": "1",
+            "winnerIndex": 1,
+            "winnerAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "accepted": true,
+            "reason": "accepted"
+          }
+        ]
+      }
+    },
+    {
+      "id": "F",
+      "title": "wrong incoming[5] — auditor MUST reject",
+      "exercises": [
+        "negative test: rotation whose incoming disagrees with the draw"
+      ],
+      "table": {
+        "epoch": 7,
+        "n": 5,
+        "paddedLeafCount": 8,
+        "padSentinelLeafHash": "0x44f62bc37a8930f99b53cd15560ac4896e8d87020db9efbb71f03f3f91333d16",
+        "rows": [
+          {
+            "index": 0,
+            "memberAddr": "0x11000000000000000000000000000000000000000000000000000000000000a1",
+            "weight": 1,
+            "cumulative": 1,
+            "leafHash": "0xfe90b5642e17a77b2eeec1502895f885a25af29a1fbe7e074449f5c1b880fe17",
+            "note": null
+          },
+          {
+            "index": 1,
+            "memberAddr": "0x22000000000000000000000000000000000000000000000000000000000000b2",
+            "weight": 1,
+            "cumulative": 2,
+            "leafHash": "0x6bec6c718585fa8bd94906e2f174894e99ed791d8e75dec509b11e6b5c9ff854",
+            "note": null
+          },
+          {
+            "index": 2,
+            "memberAddr": "0x44000000000000000000000000000000000000000000000000000000000000d4",
+            "weight": 1,
+            "cumulative": 3,
+            "leafHash": "0xbe3041f19cc5c24ebc45eda02c40bc8371cd111ac0dad6ea8eb94339d533002c",
+            "note": null
+          },
+          {
+            "index": 3,
+            "memberAddr": "0x55000000000000000000000000000000000000000000000000000000000000e5",
+            "weight": 1,
+            "cumulative": 4,
+            "leafHash": "0x78e8a9231d776f279dd1e957a8ad568e358f0b13b655b0955a925681f883ebe1",
+            "note": null
+          },
+          {
+            "index": 4,
+            "memberAddr": "0x66000000000000000000000000000000000000000000000000000000000000f6",
+            "weight": 1,
+            "cumulative": 5,
+            "leafHash": "0xa04e8a4162759fdb48fb79ffc7185dee639167e4b48d7a6f78e788301e309bc1",
+            "note": null
+          }
+        ],
+        "totalWeight": 5,
+        "membershipRoot": "0x8407e8a69e7c6c7a4a1665ebc9c397aca5bcfc207ae7088a1a51e70449b40070"
+      },
+      "seed": "0x5787a73119ee9e2cc16a1245e27c981d6c1cd8248e5543b6c1fcb04c9ace2280",
+      "claimedIncoming": [
+        "0x22000000000000000000000000000000000000000000000000000000000000b2",
+        "0x66000000000000000000000000000000000000000000000000000000000000f6",
+        "0x55000000000000000000000000000000000000000000000000000000000000e5",
+        "0x44000000000000000000000000000000000000000000000000000000000000d4",
+        "0x11000000000000000000000000000000000000000000000000000000000000a1"
+      ],
+      "expected": {
+        "verdict": "reject",
+        "correctSelected": [
+          "0x66000000000000000000000000000000000000000000000000000000000000f6",
+          "0x22000000000000000000000000000000000000000000000000000000000000b2",
+          "0x55000000000000000000000000000000000000000000000000000000000000e5",
+          "0x44000000000000000000000000000000000000000000000000000000000000d4",
+          "0x11000000000000000000000000000000000000000000000000000000000000a1"
+        ],
+        "firstDivergenceIndex": 0,
+        "rejectionReason": "claimed incoming[0] = 0x22000000000000000000000000000000000000000000000000000000000000b2 but spec §2 draw from (membershipRoot, seed) yields 0x66000000000000000000000000000000000000000000000000000000000000f6"
+      }
+    }
+  ]
+}
