@@ -339,6 +339,29 @@ floor silently stops binding. WI-13's review MUST check this linkage explicitly;
 it is the single most important cross-item consistency requirement in the
 tariff/governance pair.
 
+### 7.1 D-4 (decided 2026-07-13): governance-first ID minting
+
+**The decision that makes the invariant structural rather than checked:** the
+canonical node id for a company/nation is minted by the **governance act of
+chartering** it (WI-20), *before* any tariff schedule can reference it. The
+TariffRegistry (WI-13) MUST reject a schedule whose `operatorId`/`nationRef`
+does not already exist as a chartered node in the governance tree.
+
+Consequence: it is **impossible** to register a tariff for a company the
+federation has not chartered — the "floor guarding an empty room" failure mode
+cannot occur, because a schedule cannot exist for an ungoverned id in the
+first place. This matches architecture §5 ("branches are permissioned"): an
+entity exists as a *governed* entity before it may *price*.
+
+The rejected alternative (registry-first: a schedule mints the id, governance
+attaches later) was declined because it opens a window where a priced schedule
+exists that no council yet governs — exactly the silent-floor-evaporation risk
+this invariant exists to prevent.
+
+WI-20 (charter protocol) OWNS the id-minting act; WI-13 (registry) enforces
+the "charter-must-exist" precondition. This spec records the direction so both
+are built to it.
+
 ---
 
 ## 8. Acceptance criteria (for WI-16, the off-chain validator tool, and WI-13)
