@@ -543,6 +543,8 @@ calls. The failure mode this protects against is a mediocre model being
 | WI-23 | ✓ merged | #22 | Governance-standing rules: no-corporate-seats, C-2 recusal, B-2 pool-stacking guard |
 | WI-05 | ✓ merged | #23 | Cohort-registration circuit spec (B-3); submitCohortRoot + proveInAndRegister; accrual@prove-in / tenure@intent; unblocks WI-11 |
 | WI-02 | ✓ done, in review | (this PR) | Clearinghouse (A-1); WI-01 pooling removes inter-operator credit risk → attribution ledger + periodic true-up; unblocks WI-14 |
+| WI-21 | ✓ done, in review | (this PR) | Cross-tier attestation service spec; no-sign-without-quorum + fail-closed honesty properties; serves approveFederated |
+| WI-22 | ✓ done, in review | (this PR) | Tier-promotion criteria frame; mechanical/non-farmable signals; thresholds = calibration |
 | WI-11 | design-space narrowed (D-3) | — | National pool only; no federated-pool variant |
 | all others | ☐ not started | — | Next: WI-02 clearinghouse, WI-21/22 governance finish, WI-13/14 contract builds |
 
