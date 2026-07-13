@@ -493,10 +493,13 @@ calls. The failure mode this protects against is a mediocre model being
 |----|--------|----|----|
 | WI-01 | ◐ direction decided (D-1) | — | Protocol escrow pool; *how* design pending |
 | WI-04, WI-12 | ⧖ deferred (D-2) | — | Revive at second market/provider |
-| WI-09 | ✓ done, in review | #15 | Draw spec + 6 vectors + generator; BIG review pass done (one byte-count comment fixed) |
-| WI-19 | ✓ done, in review | #16 | Dilution/throughput/DUST models; math reviewed; CAL-9 comparison delivered → D-3 |
+| WI-08 | ✓ merged | #17 | B-2 session-farming mitigation (§5.1); inert at pilot scale |
+| WI-09 | ✓ merged | #15 | Draw spec + 6 vectors + generator; BIG review found+fixed one byte-count comment |
+| WI-15 | ✓ merged | #18 | Table builder + draw auditor CLI; 2nd independent impl, all vectors byte-match |
+| WI-18 | ✓ merged | #19 | Eligibility snapshot service spec + ref impl; §5.1 gate verified in fixtures |
+| WI-19 | ✓ merged | #16 | Dilution/throughput/DUST models; CAL-9 comparison delivered → D-3 |
 | WI-11 | design-space narrowed (D-3) | — | National pool only; no federated-pool variant |
-| all others | ☐ not started | — | First wave: WI-15 (after #15 merges), WI-18 (after WI-08) |
+| all others | ☐ not started | — | Next: BIG design items — WI-05 cohort spec, WI-06 tariff model, WI-01 escrow *how* |
 
 ---
 
