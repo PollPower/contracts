@@ -83,34 +83,70 @@ custody mechanism.
 
 ---
 
-## 3. Redemption is pooled; attribution is by policy (the B-1 tie-in)
+## 3. Redemption — D-10: energy-denominated fungibility (fungible on kWh, floating on fiat)
 
-WI-01 §4.3 fixed that redemption pays a **pooled** rate from the trust, not a
-coin's specific backing (the B-1 fungibility stance: per-coin backing metadata
-is audit, redemption value is pooled). So when a merchant redeems EBT that was
-minted on Operator A but is being cashed out through the trust, **which
-operator's `fiatIn` does the payout draw down?**
+**Decision D-10 (Garrett, 2026-07-13):** EBT is fungible **on the energy axis**
+(the axis that matters and where all real activity happens) and its fiat face
+is allowed to **float per coin**. This supersedes the earlier P1-vs-P2 framing,
+which was a fiat-brained question — it assumed the fiat axis was the one whose
+fungibility had to be defended. In an energy-denominated economy it is not.
 
-Two coherent policies; this is the one genuine design choice A-1 leaves:
+### 3.1 The reframing that dissolves B-1
 
-- **Policy P1 — pro-rata pooled (RECOMMENDED).** Redemptions draw down every
-  operator's `fiatIn` **pro rata** to outstanding attribution. No operator's
-  book is specially charged for a redemption of "its" coin; the pool is truly
-  mutual. Simplest, matches the pooled-redemption spirit, and makes EBT
-  economically fungible with no per-coin cash-out distinction (kills the B-1
-  Gresham's-Law tension outright).
-- **Policy P2 — origin-charged.** A redemption draws down the *originating*
-  operator's `fiatIn` specifically. Preserves a tight per-operator audit trail
-  but reintroduces exactly the "coins have different cash-out sources" texture
-  B-1 warned against, and requires the redeemer's coin to be traced to origin
-  at cash-out.
+The project's end-state (Garrett): businesses price goods and services **in EBT
+(= kWh)**, not in fiat. Energy is the denominator; fiat is a shrinking legacy
+exit ramp. Under that model there are two redemption axes, and they are not
+symmetric:
 
-**Recommendation: P1.** It is the honest expression of "one pooled trust,"
-avoids the B-1 fungibility break, and the per-operator audit trail is preserved
-*analytically* (via §2's attribution ledger) without needing to charge
-redemptions to a specific origin. `TODO(calibration)` — but the recommendation
-is strong enough that P2 should only be chosen if a regulator specifically
-demands origin-charged redemption.
+- **Energy redemption (the primary path).** Spend EBT for kWh, or spend EBT for
+  goods/services **priced in EBT**. On this axis every EBT is **identical**
+  (I-1: 1 EBT = 1 kWh, always). A merchant pricing bread at 2 kWh accepts any
+  2 EBT without inspection, because they are thinking in energy, where the
+  coins do not differ. **Gresham's Law never fires here** — there is no
+  cash-out motive on the energy axis, so no "good coin / bad coin" selection
+  can occur. This is where essentially all transaction volume lives.
+
+- **Fiat redemption (the peripheral exit ramp).** Cash out EBT to KES. On this
+  axis coins **do** differ: each coin redeems for the fiat recorded in its own
+  backing metadata (the honest per-coin value — the former "P2" instinct, now
+  simply correct). Fiat fungibility is **explicitly not preserved**, because
+  fiat is not the denominating unit and its relevance shrinks as the EBT
+  economy thickens.
+
+### 3.2 Why the old B-1 crack closes instead of widening
+
+The B-1 Gresham worry assumed actors transact on the **fiat** axis (a merchant
+discounting a low-backed coin). But in an energy-denominated economy the
+merchant transacts on the **energy** axis, where coins are identical, so the
+discount never happens. The fiat spread only matters to someone cashing out to
+the old currency — a peripheral, self-limiting act (the more the economy
+denominates in energy, the less a fiat spread is worth chasing). The one
+remaining leak — redemption arbitrage (buy low-fiat EBT, redeem high-fiat EBT)
+— is **bounded by the sanity band** (architecture §7.2), which caps how far
+per-coin fiat backing can diverge in the first place. Bounded slide, not wild.
+
+### 3.3 Attribution consequence for the trust
+
+Because fiat redemption is **per-coin from its own recorded backing**, the
+attribution question the earlier P1/P2 framing agonized over largely evaporates:
+a fiat redemption draws down exactly the backing that coin recorded, which
+traces to the operator that minted it. `redeemedAgainst[op]` (§2) is therefore
+not a *policy* choice — it is simply *the sum of that operator's coins that were
+fiat-redeemed*. Energy redemptions do not draw fiat at all (they consume EBT
+against delivered kWh), so they never touch the fiat attribution book. This is
+simpler than either former policy: no pooling math, no origin-tracing heuristic
+— the coin's own metadata is authoritative for the (increasingly rare) fiat
+exit.
+
+### 3.4 What this preserves and what it lets go
+
+- **Preserved (absolutely):** energy fungibility (I-1). This is the thesis and
+  it never bends. Every EBT is 1 kWh everywhere, forever.
+- **Let go (deliberately):** fiat fungibility. Coins differ in KES cash-out
+  value; that is acceptable and correct because fiat is not the unit. The
+  per-coin backing metadata (WI-06 §2) becomes the **fiat redemption value**,
+  not merely an audit artifact.
+- **Bounded:** the fiat divergence between coins, by the sanity band (§7.2).
 
 ---
 
@@ -143,9 +179,10 @@ for each operator op:
 `residual[op]` is **not** an inter-operator debt — it is `op`'s standing balance
 *within the trust*. A positive residual is fiat still held for `op`'s ecosystem
 (un-redeemed EBT backing); a negative residual would indicate `op` drew more
-than it contributed, which under P1 pooling should not occur beyond rounding
-and is an **alarm** (it means redemptions exceeded backing — a solvency breach,
-caught by D-8's published invariant before it can grow).
+than it contributed, which under D-10 per-coin fiat redemption cannot occur
+beyond rounding (a coin redeems only for what it recorded) and is an **alarm**
+(it would mean redemptions exceeded backing — a solvency breach, caught by D-8's
+published invariant before it can grow).
 
 ### 4.3 Who carries the book
 
@@ -200,8 +237,9 @@ process, not a new custody circuit. An implementation MUST:
 
 1. Decompose the D-8 national solvency figure **per operator** (§2 attribution
    ledger) from on-chain settlement data + attested trust balance.
-2. Apply the chosen redemption-attribution policy (P1 recommended) consistently
-   (§3).
+2. Apply D-10 redemption semantics: energy redemptions consume EBT against
+   delivered kWh and draw no fiat; fiat redemptions pay **per-coin from the
+   coin's own recorded backing** (no pooling math, no origin-tracing heuristic).
 3. Produce the periodic `residual[op]` reconciliation (§4.2), with a negative
    residual raising a **solvency alarm** (never silently netted).
 4. Treat the trust as the sole counterparty — **no artifact may represent an
@@ -217,7 +255,7 @@ process, not a new custody circuit. An implementation MUST:
 
 | # | Parameter | Section |
 |---|-----------|---------|
-| CAL-REDEEM | Redemption-attribution policy: P1 pro-rata pooled (recommended) vs P2 origin-charged | §3 |
+| ~~CAL-REDEEM~~ | RESOLVED by D-10 — energy-denominated fungibility: fungible on the kWh axis, per-coin fiat redemption on the peripheral fiat axis; no pooling-vs-origin fork remains | resolved |
 | CAL-RECON | True-up reconciliation cadence | §4.2 |
 
 ### 8.2 Legal (`TODO(legal)`)
@@ -235,7 +273,7 @@ process, not a new custody circuit. An implementation MUST:
 > clearinghouse A-1 demanded reduces to an **attribution ledger** that
 > decomposes national solvency per operator plus a **periodic fiat true-up** of
 > each operator's standing balance *within the trust* — pooled redemption
-> (recommended pro-rata) keeps EBT fungible at the cash door, the licensed
+> (per-coin, D-10) keeps energy fungibility absolute while letting fiat float, the licensed
 > trustee is the single clearing counterparty, and no artifact anywhere
 > represents one operator owing another.
 
