@@ -518,7 +518,7 @@ calls. The failure mode this protects against is a mediocre model being
 
 | ID | Status | PR | Notes |
 |----|--------|----|----|
-| WI-01 | ◐ direction decided (D-1) | — | Protocol escrow pool; *how* design pending |
+| WI-01 | ✓ merged | #24 | National escrow design (A-2); D-5..D-9 dual-redemption e-money trust; unblocks WI-02/14 |
 | WI-04, WI-12 | ⧖ deferred (D-2) | — | Revive at second market/provider |
 | WI-08 | ✓ merged | #17 | B-2 session-farming mitigation (§5.1); inert at pilot scale |
 | WI-09 | ✓ merged | #15 | Draw spec + 6 vectors + generator; BIG review found+fixed one byte-count comment |
@@ -529,7 +529,7 @@ calls. The failure mode this protects against is a mediocre model being
 | WI-07 | ✓ merged | #21 | StatutoryLane extension on WI-06; folds into S1' sum-to-10000; per-class applicability; B-1/B-4 structural; unblocks WI-13/14 |
 | WI-20 | ✓ merged | #22 | Federation charter/instantiation + climb protocol; implements D-4; unblocks WI-21/22 |
 | WI-23 | ✓ merged | #22 | Governance-standing rules: no-corporate-seats, C-2 recusal, B-2 pool-stacking guard |
-| WI-05 | ✓ done, in review | (this PR) | Cohort-registration circuit spec (B-3); submitCohortRoot + proveInAndRegister; accrual@prove-in / tenure@intent; unblocks WI-11 |
+| WI-05 | ✓ merged | #23 | Cohort-registration circuit spec (B-3); submitCohortRoot + proveInAndRegister; accrual@prove-in / tenure@intent; unblocks WI-11 |
 | WI-11 | design-space narrowed (D-3) | — | National pool only; no federated-pool variant |
 | all others | ☐ not started | — | Next: WI-02 clearinghouse, WI-21/22 governance finish, WI-13/14 contract builds |
 
