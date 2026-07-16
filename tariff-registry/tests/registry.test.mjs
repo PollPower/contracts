@@ -706,7 +706,10 @@ test('R-C: resolvePath with MAX_UINT64 epoch REVERTS', () => {
 });
 
 // =============================================================================
-// WI-13.1 Lane Tests (LANE-T1..T9 + LANE-R-A + LANE-R-E)
+// WI-13.1 Lane Tests (LANE-T1..T13 + LANE-T5b + LANE-R-A + LANE-R-E)
+// Round-3: no per-schedule lane cap; resolveLanes narrowed to Vector<4>
+// (Kenya statutory stack); leviedBy != 0 enforced (MED-A); isLaneActive also
+// gates on parent-schedule liveness (MED-B).
 // =============================================================================
 
 test('LANE-T1: happy path registerLane + resolve byte-for-byte', () => {
@@ -1158,7 +1161,7 @@ test('LANE-T8: replaying registerLane approval REVERTS', () => {
   }), 'FEDERATION_APPROVAL_REPLAYED');
 });
 
-test('LANE-T9: resolveLanes batch heterogeneous cases (extended)', () => {
+test('LANE-T9: resolveLanes batch heterogeneous cases (width-4)', () => {
   const fx = makeFixture();
   const { registry, charterTree, charteredNodes } = fx;
   const { scheduleId } = registerFixture({ fixture: fx });
@@ -1172,12 +1175,12 @@ test('LANE-T9: resolveLanes batch heterogeneous cases (extended)', () => {
 
   const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
 
-  // (a) Populate 3 lanes: kind=0, kind=2, kind=3 at different leviedBy authorities.
+  // (a) Populate 2 lanes at different leviedBy authorities: kind=0 (authA) and
+  //     kind=2 (authB). Register-side leviedBy values MUST be non-zero (MED-A).
   const authA = Buffer.concat([Buffer.from('AuthA'), Buffer.alloc(27)]);
   const authB = Buffer.concat([Buffer.from('AuthB'), Buffer.alloc(27)]);
-  const authC = Buffer.concat([Buffer.from('AuthC'), Buffer.alloc(27)]);
 
-  for (const [kind, auth, bps] of [[0, authA, 500], [2, authB, 502], [3, authC, 503]]) {
+  for (const [kind, auth, bps] of [[0, authA, 500], [2, authB, 502]]) {
     const remitAddr = randomBytes(32);
     const appHash = randomBytes(32);
     const statHash = randomBytes(32);
@@ -1197,7 +1200,7 @@ test('LANE-T9: resolveLanes batch heterogeneous cases (extended)', () => {
     });
   }
 
-  // (c) Retire lane kind=2 to test retired-lane-in-slot.
+  // (c) Retire lane kind=2 (authB) to exercise the retired-lane-in-slot case.
   const retireHash = persistentHash([
     pad32(DOMAIN.RETIRE_LANE), registry.self, scheduleId, authB,
     u64ToBytes32(2), registry.currentEpochBytes(), u64ToBytes32(t + 500n),
@@ -1205,40 +1208,18 @@ test('LANE-T9: resolveLanes batch heterogeneous cases (extended)', () => {
   approve(registry, retireHash);
   registry.retireLane({ scheduleId, leviedBy: authB, laneKindByte: 2, currentTime: t + 500n, now: t + 500n });
 
-  // (d) Register a not-yet-effective lane (kind=5, effectiveEpoch=10 >> currentEpoch=1).
-  const authD = Buffer.concat([Buffer.from('AuthD'), Buffer.alloc(27)]);
-  const remitAddr5 = randomBytes(32);
-  const appHash5 = randomBytes(32);
-  const statHash5 = randomBytes(32);
-  const laneActionHash5 = persistentHash([
-    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
-    u64ToBytes32(5), authD, u16ToBytes32(505), remitAddr5,
-    u64ToBytes32(0), appHash5, statHash5,
-    u64ToBytes32(10n), u64ToBytes32(0),
-    registry.currentEpochBytes(), u64ToBytes32(t + 600n),
-  ]);
-  approve(registry, laneActionHash5);
-  registry.registerLane({
-    scheduleId, laneKindByte: 5, leviedBy: authD, bpsShare: 505,
-    remitAddress: remitAddr5, basis: 0, applicabilityHash: appHash5,
-    statuteRefHash: statHash5, effectiveEpoch: 10n, remittanceMode: 0,
-    charterProof: proof, currentTime: t + 600n, now: t + 600n,
-  });
-
-  // Build request vectors (length 10):
-  // Slot 0: kind=0, authA (populated, active)
-  // Slot 1: kind=1, authA (empty, not registered)
-  // Slot 2: kind=2, authB (retired)
-  // Slot 3: kind=3, authC (populated, active)
-  // Slot 4: kind=5, authD (not-yet-effective)
-  // Slot 5: kind=0, authA again (duplicate pair → same record as slot 0)
-  // Slots 6-9: zero-authority, kind=0 (empty)
+  // Build a width-4 request vector covering:
+  //   Slot 0: (authA, kind=0)    populated, active
+  //   Slot 1: (authB, kind=2)    retired (retiredEpoch != 0)
+  //   Slot 2: (authA, kind=0)    duplicate pair → same record as slot 0
+  //   Slot 3: (zeroAuth, kind=0) empty slot — RESOLVE-side zero-address padding
+  //           (NOT a registration; register-side zero leviedBy is now rejected).
   const zeroAuth = Buffer.alloc(32);
-  const leviedBysVec = [authA, authA, authB, authC, authD, authA, zeroAuth, zeroAuth, zeroAuth, zeroAuth];
-  const kindsVec = [0, 1, 2, 3, 5, 0, 0, 0, 0, 0];
+  const leviedBysVec = [authA, authB, authA, zeroAuth];
+  const kindsVec = [0, 2, 0, 0];
 
   const results = registry.resolveLanes({ scheduleId, leviedBys: leviedBysVec, laneKindBytes: kindsVec });
-  assert.equal(results.length, 10);
+  assert.equal(results.length, 4);
 
   // (a) Slot 0: populated, active.
   assert.equal(results[0].laneKindByte, 0);
@@ -1246,41 +1227,24 @@ test('LANE-T9: resolveLanes batch heterogeneous cases (extended)', () => {
   assert.ok(bufEq(results[0].leviedBy, authA));
   assert.equal(results[0].retiredEpoch, 0n);
 
-  // (b) Slot 1: empty (kind=1, authA not registered) → zero record.
-  assert.equal(results[1].laneKindByte, 0);
-  assert.equal(results[1].bpsShare, 0);
-  assert.equal(results[1].retiredEpoch, 0n);
-  assert.ok(bufEq(results[1].scheduleId, Buffer.alloc(32)));
+  // (c) Slot 1: retired lane (retiredEpoch != 0).
+  assert.equal(results[1].laneKindByte, 2);
+  assert.equal(results[1].bpsShare, 502);
+  assert.ok(bufEq(results[1].leviedBy, authB));
+  assert.equal(results[1].retiredEpoch, 1n); // retired at epoch 1
 
-  // (c) Slot 2: retired lane (retiredEpoch != 0).
-  assert.equal(results[2].laneKindByte, 2);
-  assert.equal(results[2].bpsShare, 502);
-  assert.ok(bufEq(results[2].leviedBy, authB));
-  assert.equal(results[2].retiredEpoch, 1n); // retired at epoch 1
+  // (e) Slot 2: duplicate pair (authA, kind=0) → same record as slot 0.
+  assert.equal(results[2].laneKindByte, 0);
+  assert.equal(results[2].bpsShare, 500);
+  assert.ok(bufEq(results[2].leviedBy, authA));
 
-  // Slot 3: populated, active.
-  assert.equal(results[3].laneKindByte, 3);
-  assert.equal(results[3].bpsShare, 503);
-
-  // (d) Slot 4: not-yet-effective (effectiveEpoch=10 > currentEpoch=1).
-  assert.equal(results[4].laneKindByte, 5);
-  assert.equal(results[4].bpsShare, 505);
-  assert.equal(results[4].effectiveEpoch, 10n);
-  assert.equal(results[4].retiredEpoch, 0n);
-
-  // (e) Slot 5: duplicate pair (kind=0, authA) → same record as slot 0.
-  assert.equal(results[5].laneKindByte, 0);
-  assert.equal(results[5].bpsShare, 500);
-  assert.ok(bufEq(results[5].leviedBy, authA));
-
-  // Slots 6-9: empty (zero authority → not registered).
-  for (let i = 6; i < 10; i++) {
-    assert.ok(bufEq(results[i].scheduleId, Buffer.alloc(32)));
-    assert.equal(results[i].bpsShare, 0);
-  }
+  // (b) Slot 3: empty (zero-address padding, not registered) → zero record.
+  assert.ok(bufEq(results[3].scheduleId, Buffer.alloc(32)));
+  assert.equal(results[3].bpsShare, 0);
+  assert.equal(results[3].retiredEpoch, 0n);
 });
 
-test('LANE-T10: count-cap enforcement at MAX_STATUTORY_LANES=10', () => {
+test('LANE-T10: leviedBy == zero rejects with LANE_LEVIED_BY_ZERO', () => {
   const fx = makeFixture();
   const { registry, charterTree, charteredNodes } = fx;
   const { scheduleId } = registerFixture({ fixture: fx });
@@ -1292,57 +1256,31 @@ test('LANE-T10: count-cap enforcement at MAX_STATUTORY_LANES=10', () => {
   registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
     newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
 
+  // MED-A: registering a lane with an all-zero leviedBy must be rejected —
+  // the zero-address is reserved as the resolveLanes empty-slot sentinel.
   const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
-
-  // Register 10 lanes with distinct (leviedBy, laneKindByte) pairs.
-  for (let i = 0; i < 10; i++) {
-    const authName = `Auth${i}`;
-    const leviedBy = Buffer.concat([Buffer.from(authName), Buffer.alloc(32 - authName.length)]);
-    const kind = i; // kinds 0..9
-    const remitAddr = randomBytes(32);
-    const appHash = randomBytes(32);
-    const statHash = randomBytes(32);
-    const laneActionHash = persistentHash([
-      pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
-      u64ToBytes32(kind), leviedBy, u16ToBytes32(500 + i), remitAddr,
-      u64ToBytes32(0), appHash, statHash,
-      u64ToBytes32(2n), u64ToBytes32(0),
-      registry.currentEpochBytes(), u64ToBytes32(t + 100n + BigInt(i)),
-    ]);
-    approve(registry, laneActionHash);
-    registry.registerLane({
-      scheduleId, laneKindByte: kind, leviedBy, bpsShare: 500 + i,
-      remitAddress: remitAddr, basis: 0, applicabilityHash: appHash,
-      statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
-      charterProof: proof, currentTime: t + 100n + BigInt(i), now: t + 100n + BigInt(i),
-    });
-  }
-
-  // Verify count is 10.
-  assert.equal(registry._registeredLaneCount.get(toHex(scheduleId)), 10);
-
-  // Try to register an 11th lane → should revert (bare underflow).
-  const leviedBy11 = Buffer.concat([Buffer.from('Auth11'), Buffer.alloc(26)]);
-  const remitAddr11 = randomBytes(32);
-  const appHash11 = randomBytes(32);
-  const statHash11 = randomBytes(32);
-  const laneActionHash11 = persistentHash([
+  const leviedByZero = Buffer.alloc(32); // all zeros
+  const remitAddr = randomBytes(32);
+  const appHash = randomBytes(32);
+  const statHash = randomBytes(32);
+  const laneActionHash = persistentHash([
     pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
-    u64ToBytes32(10), leviedBy11, u16ToBytes32(600), remitAddr11,
-    u64ToBytes32(0), appHash11, statHash11,
+    u64ToBytes32(0), leviedByZero, u16ToBytes32(500), remitAddr,
+    u64ToBytes32(0), appHash, statHash,
     u64ToBytes32(2n), u64ToBytes32(0),
-    registry.currentEpochBytes(), u64ToBytes32(t + 2000n),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
   ]);
-  approve(registry, laneActionHash11);
+  approve(registry, laneActionHash);
+
   assertReverts(() => registry.registerLane({
-    scheduleId, laneKindByte: 10, leviedBy: leviedBy11, bpsShare: 600,
-    remitAddress: remitAddr11, basis: 0, applicabilityHash: appHash11,
-    statuteRefHash: statHash11, effectiveEpoch: 2n, remittanceMode: 0,
-    charterProof: proof, currentTime: t + 2000n, now: t + 2000n,
-  }));
+    scheduleId, laneKindByte: 0, leviedBy: leviedByZero, bpsShare: 500,
+    remitAddress: remitAddr, basis: 0, applicabilityHash: appHash,
+    statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  }), 'LANE_LEVIED_BY_ZERO');
 });
 
-test('LANE-T11: resolveLanes width-10 round trip', () => {
+test('LANE-T11: resolveLanes width-4 round trip', () => {
   const fx = makeFixture();
   const { registry, charterTree, charteredNodes } = fx;
   const { scheduleId } = registerFixture({ fixture: fx });
@@ -1356,10 +1294,10 @@ test('LANE-T11: resolveLanes width-10 round trip', () => {
 
   const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
 
-  // Register 10 lanes.
+  // Register 4 lanes with distinct (leviedBy, laneKindByte) pairs.
   const authorities = [];
   const kinds = [];
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 4; i++) {
     const authName = `Auth${i}`;
     const leviedBy = Buffer.concat([Buffer.from(authName), Buffer.alloc(32 - authName.length)]);
     authorities.push(leviedBy);
@@ -1383,13 +1321,14 @@ test('LANE-T11: resolveLanes width-10 round trip', () => {
     });
   }
 
-  // Call resolveLanes with all 10 pairs.
+  // Call resolveLanes with all 4 pairs.
   const results = registry.resolveLanes({ scheduleId, leviedBys: authorities, laneKindBytes: kinds });
-  assert.equal(results.length, 10);
+  assert.equal(results.length, 4);
 
-  // Verify all 10 return records have matching non-zero scheduleId and correct (leviedBy, laneKindByte).
-  for (let i = 0; i < 10; i++) {
+  // Verify all 4 return records have matching non-zero scheduleId and correct (leviedBy, laneKindByte).
+  for (let i = 0; i < 4; i++) {
     assert.ok(bufEq(results[i].scheduleId, scheduleId));
+    assert.ok(!bufEq(results[i].scheduleId, Buffer.alloc(32)));
     assert.ok(bufEq(results[i].leviedBy, authorities[i]));
     assert.equal(results[i].laneKindByte, kinds[i]);
     assert.equal(results[i].bpsShare, 500 + i);
@@ -1454,6 +1393,65 @@ test('LANE-T12: kind-range enforcement (laneKindByte < 16)', () => {
   const resolved = registry.resolveLane({ scheduleId, leviedBy: leviedBy15, laneKindByte: 15 });
   assert.equal(resolved.laneKindByte, 15);
   assert.equal(resolved.bpsShare, 500);
+});
+
+test('LANE-T13: isLaneActive returns false when parent schedule retired', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  // Register a lane effective at epoch 2.
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const laneKindByte = 0;
+  const leviedBy = randomBytes(32);
+  const remitAddress = randomBytes(32);
+  const appHash = randomBytes(32);
+  const statHash = randomBytes(32);
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(500), remitAddress,
+    u64ToBytes32(0), appHash, statHash,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash);
+  registry.registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare: 500,
+    remitAddress, basis: 0, applicabilityHash: appHash,
+    statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  });
+
+  // Advance to epoch 2 so the lane is in-effect.
+  const ah2 = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(1n), u64ToBytes32(2n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah2);
+  registry.advanceEpoch({ newEpoch: 2n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t + 500n, now: t + 500n });
+
+  // While the parent schedule is live, the lane is active.
+  assert.equal(registry.isLaneActive({ scheduleId, leviedBy, laneKindByte }), true);
+
+  // Retire the PARENT SCHEDULE (not the lane).
+  const retireHash = persistentHash([pad32(DOMAIN.RETIRE_SCHEDULE),
+    registry.self, scheduleId, registry.currentEpochBytes()]);
+  approve(registry, retireHash);
+  registry.retireSchedule({ scheduleId, currentTime: t + 600n, now: t + 600n });
+
+  // MED-B: isLaneActive now returns false because the parent schedule is retired.
+  assert.equal(registry.isLaneActive({ scheduleId, leviedBy, laneKindByte }), false);
+
+  // The lane record itself was NOT touched by retireSchedule — its own
+  // retiredEpoch is still 0 (this is the MED-B semantic under test).
+  const stillThere = registry.resolveLane({ scheduleId, leviedBy, laneKindByte });
+  assert.equal(stillThere.retiredEpoch, 0n);
 });
 
 test('LANE-R-A: charter proof against outdated root (post-advanceEpoch) REVERTS', () => {
@@ -1530,9 +1528,6 @@ test('LANE-R-E: register → retire → register-again on same key succeeds', ()
     charterProof: proof, currentTime: t + 100n, now: t + 100n,
   });
 
-  // Verify count is 1.
-  assert.equal(registry._registeredLaneCount.get(toHex(scheduleId)), 1);
-
   // Retire it.
   const retireHash = persistentHash([
     pad32(DOMAIN.RETIRE_LANE), registry.self, scheduleId, leviedBy,
@@ -1560,10 +1555,8 @@ test('LANE-R-E: register → retire → register-again on same key succeeds', ()
     charterProof: proof, currentTime: t + 300n, now: t + 300n,
   });
 
-  // Verify count is STILL 1 (slot was already claimed, not incremented).
-  assert.equal(registry._registeredLaneCount.get(toHex(scheduleId)), 1);
-
-  // Resolve: new record supersedes.
+  // Resolve: new record supersedes (register-after-retire on the same
+  // composite key succeeds; the fresh record replaces the retired one).
   const resolved = registry.resolveLane({ scheduleId, leviedBy, laneKindByte });
   assert.equal(resolved.bpsShare, 700);
   assert.equal(resolved.retiredEpoch, 0n);
