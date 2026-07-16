@@ -108,6 +108,14 @@ pure circuit RETUNE_MIN_INTERVAL_S(): Uint<64> {
   return 60 as Uint<64>;
 }
 
+// WI-13.1: maximum number of statutory lanes per schedule. Sized at 10 to
+// accommodate multi-authority statutory environments (e.g. Kenya: KRA VAT +
+// EPRA levy + REP levy + WARMA levy + county cess + Petroleum Development
+// Levy + Railway Development Levy + …).
+pure circuit MAX_STATUTORY_LANES(): Uint<8> {
+  return 10 as Uint<8>;
+}
+
 // =============================================================================
 // Witnesses
 // =============================================================================
@@ -264,6 +272,13 @@ export ledger _classEntries: Map<Bytes<32>, ClassEntry>;
 // WI-14's settle circuit calls resolveLanes to route statutory shares in-circuit.
 export ledger _registeredLanes: Map<Bytes<32>, LaneRecord>;
 
+// WI-13.1: per-schedule live lane count. Keyed by scheduleId. Value: count of
+// currently-registered lanes on this schedule. Retired lanes STILL COUNT against
+// the slot budget — retire+reregister at a different (leviedBy, kind) still
+// consumes a slot. Incremented on registerLane only when the key is fresh (not
+// present in _registeredLanes); NEVER decremented. Bounded by MAX_STATUTORY_LANES.
+export ledger _registeredLaneCount: Map<Bytes<32>, Uint<8>>;
+
 // R-B: per-(operator, schedule, epoch) nonce.
 export ledger _retuneNonces: Map<Bytes<32>, Uint<64>>;
 
@@ -344,13 +359,21 @@ circuit classSplitKey(
   ]);
 }
 
-// WI-13.1: Composite key for a statutory lane record (scheduleId + laneKindByte).
+// WI-13.1: Composite key for a statutory lane record
+// (scheduleId, leviedBy, laneKindByte). The leviedBy component makes
+// multi-authority same-kind lanes representable (e.g. KRA-VAT and
+// county-VAT as two distinct lanes on the same schedule).
 // V1.1-DESIGN.md §2.3.
-circuit laneKey(scheduleId: Bytes<32>, laneKindByte: Uint<8>): Bytes<32> {
+circuit laneKey(
+  scheduleId:   Bytes<32>,
+  leviedBy:     Bytes<32>,
+  laneKindByte: Uint<8>,
+): Bytes<32> {
   const kindBytes = (disclose(laneKindByte) as Field) as Bytes<32>;
-  return persistentHash<Vector<3, Bytes<32>>>([
+  return persistentHash<Vector<4, Bytes<32>>>([
     pad(32, "pp:tariff:v1:laneKey"),
     disclose(scheduleId),
+    disclose(leviedBy),
     kindBytes,
   ]);
 }
@@ -825,9 +848,26 @@ export circuit registerLane(
   assertCharterMembership(schedRec.nodeId, charterProof);
 
   // (c) I-13.1-D: effective epoch strictly in the future.
+  //     Checked-cast underflow reverts if effectiveEpoch <= currentEpoch.
   const _epochGap = ((disclose(effectiveEpoch)
                       - _currentEpoch.read()
                       - 1) as Uint<64>);
+  // Bare checked-cast IS the assertion (V1 §5.4 idiom); reverts with the
+  // compiler-generic underflow message. No labeled assert.
+
+  // (c') I-13.1-J: laneKindByte < 16 (reserved statute-kind range).
+  //     Checked-cast underflow reverts if laneKindByte >= 16.
+  const _kindInRange = ((16 - disclose(laneKindByte) - 1) as Uint<8>);
+  // Bare checked-cast IS the assertion; no labeled error.
+
+  // (c'') I-13.1-I: per-schedule lane count cap.
+  //     priorCount is the current count for this schedule; underflow
+  //     reverts if priorCount >= MAX_STATUTORY_LANES. (dSchedId already
+  //     declared in step (a).)
+  const priorCount = _registeredLaneCount.member(dSchedId)
+    ? _registeredLaneCount.lookup(dSchedId) : 0 as Uint<8>;
+  const _slotAvailable = ((MAX_STATUTORY_LANES() - priorCount - 1) as Uint<8>);
+  // Bare checked-cast IS the assertion; no labeled error.
 
   // (d) Prepare the 14 hash inputs.
   const kindBytes         = (disclose(laneKindByte) as Field) as Bytes<32>;
@@ -863,9 +903,13 @@ export circuit registerLane(
 
   // (f) I-13.1-E: duplicate check. Allow re-registration only if the
   //     existing key's record is retired (retiredEpoch != 0).
-  const key = laneKey(scheduleId, laneKindByte);
+  //     Key derivation uses the NEW (scheduleId, leviedBy, laneKindByte)
+  //     tuple — multi-authority same-kind lanes at different leviedBy
+  //     get distinct keys and coexist.
+  const key = laneKey(scheduleId, leviedBy, laneKindByte);
   const dKey = disclose(key);
-  if (_registeredLanes.member(dKey)) {
+  const keyPresent = _registeredLanes.member(dKey);
+  if (keyPresent) {
     assert(
       _registeredLanes.lookup(dKey).retiredEpoch != 0 as Uint<64>,
       "LANE_ALREADY_REGISTERED"
@@ -889,6 +933,19 @@ export circuit registerLane(
   };
   _registeredLanes.insert(dKey, disclose(record));
 
+  // (i') I-13.1-I: increment _registeredLaneCount ONLY when the key is
+  //      fresh (not already present in _registeredLanes). Overwriting a
+  //      retired record at the same key does NOT increment — the slot
+  //      was already claimed. Retire+register at a DIFFERENT
+  //      (leviedBy, kind) DOES increment. Checked cast belt-and-braces
+  //      against future MAX bump underflow.
+  if (!keyPresent) {
+    _registeredLaneCount.insert(
+      dSchedId,
+      ((priorCount + 1) as Uint<8>),
+    );
+  }
+
   // (h) Emit action kind 1 = LANE_REGISTERED.
   emitAction(
     1 as Uint<8>,
@@ -905,6 +962,7 @@ export circuit registerLane(
 
 export circuit retireLane(
   scheduleId:   Bytes<32>,
+  leviedBy:     Bytes<32>,
   laneKindByte: Uint<8>,
   currentTime:  Uint<64>,
 ): [] {
@@ -912,8 +970,8 @@ export circuit retireLane(
   assert(disclose(blockTimeGte(disclose(currentTime))),
          "retireLane: timestamp cannot be in the future");
 
-  // (a) Look up the lane.
-  const key = laneKey(scheduleId, laneKindByte);
+  // (a) Look up the lane by (scheduleId, leviedBy, laneKindByte).
+  const key = laneKey(scheduleId, leviedBy, laneKindByte);
   const dKey = disclose(key);
   assert(_registeredLanes.member(dKey), "LANE_NOT_FOUND");
   const rec = _registeredLanes.lookup(dKey);
@@ -926,10 +984,11 @@ export circuit retireLane(
   const currentEpochBytes = (_currentEpoch.read() as Field) as Bytes<32>;
   const timeBytes         = (disclose(currentTime) as Field) as Bytes<32>;
 
-  const actionHash = persistentHash<Vector<6, Bytes<32>>>([
+  const actionHash = persistentHash<Vector<7, Bytes<32>>>([
     pad(32, "pp:tariff:v1:retireLane"),
     selfBytes(),
     disclose(scheduleId),
+    disclose(leviedBy),
     kindBytes,
     currentEpochBytes,
     timeBytes,
@@ -959,6 +1018,7 @@ export circuit retireLane(
   _registeredLanes.insert(dKey, disclose(retired));
 
   // (f) Emit action kind 7 = LANE_RETIRED.
+  //     nodeId: look it up from the parent schedule for keeper-mirror parity.
   const schedRec = _registeredSchedules.lookup(disclose(scheduleId));
   emitAction(
     7 as Uint<8>,
@@ -1236,22 +1296,25 @@ export circuit isScheduleActive(scheduleId: Bytes<32>): Boolean {
 // resolveLane — read-only view for a single lane record.
 export circuit resolveLane(
   scheduleId:   Bytes<32>,
+  leviedBy:     Bytes<32>,
   laneKindByte: Uint<8>,
 ): LaneRecord {
   assertInitialized();
-  const key = laneKey(scheduleId, laneKindByte);
+  const key = laneKey(scheduleId, leviedBy, laneKindByte);
   assert(_registeredLanes.member(disclose(key)), "LANE_NOT_FOUND");
   return _registeredLanes.lookup(disclose(key));
 }
 
 // resolveLanes — bounded batch view for multiple lanes.
-// MAX_STATUTORY_LANES = 4 per TARIFF-SCHEDULE-MODEL §9.
+// MAX_STATUTORY_LANES = 10 per V1.1-DESIGN.md §2.0.
 export circuit resolveLanes(
   scheduleId:    Bytes<32>,
-  laneKindBytes: Vector<4, Uint<8>>,
-): Vector<4, LaneRecord> {
+  leviedBys:     Vector<10, Bytes<32>>,
+  laneKindBytes: Vector<10, Uint<8>>,
+): Vector<10, LaneRecord> {
   assertInitialized();
-  const dKinds = disclose(laneKindBytes);
+  const dLeviedBys = disclose(leviedBys);
+  const dKinds     = disclose(laneKindBytes);
   const zero = LaneRecord {
     scheduleId:        pad(32, ""),
     laneKindByte:      0 as Uint<8>,
@@ -1266,28 +1329,47 @@ export circuit resolveLanes(
     remittanceMode:    0 as Uint<8>,
     registeredAt:      0 as Uint<64>,
   };
-  const k0 = laneKey(scheduleId, dKinds[0]);
+  const k0 = laneKey(scheduleId, dLeviedBys[0], dKinds[0]);
   const r0 = _registeredLanes.member(disclose(k0))
     ? _registeredLanes.lookup(disclose(k0)) : zero;
-  const k1 = laneKey(scheduleId, dKinds[1]);
+  const k1 = laneKey(scheduleId, dLeviedBys[1], dKinds[1]);
   const r1 = _registeredLanes.member(disclose(k1))
     ? _registeredLanes.lookup(disclose(k1)) : zero;
-  const k2 = laneKey(scheduleId, dKinds[2]);
+  const k2 = laneKey(scheduleId, dLeviedBys[2], dKinds[2]);
   const r2 = _registeredLanes.member(disclose(k2))
     ? _registeredLanes.lookup(disclose(k2)) : zero;
-  const k3 = laneKey(scheduleId, dKinds[3]);
+  const k3 = laneKey(scheduleId, dLeviedBys[3], dKinds[3]);
   const r3 = _registeredLanes.member(disclose(k3))
     ? _registeredLanes.lookup(disclose(k3)) : zero;
-  return [r0, r1, r2, r3];
+  const k4 = laneKey(scheduleId, dLeviedBys[4], dKinds[4]);
+  const r4 = _registeredLanes.member(disclose(k4))
+    ? _registeredLanes.lookup(disclose(k4)) : zero;
+  const k5 = laneKey(scheduleId, dLeviedBys[5], dKinds[5]);
+  const r5 = _registeredLanes.member(disclose(k5))
+    ? _registeredLanes.lookup(disclose(k5)) : zero;
+  const k6 = laneKey(scheduleId, dLeviedBys[6], dKinds[6]);
+  const r6 = _registeredLanes.member(disclose(k6))
+    ? _registeredLanes.lookup(disclose(k6)) : zero;
+  const k7 = laneKey(scheduleId, dLeviedBys[7], dKinds[7]);
+  const r7 = _registeredLanes.member(disclose(k7))
+    ? _registeredLanes.lookup(disclose(k7)) : zero;
+  const k8 = laneKey(scheduleId, dLeviedBys[8], dKinds[8]);
+  const r8 = _registeredLanes.member(disclose(k8))
+    ? _registeredLanes.lookup(disclose(k8)) : zero;
+  const k9 = laneKey(scheduleId, dLeviedBys[9], dKinds[9]);
+  const r9 = _registeredLanes.member(disclose(k9))
+    ? _registeredLanes.lookup(disclose(k9)) : zero;
+  return [r0, r1, r2, r3, r4, r5, r6, r7, r8, r9];
 }
 
 // isLaneActive — read-only Boolean check for lane activity.
 export circuit isLaneActive(
   scheduleId:   Bytes<32>,
+  leviedBy:     Bytes<32>,
   laneKindByte: Uint<8>,
 ): Boolean {
   assertInitialized();
-  const key = laneKey(scheduleId, laneKindByte);
+  const key = laneKey(scheduleId, leviedBy, laneKindByte);
   if (!_registeredLanes.member(disclose(key))) {
     return false;
   }

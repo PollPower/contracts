@@ -28,7 +28,7 @@ import { createHash, sign, verify, generateKeyPairSync, randomBytes } from 'node
 export const CHARTER_DEPTH = 12;
 export const RETUNE_MIN_INTERVAL_S = 60n;
 // WI-13.1: max statutory lane count per TARIFF-SCHEDULE-MODEL §9.
-export const MAX_STATUTORY_LANES = 4;
+export const MAX_STATUTORY_LANES = 10;
 
 // Domain tags (byte-for-byte identical to .compact strings).
 export const DOMAIN = Object.freeze({
@@ -252,12 +252,13 @@ export function sumSplit(s) {
 
 // ------------------------------ WI-13.1 Lane helpers -------------------------
 
-// Composite key for a lane record (scheduleId + laneKindByte).
-export function laneKey(scheduleId, laneKindByte) {
+// Composite key for a lane record (scheduleId, leviedBy, laneKindByte).
+export function laneKey(scheduleId, leviedBy, laneKindByte) {
   const kindBytes = u64ToBytes32(BigInt(laneKindByte));
   return persistentHash([
     pad32(DOMAIN.LANE_KEY),
     scheduleId,
+    leviedBy,
     kindBytes,
   ]);
 }
@@ -310,6 +311,7 @@ export class TariffRegistry {
     this._consumedFederationApprovals = new Set(); // hex actionHashes
     // WI-13.1: lane records.
     this._registeredLanes = new Map();       // laneKeyHex -> LaneRecord
+    this._registeredLaneCount = new Map();   // scheduleIdHex -> Uint8 count
     // Event log.
     this._actionLog = new Map();             // seq -> RegistryActionEntry
     this._actionSeq = 0n;
@@ -677,7 +679,17 @@ export class TariffRegistry {
     this.assertCharterMembership(schedRec.nodeId, charterProof);
 
     // (c) I-13.1-D: effective epoch strictly in the future.
-    asUintChecked(BigInt(effectiveEpoch) - this._currentEpoch - 1n, 64, 'LANE_EPOCH_RETROACTIVE');
+    // Bare checked-cast (no labeled error).
+    asUintChecked(BigInt(effectiveEpoch) - this._currentEpoch - 1n, 64, 'registerLane: effectiveEpoch underflow');
+
+    // (c') I-13.1-J: laneKindByte < 16 (reserved statute-kind range).
+    // Bare checked-cast (no labeled error).
+    asUintChecked(16n - BigInt(laneKindByte) - 1n, 8, 'registerLane: laneKindByte out of range');
+
+    // (c'') I-13.1-I: per-schedule lane count cap.
+    // Bare checked-cast (no labeled error).
+    const priorCount = this._registeredLaneCount.get(key) ?? 0;
+    asUintChecked(BigInt(MAX_STATUTORY_LANES) - BigInt(priorCount) - 1n, 8, 'registerLane: lane count cap exceeded');
 
     // (d) Prepare 14 hash inputs.
     const kindBytes         = u64ToBytes32(BigInt(laneKindByte));
@@ -709,8 +721,9 @@ export class TariffRegistry {
     this.consumeFederationApproval(actionHash);
 
     // (f) I-13.1-E: duplicate check.
-    const lKey = laneKey(scheduleId, laneKindByte);
-    if (this._registeredLanes.has(toHex(lKey))) {
+    const lKey = laneKey(scheduleId, leviedBy, laneKindByte);
+    const keyPresent = this._registeredLanes.has(toHex(lKey));
+    if (keyPresent) {
       const existing = this._registeredLanes.get(toHex(lKey));
       if (existing.retiredEpoch === 0n) revert('LANE_ALREADY_REGISTERED');
     }
@@ -732,16 +745,21 @@ export class TariffRegistry {
     };
     this._registeredLanes.set(toHex(lKey), record);
 
+    // (i') I-13.1-I: increment _registeredLaneCount ONLY when the key is fresh.
+    if (!keyPresent) {
+      this._registeredLaneCount.set(key, priorCount + 1);
+    }
+
     // (h) Emit action kind 1 = LANE_REGISTERED.
     this.emitAction(1, scheduleId, schedRec.nodeId, actionHash, currentTime);
     return { actionHash };
   }
 
   // -------------------------- WI-13.1 retireLane -------------------------------
-  retireLane({ scheduleId, laneKindByte, currentTime, now }) {
+  retireLane({ scheduleId, leviedBy, laneKindByte, currentTime, now }) {
     if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('retireLane: timestamp cannot be in the future');
     // (a) Look up the lane.
-    const lKey = laneKey(scheduleId, laneKindByte);
+    const lKey = laneKey(scheduleId, leviedBy, laneKindByte);
     const key = toHex(lKey);
     if (!this._registeredLanes.has(key)) revert('LANE_NOT_FOUND');
     const rec = this._registeredLanes.get(key);
@@ -758,6 +776,7 @@ export class TariffRegistry {
       pad32(DOMAIN.RETIRE_LANE),
       this.self,
       scheduleId,
+      leviedBy,
       kindBytes,
       currentEpochBytes,
       timeBytes,
@@ -777,20 +796,21 @@ export class TariffRegistry {
   }
 
   // -------------------------- WI-13.1 resolveLane ------------------------------
-  resolveLane({ scheduleId, laneKindByte }) {
-    const lKey = laneKey(scheduleId, laneKindByte);
+  resolveLane({ scheduleId, leviedBy, laneKindByte }) {
+    const lKey = laneKey(scheduleId, leviedBy, laneKindByte);
     const key = toHex(lKey);
     if (!this._registeredLanes.has(key)) revert('LANE_NOT_FOUND');
     return this._registeredLanes.get(key);
   }
 
   // -------------------------- WI-13.1 resolveLanes -----------------------------
-  resolveLanes({ scheduleId, laneKindBytes }) {
+  resolveLanes({ scheduleId, leviedBys, laneKindBytes }) {
     const zero = zeroLaneRecord();
     const results = [];
     for (let i = 0; i < MAX_STATUTORY_LANES; i++) {
+      const leviedBy = leviedBys[i];
       const kind = laneKindBytes[i];
-      const lKey = laneKey(scheduleId, kind);
+      const lKey = laneKey(scheduleId, leviedBy, kind);
       const key = toHex(lKey);
       results.push(this._registeredLanes.has(key) ? this._registeredLanes.get(key) : zero);
     }
@@ -798,8 +818,8 @@ export class TariffRegistry {
   }
 
   // -------------------------- WI-13.1 isLaneActive -----------------------------
-  isLaneActive({ scheduleId, laneKindByte }) {
-    const lKey = laneKey(scheduleId, laneKindByte);
+  isLaneActive({ scheduleId, leviedBy, laneKindByte }) {
+    const lKey = laneKey(scheduleId, leviedBy, laneKindByte);
     const key = toHex(lKey);
     if (!this._registeredLanes.has(key)) return false;
     const rec = this._registeredLanes.get(key);
