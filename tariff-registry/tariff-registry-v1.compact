@@ -108,14 +108,6 @@ pure circuit RETUNE_MIN_INTERVAL_S(): Uint<64> {
   return 60 as Uint<64>;
 }
 
-// WI-13.1: maximum number of statutory lanes per schedule. Sized at 10 to
-// accommodate multi-authority statutory environments (e.g. Kenya: KRA VAT +
-// EPRA levy + REP levy + WARMA levy + county cess + Petroleum Development
-// Levy + Railway Development Levy + …).
-pure circuit MAX_STATUTORY_LANES(): Uint<8> {
-  return 10 as Uint<8>;
-}
-
 // =============================================================================
 // Witnesses
 // =============================================================================
@@ -271,13 +263,6 @@ export ledger _classEntries: Map<Bytes<32>, ClassEntry>;
 // Keeper-observable via _actionLog kind ∈ {1 LANE_REGISTERED, 7 LANE_RETIRED}.
 // WI-14's settle circuit calls resolveLanes to route statutory shares in-circuit.
 export ledger _registeredLanes: Map<Bytes<32>, LaneRecord>;
-
-// WI-13.1: per-schedule live lane count. Keyed by scheduleId. Value: count of
-// currently-registered lanes on this schedule. Retired lanes STILL COUNT against
-// the slot budget — retire+reregister at a different (leviedBy, kind) still
-// consumes a slot. Incremented on registerLane only when the key is fresh (not
-// present in _registeredLanes); NEVER decremented. Bounded by MAX_STATUTORY_LANES.
-export ledger _registeredLaneCount: Map<Bytes<32>, Uint<8>>;
 
 // R-B: per-(operator, schedule, epoch) nonce.
 export ledger _retuneNonces: Map<Bytes<32>, Uint<64>>;
@@ -844,6 +829,11 @@ export circuit registerLane(
   const schedRec = _registeredSchedules.lookup(dSchedId);
   assert(schedRec.retiredEpoch == 0 as Uint<64>, "SCHEDULE_NOT_LIVE");
 
+  // (a') I-13.1-I / MED-A: leviedBy must be non-zero. The zero-address is
+  //      reserved as the resolveLanes empty-slot sentinel, so a lane keyed
+  //      on it would be indistinguishable from an unpopulated request slot.
+  assert(disclose(leviedBy) != pad(32, ""), "LANE_LEVIED_BY_ZERO");
+
   // (b) I-13.1-B: Charter proof binds the lane to the SCHEDULE'S nodeId.
   assertCharterMembership(schedRec.nodeId, charterProof);
 
@@ -858,15 +848,6 @@ export circuit registerLane(
   // (c') I-13.1-J: laneKindByte < 16 (reserved statute-kind range).
   //     Checked-cast underflow reverts if laneKindByte >= 16.
   const _kindInRange = ((16 - disclose(laneKindByte) - 1) as Uint<8>);
-  // Bare checked-cast IS the assertion; no labeled error.
-
-  // (c'') I-13.1-I: per-schedule lane count cap.
-  //     priorCount is the current count for this schedule; underflow
-  //     reverts if priorCount >= MAX_STATUTORY_LANES. (dSchedId already
-  //     declared in step (a).)
-  const priorCount = _registeredLaneCount.member(dSchedId)
-    ? _registeredLaneCount.lookup(dSchedId) : 0 as Uint<8>;
-  const _slotAvailable = ((MAX_STATUTORY_LANES() - priorCount - 1) as Uint<8>);
   // Bare checked-cast IS the assertion; no labeled error.
 
   // (d) Prepare the 14 hash inputs.
@@ -932,19 +913,6 @@ export circuit registerLane(
     registeredAt:      disclose(currentTime),
   };
   _registeredLanes.insert(dKey, disclose(record));
-
-  // (i') I-13.1-I: increment _registeredLaneCount ONLY when the key is
-  //      fresh (not already present in _registeredLanes). Overwriting a
-  //      retired record at the same key does NOT increment — the slot
-  //      was already claimed. Retire+register at a DIFFERENT
-  //      (leviedBy, kind) DOES increment. Checked cast belt-and-braces
-  //      against future MAX bump underflow.
-  if (!keyPresent) {
-    _registeredLaneCount.insert(
-      dSchedId,
-      ((priorCount + 1) as Uint<8>),
-    );
-  }
 
   // (h) Emit action kind 1 = LANE_REGISTERED.
   emitAction(
@@ -1306,12 +1274,14 @@ export circuit resolveLane(
 }
 
 // resolveLanes — bounded batch view for multiple lanes.
-// MAX_STATUTORY_LANES = 10 per V1.1-DESIGN.md §2.0.
+// Width 4 = the Kenya statutory stack (VAT + REP + EPRA + WARMA) per
+// V1.1-DESIGN.md §2.0. No per-schedule lane cap; the width is a WI-14
+// settle-circuit capacity constraint, not a registry cap.
 export circuit resolveLanes(
   scheduleId:    Bytes<32>,
-  leviedBys:     Vector<10, Bytes<32>>,
-  laneKindBytes: Vector<10, Uint<8>>,
-): Vector<10, LaneRecord> {
+  leviedBys:     Vector<4, Bytes<32>>,
+  laneKindBytes: Vector<4, Uint<8>>,
+): Vector<4, LaneRecord> {
   assertInitialized();
   const dLeviedBys = disclose(leviedBys);
   const dKinds     = disclose(laneKindBytes);
@@ -1341,28 +1311,14 @@ export circuit resolveLanes(
   const k3 = laneKey(scheduleId, dLeviedBys[3], dKinds[3]);
   const r3 = _registeredLanes.member(disclose(k3))
     ? _registeredLanes.lookup(disclose(k3)) : zero;
-  const k4 = laneKey(scheduleId, dLeviedBys[4], dKinds[4]);
-  const r4 = _registeredLanes.member(disclose(k4))
-    ? _registeredLanes.lookup(disclose(k4)) : zero;
-  const k5 = laneKey(scheduleId, dLeviedBys[5], dKinds[5]);
-  const r5 = _registeredLanes.member(disclose(k5))
-    ? _registeredLanes.lookup(disclose(k5)) : zero;
-  const k6 = laneKey(scheduleId, dLeviedBys[6], dKinds[6]);
-  const r6 = _registeredLanes.member(disclose(k6))
-    ? _registeredLanes.lookup(disclose(k6)) : zero;
-  const k7 = laneKey(scheduleId, dLeviedBys[7], dKinds[7]);
-  const r7 = _registeredLanes.member(disclose(k7))
-    ? _registeredLanes.lookup(disclose(k7)) : zero;
-  const k8 = laneKey(scheduleId, dLeviedBys[8], dKinds[8]);
-  const r8 = _registeredLanes.member(disclose(k8))
-    ? _registeredLanes.lookup(disclose(k8)) : zero;
-  const k9 = laneKey(scheduleId, dLeviedBys[9], dKinds[9]);
-  const r9 = _registeredLanes.member(disclose(k9))
-    ? _registeredLanes.lookup(disclose(k9)) : zero;
-  return [r0, r1, r2, r3, r4, r5, r6, r7, r8, r9];
+  return [r0, r1, r2, r3];
 }
 
 // isLaneActive — read-only Boolean check for lane activity.
+// A lane is active iff its record exists, is not retired, is in-effect at the
+// current epoch, AND its parent schedule exists and is itself live (MED-B:
+// a lane under a retired schedule is not active even if the lane record's own
+// retiredEpoch is still 0 — retireSchedule does not touch lane records).
 export circuit isLaneActive(
   scheduleId:   Bytes<32>,
   leviedBy:     Bytes<32>,
@@ -1375,6 +1331,14 @@ export circuit isLaneActive(
   }
   const rec = _registeredLanes.lookup(disclose(key));
   if (rec.retiredEpoch != 0 as Uint<64>) {
+    return false;
+  }
+  // MED-B: parent schedule must exist and be live.
+  const dSid = disclose(scheduleId);
+  if (!_registeredSchedules.member(dSid)) {
+    return false;
+  }
+  if (_registeredSchedules.lookup(dSid).retiredEpoch != 0 as Uint<64>) {
     return false;
   }
   return _currentEpoch.read() >= rec.effectiveEpoch;

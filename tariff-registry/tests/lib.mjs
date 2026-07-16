@@ -27,8 +27,11 @@ import { createHash, sign, verify, generateKeyPairSync, randomBytes } from 'node
 
 export const CHARTER_DEPTH = 12;
 export const RETUNE_MIN_INTERVAL_S = 60n;
-// WI-13.1: max statutory lane count per TARIFF-SCHEDULE-MODEL §9.
-export const MAX_STATUTORY_LANES = 10;
+// WI-13.1: resolveLanes batch width = the Kenya statutory stack
+// (VAT + REP + EPRA + WARMA = 4). There is NO per-schedule lane cap; this
+// width is a WI-14 settle-circuit capacity constraint, mirrored here so
+// resolveLanes returns a fixed-width Vector<4> exactly like the contract.
+export const RESOLVE_LANES_WIDTH = 4;
 
 // Domain tags (byte-for-byte identical to .compact strings).
 export const DOMAIN = Object.freeze({
@@ -311,7 +314,6 @@ export class TariffRegistry {
     this._consumedFederationApprovals = new Set(); // hex actionHashes
     // WI-13.1: lane records.
     this._registeredLanes = new Map();       // laneKeyHex -> LaneRecord
-    this._registeredLaneCount = new Map();   // scheduleIdHex -> Uint8 count
     // Event log.
     this._actionLog = new Map();             // seq -> RegistryActionEntry
     this._actionSeq = 0n;
@@ -675,6 +677,11 @@ export class TariffRegistry {
     const schedRec = this._registeredSchedules.get(key);
     if (schedRec.retiredEpoch !== 0n) revert('SCHEDULE_NOT_LIVE');
 
+    // (a') I-13.1-I / MED-A: leviedBy must be non-zero. The zero-address is
+    // reserved as the resolveLanes empty-slot sentinel, so a lane keyed on it
+    // would be indistinguishable from an unpopulated request slot.
+    if (bufEq(leviedBy, Buffer.alloc(32))) revert('LANE_LEVIED_BY_ZERO');
+
     // (b) I-13.1-B: charter proof.
     this.assertCharterMembership(schedRec.nodeId, charterProof);
 
@@ -685,11 +692,6 @@ export class TariffRegistry {
     // (c') I-13.1-J: laneKindByte < 16 (reserved statute-kind range).
     // Bare checked-cast (no labeled error).
     asUintChecked(16n - BigInt(laneKindByte) - 1n, 8, 'registerLane: laneKindByte out of range');
-
-    // (c'') I-13.1-I: per-schedule lane count cap.
-    // Bare checked-cast (no labeled error).
-    const priorCount = this._registeredLaneCount.get(key) ?? 0;
-    asUintChecked(BigInt(MAX_STATUTORY_LANES) - BigInt(priorCount) - 1n, 8, 'registerLane: lane count cap exceeded');
 
     // (d) Prepare 14 hash inputs.
     const kindBytes         = u64ToBytes32(BigInt(laneKindByte));
@@ -744,11 +746,6 @@ export class TariffRegistry {
       registeredAt: BigInt(currentTime),
     };
     this._registeredLanes.set(toHex(lKey), record);
-
-    // (i') I-13.1-I: increment _registeredLaneCount ONLY when the key is fresh.
-    if (!keyPresent) {
-      this._registeredLaneCount.set(key, priorCount + 1);
-    }
 
     // (h) Emit action kind 1 = LANE_REGISTERED.
     this.emitAction(1, scheduleId, schedRec.nodeId, actionHash, currentTime);
@@ -807,7 +804,7 @@ export class TariffRegistry {
   resolveLanes({ scheduleId, leviedBys, laneKindBytes }) {
     const zero = zeroLaneRecord();
     const results = [];
-    for (let i = 0; i < MAX_STATUTORY_LANES; i++) {
+    for (let i = 0; i < RESOLVE_LANES_WIDTH; i++) {
       const leviedBy = leviedBys[i];
       const kind = laneKindBytes[i];
       const lKey = laneKey(scheduleId, leviedBy, kind);
@@ -824,6 +821,12 @@ export class TariffRegistry {
     if (!this._registeredLanes.has(key)) return false;
     const rec = this._registeredLanes.get(key);
     if (rec.retiredEpoch !== 0n) return false;
+    // MED-B: parent schedule must exist and be live. retireSchedule does not
+    // touch lane records, so a lane under a retired schedule keeps its own
+    // retiredEpoch == 0 yet is not active.
+    const schedKey = toHex(scheduleId);
+    if (!this._registeredSchedules.has(schedKey)) return false;
+    if (this._registeredSchedules.get(schedKey).retiredEpoch !== 0n) return false;
     return this._currentEpoch >= rec.effectiveEpoch;
   }
 }
