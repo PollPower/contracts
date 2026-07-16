@@ -1454,6 +1454,74 @@ test('LANE-T13: isLaneActive returns false when parent schedule retired', () => 
   assert.equal(stillThere.retiredEpoch, 0n);
 });
 
+test('LANE-T14: no cap — 5 registerLane calls on one schedule all succeed', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  // Advance to epoch 1 (so effectiveEpoch = 2 is strictly future).
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+
+  // Register 5 lanes with distinct (leviedBy, laneKindByte) tuples. Round-3
+  // has no per-schedule cap; all 5 must succeed. (Vector<4> resolveLanes
+  // surfacing is a WI-14 concern; this test only asserts the registry
+  // accepts them.)
+  const registered = [];
+  for (let i = 0; i < 5; i++) {
+    const leviedBy = Buffer.concat([Buffer.from(`Auth${i}`), Buffer.alloc(27)]);
+    const laneKindByte = i;  // kinds 0..4, all < 16
+    const remitAddress = randomBytes(32);
+    const appHash = randomBytes(32);
+    const statHash = randomBytes(32);
+    const bps = 100 + i;
+    const laneActionHash = persistentHash([
+      pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+      u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(bps), remitAddress,
+      u64ToBytes32(0), appHash, statHash,
+      u64ToBytes32(2n), u64ToBytes32(0),
+      registry.currentEpochBytes(), u64ToBytes32(t + 100n + BigInt(i)),
+    ]);
+    approve(registry, laneActionHash);
+    registry.registerLane({
+      scheduleId, laneKindByte, leviedBy, bpsShare: bps,
+      remitAddress, basis: 0, applicabilityHash: appHash,
+      statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+      charterProof: proof, currentTime: t + 100n + BigInt(i), now: t + 100n + BigInt(i),
+    });
+    registered.push({ leviedBy, laneKindByte, bps });
+  }
+
+  // Assert all 5 records exist and are individually resolvable.
+  for (const r of registered) {
+    const resolved = registry.resolveLane({
+      scheduleId, leviedBy: r.leviedBy, laneKindByte: r.laneKindByte,
+    });
+    assert.equal(resolved.bpsShare, r.bps);
+    assert.ok(bufEq(resolved.leviedBy, r.leviedBy));
+  }
+
+  // Vector<4> resolveLanes surfaces exactly 4 of the 5. The 5th is invisible
+  // to any single resolveLanes call — this is the defining round-3 behavior
+  // that WI-14 must handle via SCHEDULE_LANE_OVERFLOW (or the sum-invariant
+  // backstop; see V1.1-DESIGN.md §7.4).
+  const first4 = registered.slice(0, 4);
+  const leviedBys = first4.map(r => r.leviedBy);
+  const laneKindBytes = first4.map(r => r.laneKindByte);
+  const batch = registry.resolveLanes({ scheduleId, leviedBys, laneKindBytes });
+  assert.equal(batch.length, 4);
+  for (let i = 0; i < 4; i++) {
+    assert.equal(batch[i].bpsShare, first4[i].bps);
+    assert.ok(bufEq(batch[i].scheduleId, scheduleId));
+  }
+});
+
 test('LANE-R-A: charter proof against outdated root (post-advanceEpoch) REVERTS', () => {
   const fx = makeFixture();
   const { registry, charterTree, charteredNodes } = fx;
