@@ -27,6 +27,8 @@ import { createHash, sign, verify, generateKeyPairSync, randomBytes } from 'node
 
 export const CHARTER_DEPTH = 12;
 export const RETUNE_MIN_INTERVAL_S = 60n;
+// WI-13.1: max statutory lane count per TARIFF-SCHEDULE-MODEL §9.
+export const MAX_STATUTORY_LANES = 4;
 
 // Domain tags (byte-for-byte identical to .compact strings).
 export const DOMAIN = Object.freeze({
@@ -43,6 +45,10 @@ export const DOMAIN = Object.freeze({
   SPLIT_SHARES:      'pp:tariff:v1:splitShares',
   CHARTER_LEAF:      'pp:fed:charter:leaf',
   CHARTER_NODE:      'pp:fed:charter:node',
+  // WI-13.1 lane domains
+  LANE_KEY:          'pp:tariff:v1:laneKey',
+  REGISTER_LANE:     'pp:tariff:v1:registerLane',
+  RETIRE_LANE:       'pp:tariff:v1:retireLane',
 });
 
 // Calibration values from CALIBRATION-DECISIONS-RESOLVED-2026-07-14.md.
@@ -244,6 +250,36 @@ export function sumSplit(s) {
        + BigInt(s.statutoryTotalBps);
 }
 
+// ------------------------------ WI-13.1 Lane helpers -------------------------
+
+// Composite key for a lane record (scheduleId + laneKindByte).
+export function laneKey(scheduleId, laneKindByte) {
+  const kindBytes = u64ToBytes32(BigInt(laneKindByte));
+  return persistentHash([
+    pad32(DOMAIN.LANE_KEY),
+    scheduleId,
+    kindBytes,
+  ]);
+}
+
+// Zero LaneRecord (for unpopulated resolveLanes slots).
+export function zeroLaneRecord() {
+  return {
+    scheduleId:        Buffer.alloc(32),
+    laneKindByte:      0,
+    leviedBy:          Buffer.alloc(32),
+    bpsShare:          0,
+    remitAddress:      Buffer.alloc(32),
+    basis:             0,
+    applicabilityHash: Buffer.alloc(32),
+    statuteRefHash:    Buffer.alloc(32),
+    effectiveEpoch:    0n,
+    retiredEpoch:      0n,
+    remittanceMode:    0,
+    registeredAt:      0n,
+  };
+}
+
 // ------------------------------ contract state -------------------------------
 
 // The registry state. Mirror of the ledger fields.
@@ -272,6 +308,8 @@ export class TariffRegistry {
     this._retuneNonces = new Map();          // nonceKeyHex -> Uint64
     this._retuneLastTime = new Map();        // cdKeyHex -> Uint64
     this._consumedFederationApprovals = new Set(); // hex actionHashes
+    // WI-13.1: lane records.
+    this._registeredLanes = new Map();       // laneKeyHex -> LaneRecord
     // Event log.
     this._actionLog = new Map();             // seq -> RegistryActionEntry
     this._actionSeq = 0n;
@@ -618,6 +656,153 @@ export class TariffRegistry {
   isScheduleActive(scheduleId) {
     const rec = this._registeredSchedules.get(toHex(scheduleId));
     if (!rec) return false;
+    if (rec.retiredEpoch !== 0n) return false;
+    return this._currentEpoch >= rec.effectiveEpoch;
+  }
+
+  // -------------------------- WI-13.1 registerLane -----------------------------
+  registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare, remitAddress, basis,
+    applicabilityHash, statuteRefHash, effectiveEpoch, remittanceMode,
+    charterProof, currentTime, now,
+  }) {
+    if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('registerLane: timestamp cannot be in the future');
+    // (a) Schedule must exist and be live.
+    const key = toHex(scheduleId);
+    if (!this._registeredSchedules.has(key)) revert('SCHEDULE_NOT_FOUND');
+    const schedRec = this._registeredSchedules.get(key);
+    if (schedRec.retiredEpoch !== 0n) revert('SCHEDULE_NOT_LIVE');
+
+    // (b) I-13.1-B: charter proof.
+    this.assertCharterMembership(schedRec.nodeId, charterProof);
+
+    // (c) I-13.1-D: effective epoch strictly in the future.
+    asUintChecked(BigInt(effectiveEpoch) - this._currentEpoch - 1n, 64, 'LANE_EPOCH_RETROACTIVE');
+
+    // (d) Prepare 14 hash inputs.
+    const kindBytes         = u64ToBytes32(BigInt(laneKindByte));
+    const bpsShareBytes     = u16ToBytes32(bpsShare);
+    const basisBytes        = u64ToBytes32(BigInt(basis));
+    const effectiveEpochBytes = u64ToBytes32(effectiveEpoch);
+    const remittanceModeBytes = u64ToBytes32(BigInt(remittanceMode));
+    const currentEpochBytes = this.currentEpochBytes();
+    const timeBytes         = u64ToBytes32(currentTime);
+
+    const actionHash = persistentHash([
+      pad32(DOMAIN.REGISTER_LANE),
+      this.self,
+      scheduleId,
+      kindBytes,
+      leviedBy,
+      bpsShareBytes,
+      remitAddress,
+      basisBytes,
+      applicabilityHash,
+      statuteRefHash,
+      effectiveEpochBytes,
+      remittanceModeBytes,
+      currentEpochBytes,
+      timeBytes,
+    ]);
+
+    // (e) I-13.1-A: federation approval.
+    this.consumeFederationApproval(actionHash);
+
+    // (f) I-13.1-E: duplicate check.
+    const lKey = laneKey(scheduleId, laneKindByte);
+    if (this._registeredLanes.has(toHex(lKey))) {
+      const existing = this._registeredLanes.get(toHex(lKey));
+      if (existing.retiredEpoch === 0n) revert('LANE_ALREADY_REGISTERED');
+    }
+
+    // (g) Insert the LaneRecord.
+    const record = {
+      scheduleId,
+      laneKindByte: Number(laneKindByte),
+      leviedBy,
+      bpsShare: Number(bpsShare),
+      remitAddress,
+      basis: Number(basis),
+      applicabilityHash,
+      statuteRefHash,
+      effectiveEpoch: BigInt(effectiveEpoch),
+      retiredEpoch: 0n,
+      remittanceMode: Number(remittanceMode),
+      registeredAt: BigInt(currentTime),
+    };
+    this._registeredLanes.set(toHex(lKey), record);
+
+    // (h) Emit action kind 1 = LANE_REGISTERED.
+    this.emitAction(1, scheduleId, schedRec.nodeId, actionHash, currentTime);
+    return { actionHash };
+  }
+
+  // -------------------------- WI-13.1 retireLane -------------------------------
+  retireLane({ scheduleId, laneKindByte, currentTime, now }) {
+    if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('retireLane: timestamp cannot be in the future');
+    // (a) Look up the lane.
+    const lKey = laneKey(scheduleId, laneKindByte);
+    const key = toHex(lKey);
+    if (!this._registeredLanes.has(key)) revert('LANE_NOT_FOUND');
+    const rec = this._registeredLanes.get(key);
+
+    // (b) I-13.1-F: must be active.
+    if (rec.retiredEpoch !== 0n) revert('LANE_ALREADY_RETIRED');
+
+    // (c) Prepare hash inputs.
+    const kindBytes         = u64ToBytes32(BigInt(laneKindByte));
+    const currentEpochBytes = this.currentEpochBytes();
+    const timeBytes         = u64ToBytes32(currentTime);
+
+    const actionHash = persistentHash([
+      pad32(DOMAIN.RETIRE_LANE),
+      this.self,
+      scheduleId,
+      kindBytes,
+      currentEpochBytes,
+      timeBytes,
+    ]);
+
+    // (d) Federation approval.
+    this.consumeFederationApproval(actionHash);
+
+    // (e) Mark retired.
+    rec.retiredEpoch = this._currentEpoch;
+    this._registeredLanes.set(key, rec);
+
+    // (f) Emit action kind 7 = LANE_RETIRED.
+    const schedRec = this._registeredSchedules.get(toHex(scheduleId));
+    this.emitAction(7, scheduleId, schedRec.nodeId, actionHash, currentTime);
+    return { actionHash };
+  }
+
+  // -------------------------- WI-13.1 resolveLane ------------------------------
+  resolveLane({ scheduleId, laneKindByte }) {
+    const lKey = laneKey(scheduleId, laneKindByte);
+    const key = toHex(lKey);
+    if (!this._registeredLanes.has(key)) revert('LANE_NOT_FOUND');
+    return this._registeredLanes.get(key);
+  }
+
+  // -------------------------- WI-13.1 resolveLanes -----------------------------
+  resolveLanes({ scheduleId, laneKindBytes }) {
+    const zero = zeroLaneRecord();
+    const results = [];
+    for (let i = 0; i < MAX_STATUTORY_LANES; i++) {
+      const kind = laneKindBytes[i];
+      const lKey = laneKey(scheduleId, kind);
+      const key = toHex(lKey);
+      results.push(this._registeredLanes.has(key) ? this._registeredLanes.get(key) : zero);
+    }
+    return results;
+  }
+
+  // -------------------------- WI-13.1 isLaneActive -----------------------------
+  isLaneActive({ scheduleId, laneKindByte }) {
+    const lKey = laneKey(scheduleId, laneKindByte);
+    const key = toHex(lKey);
+    if (!this._registeredLanes.has(key)) return false;
+    const rec = this._registeredLanes.get(key);
     if (rec.retiredEpoch !== 0n) return false;
     return this._currentEpoch >= rec.effectiveEpoch;
   }
