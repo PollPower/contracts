@@ -196,6 +196,22 @@ struct DivResult {
   remainder: Uint<128>,
 }
 
+// WI-13.1: Statutory lane record (V1.1-DESIGN.md §2.1).
+struct LaneRecord {
+  scheduleId:        Bytes<32>,
+  laneKindByte:      Uint<8>,
+  leviedBy:          Bytes<32>,
+  bpsShare:          Uint<16>,
+  remitAddress:      Bytes<32>,
+  basis:             Uint<8>,
+  applicabilityHash: Bytes<32>,
+  statuteRefHash:    Bytes<32>,
+  effectiveEpoch:    Uint<64>,
+  retiredEpoch:      Uint<64>,
+  remittanceMode:    Uint<8>,
+  registeredAt:      Uint<64>,
+}
+
 // =============================================================================
 // Ledger state
 // =============================================================================
@@ -242,6 +258,11 @@ export ledger _activeScheduleByNode: Map<Bytes<32>, Bytes<32>>;
 
 // scheduleId + classPathHash → current ClassEntry.
 export ledger _classEntries: Map<Bytes<32>, ClassEntry>;
+
+// WI-13.1: (scheduleId, laneKindByte) composite key → LaneRecord.
+// Keeper-observable via _actionLog kind ∈ {1 LANE_REGISTERED, 7 LANE_RETIRED}.
+// WI-14's settle circuit calls resolveLanes to route statutory shares in-circuit.
+export ledger _registeredLanes: Map<Bytes<32>, LaneRecord>;
 
 // R-B: per-(operator, schedule, epoch) nonce.
 export ledger _retuneNonces: Map<Bytes<32>, Uint<64>>;
@@ -320,6 +341,25 @@ circuit classSplitKey(
     pad(32, "pp:tariff:v1:classSplitKey"),
     disclose(scheduleId),
     disclose(classPath),
+  ]);
+}
+
+// WI-13.1: Composite key for a statutory lane record
+// (scheduleId, leviedBy, laneKindByte). The leviedBy component makes
+// multi-authority same-kind lanes representable (e.g. KRA-VAT and
+// county-VAT as two distinct lanes on the same schedule).
+// V1.1-DESIGN.md §2.3.
+circuit laneKey(
+  scheduleId:   Bytes<32>,
+  leviedBy:     Bytes<32>,
+  laneKindByte: Uint<8>,
+): Bytes<32> {
+  const kindBytes = (disclose(laneKindByte) as Field) as Bytes<32>;
+  return persistentHash<Vector<4, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:laneKey"),
+    disclose(scheduleId),
+    disclose(leviedBy),
+    kindBytes,
   ]);
 }
 
@@ -762,6 +802,202 @@ export circuit setFederationAuthority(
 }
 
 // =============================================================================
+// WI-13.1 Branch op: registerLane (V1.1-DESIGN.md §2.4)
+// =============================================================================
+
+export circuit registerLane(
+  scheduleId:        Bytes<32>,
+  laneKindByte:      Uint<8>,
+  leviedBy:          Bytes<32>,
+  bpsShare:          Uint<16>,
+  remitAddress:      Bytes<32>,
+  basis:             Uint<8>,
+  applicabilityHash: Bytes<32>,
+  statuteRefHash:    Bytes<32>,
+  effectiveEpoch:    Uint<64>,
+  remittanceMode:    Uint<8>,
+  charterProof:      CharterProof,
+  currentTime:       Uint<64>,
+): [] {
+  assertInitialized();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "registerLane: timestamp cannot be in the future");
+
+  // (a) Schedule must exist and be live.
+  const dSchedId = disclose(scheduleId);
+  assert(_registeredSchedules.member(dSchedId), "SCHEDULE_NOT_FOUND");
+  const schedRec = _registeredSchedules.lookup(dSchedId);
+  assert(schedRec.retiredEpoch == 0 as Uint<64>, "SCHEDULE_NOT_LIVE");
+
+  // (a') I-13.1-I / MED-A: leviedBy must be non-zero. The zero-address is
+  //      reserved as the resolveLanes empty-slot sentinel, so a lane keyed
+  //      on it would be indistinguishable from an unpopulated request slot.
+  assert(disclose(leviedBy) != pad(32, ""), "LANE_LEVIED_BY_ZERO");
+
+  // (b) I-13.1-B: Charter proof binds the lane to the SCHEDULE'S nodeId.
+  assertCharterMembership(schedRec.nodeId, charterProof);
+
+  // (c) I-13.1-D: effective epoch strictly in the future.
+  //     Checked-cast underflow reverts if effectiveEpoch <= currentEpoch.
+  const _epochGap = ((disclose(effectiveEpoch)
+                      - _currentEpoch.read()
+                      - 1) as Uint<64>);
+  // Bare checked-cast IS the assertion (V1 §5.4 idiom); reverts with the
+  // compiler-generic underflow message. No labeled assert.
+
+  // (c') I-13.1-J: laneKindByte < 16 (reserved statute-kind range).
+  //     Checked-cast underflow reverts if laneKindByte >= 16.
+  const _kindInRange = ((16 - disclose(laneKindByte) - 1) as Uint<8>);
+  // Bare checked-cast IS the assertion; no labeled error.
+
+  // (d) Prepare the 14 hash inputs.
+  const kindBytes         = (disclose(laneKindByte) as Field) as Bytes<32>;
+  const bpsShareBytes     = (disclose(bpsShare) as Field) as Bytes<32>;
+  const basisBytes        = (disclose(basis) as Field) as Bytes<32>;
+  const effectiveEpochBytes = (disclose(effectiveEpoch) as Field) as Bytes<32>;
+  const remittanceModeBytes = (disclose(remittanceMode) as Field) as Bytes<32>;
+  const currentEpochBytes = (_currentEpoch.read() as Field) as Bytes<32>;
+  const timeBytes         = (disclose(currentTime) as Field) as Bytes<32>;
+
+  const actionHash = persistentHash<Vector<14, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:registerLane"),
+    selfBytes(),
+    dSchedId,
+    kindBytes,
+    disclose(leviedBy),
+    bpsShareBytes,
+    disclose(remitAddress),
+    basisBytes,
+    disclose(applicabilityHash),
+    disclose(statuteRefHash),
+    effectiveEpochBytes,
+    remittanceModeBytes,
+    currentEpochBytes,
+    timeBytes,
+  ]);
+
+  // (e) I-13.1-A: federation approval + replay guard.
+  consumeFederationApproval(
+    actionHash,
+    pad(32, "pp:tariff:v1:registerLane"),
+  );
+
+  // (f) I-13.1-E: duplicate check. Allow re-registration only if the
+  //     existing key's record is retired (retiredEpoch != 0).
+  //     Key derivation uses the NEW (scheduleId, leviedBy, laneKindByte)
+  //     tuple — multi-authority same-kind lanes at different leviedBy
+  //     get distinct keys and coexist.
+  const key = laneKey(scheduleId, leviedBy, laneKindByte);
+  const dKey = disclose(key);
+  const keyPresent = _registeredLanes.member(dKey);
+  if (keyPresent) {
+    assert(
+      _registeredLanes.lookup(dKey).retiredEpoch != 0 as Uint<64>,
+      "LANE_ALREADY_REGISTERED"
+    );
+  }
+
+  // (g) Insert the LaneRecord (retiredEpoch = 0 = live).
+  const record = LaneRecord {
+    scheduleId:        dSchedId,
+    laneKindByte:      disclose(laneKindByte),
+    leviedBy:          disclose(leviedBy),
+    bpsShare:          disclose(bpsShare),
+    remitAddress:      disclose(remitAddress),
+    basis:             disclose(basis),
+    applicabilityHash: disclose(applicabilityHash),
+    statuteRefHash:    disclose(statuteRefHash),
+    effectiveEpoch:    disclose(effectiveEpoch),
+    retiredEpoch:      0 as Uint<64>,
+    remittanceMode:    disclose(remittanceMode),
+    registeredAt:      disclose(currentTime),
+  };
+  _registeredLanes.insert(dKey, disclose(record));
+
+  // (h) Emit action kind 1 = LANE_REGISTERED.
+  emitAction(
+    1 as Uint<8>,
+    scheduleId,
+    schedRec.nodeId,
+    actionHash,
+    currentTime,
+  );
+}
+
+// =============================================================================
+// WI-13.1 Branch op: retireLane (V1.1-DESIGN.md §2.5)
+// =============================================================================
+
+export circuit retireLane(
+  scheduleId:   Bytes<32>,
+  leviedBy:     Bytes<32>,
+  laneKindByte: Uint<8>,
+  currentTime:  Uint<64>,
+): [] {
+  assertInitialized();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "retireLane: timestamp cannot be in the future");
+
+  // (a) Look up the lane by (scheduleId, leviedBy, laneKindByte).
+  const key = laneKey(scheduleId, leviedBy, laneKindByte);
+  const dKey = disclose(key);
+  assert(_registeredLanes.member(dKey), "LANE_NOT_FOUND");
+  const rec = _registeredLanes.lookup(dKey);
+
+  // (b) I-13.1-F: must be active.
+  assert(rec.retiredEpoch == 0 as Uint<64>, "LANE_ALREADY_RETIRED");
+
+  // (c) Prepare hash inputs.
+  const kindBytes         = (disclose(laneKindByte) as Field) as Bytes<32>;
+  const currentEpochBytes = (_currentEpoch.read() as Field) as Bytes<32>;
+  const timeBytes         = (disclose(currentTime) as Field) as Bytes<32>;
+
+  const actionHash = persistentHash<Vector<7, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:retireLane"),
+    selfBytes(),
+    disclose(scheduleId),
+    disclose(leviedBy),
+    kindBytes,
+    currentEpochBytes,
+    timeBytes,
+  ]);
+
+  // (d) Federation approval + replay guard.
+  consumeFederationApproval(
+    actionHash,
+    pad(32, "pp:tariff:v1:retireLane"),
+  );
+
+  // (e) Mark retired; re-insert.
+  const retired = LaneRecord {
+    scheduleId:        rec.scheduleId,
+    laneKindByte:      rec.laneKindByte,
+    leviedBy:          rec.leviedBy,
+    bpsShare:          rec.bpsShare,
+    remitAddress:      rec.remitAddress,
+    basis:             rec.basis,
+    applicabilityHash: rec.applicabilityHash,
+    statuteRefHash:    rec.statuteRefHash,
+    effectiveEpoch:    rec.effectiveEpoch,
+    retiredEpoch:      _currentEpoch.read(),
+    remittanceMode:    rec.remittanceMode,
+    registeredAt:      rec.registeredAt,
+  };
+  _registeredLanes.insert(dKey, disclose(retired));
+
+  // (f) Emit action kind 7 = LANE_RETIRED.
+  //     nodeId: look it up from the parent schedule for keeper-mirror parity.
+  const schedRec = _registeredSchedules.lookup(disclose(scheduleId));
+  emitAction(
+    7 as Uint<8>,
+    scheduleId,
+    schedRec.nodeId,
+    actionHash,
+    currentTime,
+  );
+}
+
+// =============================================================================
 // Leaf op: retuneClass (F-6 — un-gated by design; safety = in-circuit floor
 //                       + sanity-band re-check per F-5)
 // =============================================================================
@@ -1018,5 +1254,92 @@ export circuit isScheduleActive(scheduleId: Bytes<32>): Boolean {
     return false;
   }
   // effectiveEpoch <= currentEpoch → live.
+  return _currentEpoch.read() >= rec.effectiveEpoch;
+}
+
+// =============================================================================
+// WI-13.1 Read-only views (V1.1-DESIGN.md §2.6, §2.7, §2.8)
+// =============================================================================
+
+// resolveLane — read-only view for a single lane record.
+export circuit resolveLane(
+  scheduleId:   Bytes<32>,
+  leviedBy:     Bytes<32>,
+  laneKindByte: Uint<8>,
+): LaneRecord {
+  assertInitialized();
+  const key = laneKey(scheduleId, leviedBy, laneKindByte);
+  assert(_registeredLanes.member(disclose(key)), "LANE_NOT_FOUND");
+  return _registeredLanes.lookup(disclose(key));
+}
+
+// resolveLanes — bounded batch view for multiple lanes.
+// Width 4 = the Kenya statutory stack (VAT + REP + EPRA + WARMA) per
+// V1.1-DESIGN.md §2.0. No per-schedule lane cap; the width is a WI-14
+// settle-circuit capacity constraint, not a registry cap.
+export circuit resolveLanes(
+  scheduleId:    Bytes<32>,
+  leviedBys:     Vector<4, Bytes<32>>,
+  laneKindBytes: Vector<4, Uint<8>>,
+): Vector<4, LaneRecord> {
+  assertInitialized();
+  const dLeviedBys = disclose(leviedBys);
+  const dKinds     = disclose(laneKindBytes);
+  const zero = LaneRecord {
+    scheduleId:        pad(32, ""),
+    laneKindByte:      0 as Uint<8>,
+    leviedBy:          pad(32, ""),
+    bpsShare:          0 as Uint<16>,
+    remitAddress:      pad(32, ""),
+    basis:             0 as Uint<8>,
+    applicabilityHash: pad(32, ""),
+    statuteRefHash:    pad(32, ""),
+    effectiveEpoch:    0 as Uint<64>,
+    retiredEpoch:      0 as Uint<64>,
+    remittanceMode:    0 as Uint<8>,
+    registeredAt:      0 as Uint<64>,
+  };
+  const k0 = laneKey(scheduleId, dLeviedBys[0], dKinds[0]);
+  const r0 = _registeredLanes.member(disclose(k0))
+    ? _registeredLanes.lookup(disclose(k0)) : zero;
+  const k1 = laneKey(scheduleId, dLeviedBys[1], dKinds[1]);
+  const r1 = _registeredLanes.member(disclose(k1))
+    ? _registeredLanes.lookup(disclose(k1)) : zero;
+  const k2 = laneKey(scheduleId, dLeviedBys[2], dKinds[2]);
+  const r2 = _registeredLanes.member(disclose(k2))
+    ? _registeredLanes.lookup(disclose(k2)) : zero;
+  const k3 = laneKey(scheduleId, dLeviedBys[3], dKinds[3]);
+  const r3 = _registeredLanes.member(disclose(k3))
+    ? _registeredLanes.lookup(disclose(k3)) : zero;
+  return [r0, r1, r2, r3];
+}
+
+// isLaneActive — read-only Boolean check for lane activity.
+// A lane is active iff its record exists, is not retired, is in-effect at the
+// current epoch, AND its parent schedule exists and is itself live (MED-B:
+// a lane under a retired schedule is not active even if the lane record's own
+// retiredEpoch is still 0 — retireSchedule does not touch lane records).
+export circuit isLaneActive(
+  scheduleId:   Bytes<32>,
+  leviedBy:     Bytes<32>,
+  laneKindByte: Uint<8>,
+): Boolean {
+  assertInitialized();
+  const key = laneKey(scheduleId, leviedBy, laneKindByte);
+  if (!_registeredLanes.member(disclose(key))) {
+    return false;
+  }
+  const rec = _registeredLanes.lookup(disclose(key));
+  if (rec.retiredEpoch != 0 as Uint<64>) {
+    return false;
+  }
+  // MED-B: parent schedule must exist and be live.
+  const dSid = disclose(scheduleId);
+  if (!_registeredSchedules.member(dSid)) {
+    return false;
+  }
+  if (_registeredSchedules.lookup(dSid).retiredEpoch != 0 as Uint<64>) {
+    return false;
+  }
   return _currentEpoch.read() >= rec.effectiveEpoch;
 }

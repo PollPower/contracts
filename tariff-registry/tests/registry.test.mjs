@@ -704,3 +704,928 @@ test('R-C: resolvePath with MAX_UINT64 epoch REVERTS', () => {
   assertReverts(() => registry.resolvePath({ scheduleId, classPath, epoch: MAX_U64 }),
                 'RESOLVE_EPOCH_OUT_OF_RANGE');
 });
+
+// =============================================================================
+// WI-13.1 Lane Tests (LANE-T1..T13 + LANE-T5b + LANE-R-A + LANE-R-E)
+// Round-3: no per-schedule lane cap; resolveLanes narrowed to Vector<4>
+// (Kenya statutory stack); leviedBy != 0 enforced (MED-A); isLaneActive also
+// gates on parent-schedule liveness (MED-B).
+// =============================================================================
+
+test('LANE-T1: happy path registerLane + resolve byte-for-byte', () => {
+  const fx = makeFixture();
+  const { registry, charteredNodes, charterTree } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  // Advance to effective epoch.
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  // Register a lane.
+  const laneKindByte = 0;
+  const leviedBy = randomBytes(32);
+  const bpsShare = 500;
+  const remitAddress = randomBytes(32);
+  const basis = 0;
+  const applicabilityHash = randomBytes(32);
+  const statuteRefHash = randomBytes(32);
+  const effectiveEpoch = 2n;
+  const remittanceMode = 1;
+  const currentTime = t + 100n;
+
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(bpsShare), remitAddress,
+    u64ToBytes32(basis), applicabilityHash, statuteRefHash,
+    u64ToBytes32(effectiveEpoch), u64ToBytes32(remittanceMode),
+    registry.currentEpochBytes(), u64ToBytes32(currentTime),
+  ]);
+  approve(registry, laneActionHash);
+
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  registry.registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare, remitAddress, basis,
+    applicabilityHash, statuteRefHash, effectiveEpoch, remittanceMode,
+    charterProof: proof, currentTime, now: currentTime,
+  });
+
+  // Resolve and verify byte-for-byte.
+  const resolved = registry.resolveLane({ scheduleId, leviedBy, laneKindByte });
+  assert.ok(bufEq(resolved.scheduleId, scheduleId));
+  assert.equal(resolved.laneKindByte, laneKindByte);
+  assert.ok(bufEq(resolved.leviedBy, leviedBy));
+  assert.equal(resolved.bpsShare, bpsShare);
+  assert.ok(bufEq(resolved.remitAddress, remitAddress));
+  assert.equal(resolved.basis, basis);
+  assert.ok(bufEq(resolved.applicabilityHash, applicabilityHash));
+  assert.ok(bufEq(resolved.statuteRefHash, statuteRefHash));
+  assert.equal(resolved.effectiveEpoch, effectiveEpoch);
+  assert.equal(resolved.retiredEpoch, 0n);
+  assert.equal(resolved.remittanceMode, remittanceMode);
+  assert.equal(resolved.registeredAt, currentTime);
+});
+
+test('LANE-T2: registerLane with unchartered schedule REVERTS', () => {
+  const fx = makeFixture();
+  const { registry, nodeUnchartered, charterTree, charteredNodes } = fx;
+  // Register a schedule under an unchartered node (should fail).
+  // Actually, the charter check happens at registerSchedule, so we can't
+  // register an unchartered schedule. Instead: register a valid schedule,
+  // then try to register a lane with a BAD charter proof.
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  // Advance epoch.
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  const badProof = {
+    siblings: new Array(CHARTER_DEPTH).fill(Buffer.alloc(32)),
+    indices: new Array(CHARTER_DEPTH).fill(false),
+  };
+
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(0), randomBytes(32), u16ToBytes32(500), randomBytes(32),
+    u64ToBytes32(0), randomBytes(32), randomBytes(32),
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash);
+
+  assertReverts(() => registry.registerLane({
+    scheduleId, laneKindByte: 0, leviedBy: randomBytes(32), bpsShare: 500,
+    remitAddress: randomBytes(32), basis: 0, applicabilityHash: randomBytes(32),
+    statuteRefHash: randomBytes(32), effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: badProof, currentTime: t + 100n, now: t + 100n,
+  }), 'SCHEDULE_UNCHARTERED_NODE');
+});
+
+test('LANE-T3: registerLane against retired schedule REVERTS', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  // Advance epoch.
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  // Retire the schedule.
+  const retireHash = persistentHash([pad32(DOMAIN.RETIRE_SCHEDULE),
+    registry.self, scheduleId, registry.currentEpochBytes()]);
+  approve(registry, retireHash);
+  registry.retireSchedule({ scheduleId, currentTime: t + 50n, now: t + 50n });
+
+  // Try to register a lane.
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(0), randomBytes(32), u16ToBytes32(500), randomBytes(32),
+    u64ToBytes32(0), randomBytes(32), randomBytes(32),
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash);
+
+  assertReverts(() => registry.registerLane({
+    scheduleId, laneKindByte: 0, leviedBy: randomBytes(32), bpsShare: 500,
+    remitAddress: randomBytes(32), basis: 0, applicabilityHash: randomBytes(32),
+    statuteRefHash: randomBytes(32), effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  }), 'SCHEDULE_NOT_LIVE');
+});
+
+test('LANE-T4: registerLane with retroactive epoch REVERTS', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  // Advance to epoch 1.
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  // Try to register a lane with effectiveEpoch = currentEpoch (not > currentEpoch).
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const effectiveEpoch = 1n; // = currentEpoch, should fail
+  const leviedBy = randomBytes(32);
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(0), leviedBy, u16ToBytes32(500), randomBytes(32),
+    u64ToBytes32(0), randomBytes(32), randomBytes(32),
+    u64ToBytes32(effectiveEpoch), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash);
+
+  // Assert it reverts (bare underflow, no specific error message).
+  assertReverts(() => registry.registerLane({
+    scheduleId, laneKindByte: 0, leviedBy, bpsShare: 500,
+    remitAddress: randomBytes(32), basis: 0, applicabilityHash: randomBytes(32),
+    statuteRefHash: randomBytes(32), effectiveEpoch, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  }));
+});
+
+test('LANE-T5: multi-authority same-kind lanes succeed at distinct keys', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  // Register first lane: (scheduleId, KRA-authority, kind=1).
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const laneKindByte = 1;
+  const leviedBy1 = Buffer.concat([Buffer.from('KRA'), Buffer.alloc(29)]); // KRA authority
+  const remitAddress1 = randomBytes(32);
+  const appHash1 = randomBytes(32);
+  const statHash1 = randomBytes(32);
+  const laneActionHash1 = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy1, u16ToBytes32(500), remitAddress1,
+    u64ToBytes32(0), appHash1, statHash1,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash1);
+  registry.registerLane({
+    scheduleId, laneKindByte, leviedBy: leviedBy1, bpsShare: 500,
+    remitAddress: remitAddress1, basis: 0, applicabilityHash: appHash1,
+    statuteRefHash: statHash1, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  });
+
+  // Register second lane: (scheduleId, county-authority, kind=1) — same kind, different leviedBy.
+  // This SHOULD succeed (HIGH-1 fix semantic).
+  const leviedBy2 = Buffer.concat([Buffer.from('COUNTY'), Buffer.alloc(26)]); // County authority
+  const remitAddress2 = randomBytes(32);
+  const appHash2 = randomBytes(32);
+  const statHash2 = randomBytes(32);
+  const laneActionHash2 = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy2, u16ToBytes32(600), remitAddress2,
+    u64ToBytes32(0), appHash2, statHash2,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 200n),
+  ]);
+  approve(registry, laneActionHash2);
+  registry.registerLane({
+    scheduleId, laneKindByte, leviedBy: leviedBy2, bpsShare: 600,
+    remitAddress: remitAddress2, basis: 0, applicabilityHash: appHash2,
+    statuteRefHash: statHash2, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 200n, now: t + 200n,
+  });
+
+  // Assert both records exist independently at their respective keys.
+  const resolved1 = registry.resolveLane({ scheduleId, leviedBy: leviedBy1, laneKindByte });
+  assert.equal(resolved1.bpsShare, 500);
+  assert.ok(bufEq(resolved1.leviedBy, leviedBy1));
+
+  const resolved2 = registry.resolveLane({ scheduleId, leviedBy: leviedBy2, laneKindByte });
+  assert.equal(resolved2.bpsShare, 600);
+  assert.ok(bufEq(resolved2.leviedBy, leviedBy2));
+});
+
+test('LANE-T5b: exact-key duplicate registerLane REVERTS', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  // Register lane: (scheduleId, EPRA-authority, kind=1).
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const laneKindByte = 1;
+  const leviedBy = Buffer.concat([Buffer.from('EPRA'), Buffer.alloc(28)]);
+  const remitAddress = randomBytes(32);
+  const appHash = randomBytes(32);
+  const statHash = randomBytes(32);
+  const laneActionHash1 = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(500), remitAddress,
+    u64ToBytes32(0), appHash, statHash,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash1);
+  registry.registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare: 500,
+    remitAddress, basis: 0, applicabilityHash: appHash,
+    statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  });
+
+  // Try to register AGAIN with the EXACT same (scheduleId, leviedBy, laneKindByte).
+  // Should fail with LANE_ALREADY_REGISTERED.
+  const laneActionHash2 = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(600), remitAddress,
+    u64ToBytes32(0), appHash, statHash,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 200n),
+  ]);
+  approve(registry, laneActionHash2);
+  assertReverts(() => registry.registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare: 600,
+    remitAddress, basis: 0, applicabilityHash: appHash,
+    statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 200n, now: t + 200n,
+  }), 'LANE_ALREADY_REGISTERED');
+});
+
+test('LANE-T6: retireLane happy path + isLaneActive + resolveLane still works', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  // Register a lane.
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const laneKindByte = 0;
+  const leviedBy = randomBytes(32);
+  const remitAddress = randomBytes(32);
+  const appHash = randomBytes(32);
+  const statHash = randomBytes(32);
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(500), remitAddress,
+    u64ToBytes32(0), appHash, statHash,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash);
+  registry.registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare: 500,
+    remitAddress, basis: 0, applicabilityHash: appHash,
+    statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  });
+
+  // Advance to epoch 2 so lane is active.
+  const ah2 = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(1n), u64ToBytes32(2n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah2);
+  registry.advanceEpoch({ newEpoch: 2n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t + 500n, now: t + 500n });
+
+  // Lane should be active.
+  assert.equal(registry.isLaneActive({ scheduleId, leviedBy, laneKindByte }), true);
+
+  // Retire the lane.
+  const retireHash = persistentHash([
+    pad32(DOMAIN.RETIRE_LANE), registry.self, scheduleId, leviedBy,
+    u64ToBytes32(laneKindByte), registry.currentEpochBytes(), u64ToBytes32(t + 600n),
+  ]);
+  approve(registry, retireHash);
+  registry.retireLane({ scheduleId, leviedBy, laneKindByte, currentTime: t + 600n, now: t + 600n });
+
+  // Lane should now be inactive.
+  assert.equal(registry.isLaneActive({ scheduleId, leviedBy, laneKindByte }), false);
+
+  // resolveLane should still return the record.
+  const resolved = registry.resolveLane({ scheduleId, leviedBy, laneKindByte });
+  assert.equal(resolved.retiredEpoch, 2n);
+});
+
+test('LANE-T7: retireLane on already-retired lane REVERTS', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const laneKindByte = 0;
+  const leviedBy = randomBytes(32);
+  const remitAddress = randomBytes(32);
+  const appHash = randomBytes(32);
+  const statHash = randomBytes(32);
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(500), remitAddress,
+    u64ToBytes32(0), appHash, statHash,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash);
+  registry.registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare: 500,
+    remitAddress, basis: 0, applicabilityHash: appHash,
+    statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  });
+
+  // Retire once.
+  const retireHash = persistentHash([
+    pad32(DOMAIN.RETIRE_LANE), registry.self, scheduleId, leviedBy,
+    u64ToBytes32(laneKindByte), registry.currentEpochBytes(), u64ToBytes32(t + 200n),
+  ]);
+  approve(registry, retireHash);
+  registry.retireLane({ scheduleId, leviedBy, laneKindByte, currentTime: t + 200n, now: t + 200n });
+
+  // Try to retire again.
+  const retireHash2 = persistentHash([
+    pad32(DOMAIN.RETIRE_LANE), registry.self, scheduleId, leviedBy,
+    u64ToBytes32(laneKindByte), registry.currentEpochBytes(), u64ToBytes32(t + 300n),
+  ]);
+  approve(registry, retireHash2);
+  assertReverts(() => registry.retireLane({
+    scheduleId, leviedBy, laneKindByte, currentTime: t + 300n, now: t + 300n,
+  }), 'LANE_ALREADY_RETIRED');
+});
+
+test('LANE-T8: replaying registerLane approval REVERTS', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const laneKindByte = 0;
+  const leviedBy = randomBytes(32);
+  const remitAddress = randomBytes(32);
+  const appHash = randomBytes(32);
+  const statHash = randomBytes(32);
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(500), remitAddress,
+    u64ToBytes32(0), appHash, statHash,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash);
+  registry.registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare: 500,
+    remitAddress, basis: 0, applicabilityHash: appHash,
+    statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  });
+
+  // Retire the lane so we can try to re-register.
+  const retireHash = persistentHash([
+    pad32(DOMAIN.RETIRE_LANE), registry.self, scheduleId, leviedBy,
+    u64ToBytes32(laneKindByte), registry.currentEpochBytes(), u64ToBytes32(t + 200n),
+  ]);
+  approve(registry, retireHash);
+  registry.retireLane({ scheduleId, leviedBy, laneKindByte, currentTime: t + 200n, now: t + 200n });
+
+  // Try to re-register with the SAME actionHash (replay).
+  // DO NOT call approve() again — the approval is already consumed.
+  assertReverts(() => registry.registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare: 500,
+    remitAddress, basis: 0, applicabilityHash: appHash,
+    statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  }), 'FEDERATION_APPROVAL_REPLAYED');
+});
+
+test('LANE-T9: resolveLanes batch heterogeneous cases (width-4)', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+
+  // (a) Populate 2 lanes at different leviedBy authorities: kind=0 (authA) and
+  //     kind=2 (authB). Register-side leviedBy values MUST be non-zero (MED-A).
+  const authA = Buffer.concat([Buffer.from('AuthA'), Buffer.alloc(27)]);
+  const authB = Buffer.concat([Buffer.from('AuthB'), Buffer.alloc(27)]);
+
+  for (const [kind, auth, bps] of [[0, authA, 500], [2, authB, 502]]) {
+    const remitAddr = randomBytes(32);
+    const appHash = randomBytes(32);
+    const statHash = randomBytes(32);
+    const laneActionHash = persistentHash([
+      pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+      u64ToBytes32(kind), auth, u16ToBytes32(bps), remitAddr,
+      u64ToBytes32(0), appHash, statHash,
+      u64ToBytes32(2n), u64ToBytes32(0),
+      registry.currentEpochBytes(), u64ToBytes32(t + 100n + BigInt(kind)),
+    ]);
+    approve(registry, laneActionHash);
+    registry.registerLane({
+      scheduleId, laneKindByte: kind, leviedBy: auth, bpsShare: bps,
+      remitAddress: remitAddr, basis: 0, applicabilityHash: appHash,
+      statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+      charterProof: proof, currentTime: t + 100n + BigInt(kind), now: t + 100n + BigInt(kind),
+    });
+  }
+
+  // (c) Retire lane kind=2 (authB) to exercise the retired-lane-in-slot case.
+  const retireHash = persistentHash([
+    pad32(DOMAIN.RETIRE_LANE), registry.self, scheduleId, authB,
+    u64ToBytes32(2), registry.currentEpochBytes(), u64ToBytes32(t + 500n),
+  ]);
+  approve(registry, retireHash);
+  registry.retireLane({ scheduleId, leviedBy: authB, laneKindByte: 2, currentTime: t + 500n, now: t + 500n });
+
+  // Build a width-4 request vector covering:
+  //   Slot 0: (authA, kind=0)    populated, active
+  //   Slot 1: (authB, kind=2)    retired (retiredEpoch != 0)
+  //   Slot 2: (authA, kind=0)    duplicate pair → same record as slot 0
+  //   Slot 3: (zeroAuth, kind=0) empty slot — RESOLVE-side zero-address padding
+  //           (NOT a registration; register-side zero leviedBy is now rejected).
+  const zeroAuth = Buffer.alloc(32);
+  const leviedBysVec = [authA, authB, authA, zeroAuth];
+  const kindsVec = [0, 2, 0, 0];
+
+  const results = registry.resolveLanes({ scheduleId, leviedBys: leviedBysVec, laneKindBytes: kindsVec });
+  assert.equal(results.length, 4);
+
+  // (a) Slot 0: populated, active.
+  assert.equal(results[0].laneKindByte, 0);
+  assert.equal(results[0].bpsShare, 500);
+  assert.ok(bufEq(results[0].leviedBy, authA));
+  assert.equal(results[0].retiredEpoch, 0n);
+
+  // (c) Slot 1: retired lane (retiredEpoch != 0).
+  assert.equal(results[1].laneKindByte, 2);
+  assert.equal(results[1].bpsShare, 502);
+  assert.ok(bufEq(results[1].leviedBy, authB));
+  assert.equal(results[1].retiredEpoch, 1n); // retired at epoch 1
+
+  // (e) Slot 2: duplicate pair (authA, kind=0) → same record as slot 0.
+  assert.equal(results[2].laneKindByte, 0);
+  assert.equal(results[2].bpsShare, 500);
+  assert.ok(bufEq(results[2].leviedBy, authA));
+
+  // (b) Slot 3: empty (zero-address padding, not registered) → zero record.
+  assert.ok(bufEq(results[3].scheduleId, Buffer.alloc(32)));
+  assert.equal(results[3].bpsShare, 0);
+  assert.equal(results[3].retiredEpoch, 0n);
+});
+
+test('LANE-T10: leviedBy == zero rejects with LANE_LEVIED_BY_ZERO', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  // MED-A: registering a lane with an all-zero leviedBy must be rejected —
+  // the zero-address is reserved as the resolveLanes empty-slot sentinel.
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const leviedByZero = Buffer.alloc(32); // all zeros
+  const remitAddr = randomBytes(32);
+  const appHash = randomBytes(32);
+  const statHash = randomBytes(32);
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(0), leviedByZero, u16ToBytes32(500), remitAddr,
+    u64ToBytes32(0), appHash, statHash,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash);
+
+  assertReverts(() => registry.registerLane({
+    scheduleId, laneKindByte: 0, leviedBy: leviedByZero, bpsShare: 500,
+    remitAddress: remitAddr, basis: 0, applicabilityHash: appHash,
+    statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  }), 'LANE_LEVIED_BY_ZERO');
+});
+
+test('LANE-T11: resolveLanes width-4 round trip', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+
+  // Register 4 lanes with distinct (leviedBy, laneKindByte) pairs.
+  const authorities = [];
+  const kinds = [];
+  for (let i = 0; i < 4; i++) {
+    const authName = `Auth${i}`;
+    const leviedBy = Buffer.concat([Buffer.from(authName), Buffer.alloc(32 - authName.length)]);
+    authorities.push(leviedBy);
+    kinds.push(i);
+    const remitAddr = randomBytes(32);
+    const appHash = randomBytes(32);
+    const statHash = randomBytes(32);
+    const laneActionHash = persistentHash([
+      pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+      u64ToBytes32(i), leviedBy, u16ToBytes32(500 + i), remitAddr,
+      u64ToBytes32(0), appHash, statHash,
+      u64ToBytes32(2n), u64ToBytes32(0),
+      registry.currentEpochBytes(), u64ToBytes32(t + 100n + BigInt(i)),
+    ]);
+    approve(registry, laneActionHash);
+    registry.registerLane({
+      scheduleId, laneKindByte: i, leviedBy, bpsShare: 500 + i,
+      remitAddress: remitAddr, basis: 0, applicabilityHash: appHash,
+      statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+      charterProof: proof, currentTime: t + 100n + BigInt(i), now: t + 100n + BigInt(i),
+    });
+  }
+
+  // Call resolveLanes with all 4 pairs.
+  const results = registry.resolveLanes({ scheduleId, leviedBys: authorities, laneKindBytes: kinds });
+  assert.equal(results.length, 4);
+
+  // Verify all 4 return records have matching non-zero scheduleId and correct (leviedBy, laneKindByte).
+  for (let i = 0; i < 4; i++) {
+    assert.ok(bufEq(results[i].scheduleId, scheduleId));
+    assert.ok(!bufEq(results[i].scheduleId, Buffer.alloc(32)));
+    assert.ok(bufEq(results[i].leviedBy, authorities[i]));
+    assert.equal(results[i].laneKindByte, kinds[i]);
+    assert.equal(results[i].bpsShare, 500 + i);
+  }
+});
+
+test('LANE-T12: kind-range enforcement (laneKindByte < 16)', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+
+  // Try to register with laneKindByte = 16 → should revert (bare underflow).
+  const leviedBy = randomBytes(32);
+  const remitAddr = randomBytes(32);
+  const appHash = randomBytes(32);
+  const statHash = randomBytes(32);
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(16), leviedBy, u16ToBytes32(500), remitAddr,
+    u64ToBytes32(0), appHash, statHash,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash);
+  assertReverts(() => registry.registerLane({
+    scheduleId, laneKindByte: 16, leviedBy, bpsShare: 500,
+    remitAddress: remitAddr, basis: 0, applicabilityHash: appHash,
+    statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  }));
+
+  // Verify laneKindByte = 15 succeeds (upper boundary inclusive of 15).
+  const leviedBy15 = randomBytes(32);
+  const remitAddr15 = randomBytes(32);
+  const appHash15 = randomBytes(32);
+  const statHash15 = randomBytes(32);
+  const laneActionHash15 = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(15), leviedBy15, u16ToBytes32(500), remitAddr15,
+    u64ToBytes32(0), appHash15, statHash15,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 200n),
+  ]);
+  approve(registry, laneActionHash15);
+  registry.registerLane({
+    scheduleId, laneKindByte: 15, leviedBy: leviedBy15, bpsShare: 500,
+    remitAddress: remitAddr15, basis: 0, applicabilityHash: appHash15,
+    statuteRefHash: statHash15, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 200n, now: t + 200n,
+  });
+
+  // Verify it was registered.
+  const resolved = registry.resolveLane({ scheduleId, leviedBy: leviedBy15, laneKindByte: 15 });
+  assert.equal(resolved.laneKindByte, 15);
+  assert.equal(resolved.bpsShare, 500);
+});
+
+test('LANE-T13: isLaneActive returns false when parent schedule retired', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  // Register a lane effective at epoch 2.
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const laneKindByte = 0;
+  const leviedBy = randomBytes(32);
+  const remitAddress = randomBytes(32);
+  const appHash = randomBytes(32);
+  const statHash = randomBytes(32);
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(500), remitAddress,
+    u64ToBytes32(0), appHash, statHash,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash);
+  registry.registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare: 500,
+    remitAddress, basis: 0, applicabilityHash: appHash,
+    statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  });
+
+  // Advance to epoch 2 so the lane is in-effect.
+  const ah2 = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(1n), u64ToBytes32(2n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah2);
+  registry.advanceEpoch({ newEpoch: 2n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t + 500n, now: t + 500n });
+
+  // While the parent schedule is live, the lane is active.
+  assert.equal(registry.isLaneActive({ scheduleId, leviedBy, laneKindByte }), true);
+
+  // Retire the PARENT SCHEDULE (not the lane).
+  const retireHash = persistentHash([pad32(DOMAIN.RETIRE_SCHEDULE),
+    registry.self, scheduleId, registry.currentEpochBytes()]);
+  approve(registry, retireHash);
+  registry.retireSchedule({ scheduleId, currentTime: t + 600n, now: t + 600n });
+
+  // MED-B: isLaneActive now returns false because the parent schedule is retired.
+  assert.equal(registry.isLaneActive({ scheduleId, leviedBy, laneKindByte }), false);
+
+  // The lane record itself was NOT touched by retireSchedule — its own
+  // retiredEpoch is still 0 (this is the MED-B semantic under test).
+  const stillThere = registry.resolveLane({ scheduleId, leviedBy, laneKindByte });
+  assert.equal(stillThere.retiredEpoch, 0n);
+});
+
+test('LANE-T14: no cap — 5 registerLane calls on one schedule all succeed', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  // Advance to epoch 1 (so effectiveEpoch = 2 is strictly future).
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+
+  // Register 5 lanes with distinct (leviedBy, laneKindByte) tuples. Round-3
+  // has no per-schedule cap; all 5 must succeed. (Vector<4> resolveLanes
+  // surfacing is a WI-14 concern; this test only asserts the registry
+  // accepts them.)
+  const registered = [];
+  for (let i = 0; i < 5; i++) {
+    const leviedBy = Buffer.concat([Buffer.from(`Auth${i}`), Buffer.alloc(27)]);
+    const laneKindByte = i;  // kinds 0..4, all < 16
+    const remitAddress = randomBytes(32);
+    const appHash = randomBytes(32);
+    const statHash = randomBytes(32);
+    const bps = 100 + i;
+    const laneActionHash = persistentHash([
+      pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+      u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(bps), remitAddress,
+      u64ToBytes32(0), appHash, statHash,
+      u64ToBytes32(2n), u64ToBytes32(0),
+      registry.currentEpochBytes(), u64ToBytes32(t + 100n + BigInt(i)),
+    ]);
+    approve(registry, laneActionHash);
+    registry.registerLane({
+      scheduleId, laneKindByte, leviedBy, bpsShare: bps,
+      remitAddress, basis: 0, applicabilityHash: appHash,
+      statuteRefHash: statHash, effectiveEpoch: 2n, remittanceMode: 0,
+      charterProof: proof, currentTime: t + 100n + BigInt(i), now: t + 100n + BigInt(i),
+    });
+    registered.push({ leviedBy, laneKindByte, bps });
+  }
+
+  // Assert all 5 records exist and are individually resolvable.
+  for (const r of registered) {
+    const resolved = registry.resolveLane({
+      scheduleId, leviedBy: r.leviedBy, laneKindByte: r.laneKindByte,
+    });
+    assert.equal(resolved.bpsShare, r.bps);
+    assert.ok(bufEq(resolved.leviedBy, r.leviedBy));
+  }
+
+  // Vector<4> resolveLanes surfaces exactly 4 of the 5. The 5th is invisible
+  // to any single resolveLanes call — this is the defining round-3 behavior
+  // that WI-14 must handle via SCHEDULE_LANE_OVERFLOW (or the sum-invariant
+  // backstop; see V1.1-DESIGN.md §7.4).
+  const first4 = registered.slice(0, 4);
+  const leviedBys = first4.map(r => r.leviedBy);
+  const laneKindBytes = first4.map(r => r.laneKindByte);
+  const batch = registry.resolveLanes({ scheduleId, leviedBys, laneKindBytes });
+  assert.equal(batch.length, 4);
+  for (let i = 0; i < 4; i++) {
+    assert.equal(batch[i].bpsShare, first4[i].bps);
+    assert.ok(bufEq(batch[i].scheduleId, scheduleId));
+  }
+});
+
+test('LANE-R-A: charter proof against outdated root (post-advanceEpoch) REVERTS', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  // Rotate governanceRoot.
+  const newRoot = randomBytes(32);
+  const ah2 = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(1n), u64ToBytes32(2n), u64ToBytes32(100n), newRoot]);
+  approve(registry, ah2);
+  registry.advanceEpoch({ newEpoch: 2n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: newRoot, currentTime: t + 500n, now: t + 500n });
+
+  // Try to register a lane using the OLD proof.
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const leviedBy = randomBytes(32);
+  const laneActionHash = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(0), leviedBy, u16ToBytes32(500), randomBytes(32),
+    u64ToBytes32(0), randomBytes(32), randomBytes(32),
+    u64ToBytes32(3n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 600n),
+  ]);
+  approve(registry, laneActionHash);
+  assertReverts(() => registry.registerLane({
+    scheduleId, laneKindByte: 0, leviedBy, bpsShare: 500,
+    remitAddress: randomBytes(32), basis: 0, applicabilityHash: randomBytes(32),
+    statuteRefHash: randomBytes(32), effectiveEpoch: 3n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 600n, now: t + 600n,
+  }), 'SCHEDULE_UNCHARTERED_NODE');
+});
+
+test('LANE-R-E: register → retire → register-again on same key succeeds', () => {
+  const fx = makeFixture();
+  const { registry, charterTree, charteredNodes } = fx;
+  const { scheduleId } = registerFixture({ fixture: fx });
+
+  const t = 2_000_000n;
+  const ah = persistentHash([pad32(DOMAIN.ADVANCE_EPOCH), registry.self,
+    u64ToBytes32(0n), u64ToBytes32(1n), u64ToBytes32(100n), registry._governanceRoot]);
+  approve(registry, ah);
+  registry.advanceEpoch({ newEpoch: 1n, newRefRateFiatPerKwh: 100n,
+    newGovernanceRoot: registry._governanceRoot, currentTime: t, now: t });
+
+  const proof = charterTree.proofsByNodeId.get(toHex(charteredNodes[0]));
+  const laneKindByte = 0;
+  const leviedBy = Buffer.concat([Buffer.from('EPRA'), Buffer.alloc(28)]);
+
+  // Register first lane.
+  const remitAddress1 = randomBytes(32);
+  const appHash1 = randomBytes(32);
+  const statHash1 = randomBytes(32);
+  const laneActionHash1 = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(500), remitAddress1,
+    u64ToBytes32(0), appHash1, statHash1,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 100n),
+  ]);
+  approve(registry, laneActionHash1);
+  registry.registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare: 500,
+    remitAddress: remitAddress1, basis: 0, applicabilityHash: appHash1,
+    statuteRefHash: statHash1, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 100n, now: t + 100n,
+  });
+
+  // Retire it.
+  const retireHash = persistentHash([
+    pad32(DOMAIN.RETIRE_LANE), registry.self, scheduleId, leviedBy,
+    u64ToBytes32(laneKindByte), registry.currentEpochBytes(), u64ToBytes32(t + 200n),
+  ]);
+  approve(registry, retireHash);
+  registry.retireLane({ scheduleId, leviedBy, laneKindByte, currentTime: t + 200n, now: t + 200n });
+
+  // Register again on the same (scheduleId, leviedBy, laneKindByte) with NEW bpsShare.
+  const remitAddress2 = randomBytes(32);
+  const appHash2 = randomBytes(32);
+  const statHash2 = randomBytes(32);
+  const laneActionHash2 = persistentHash([
+    pad32(DOMAIN.REGISTER_LANE), registry.self, scheduleId,
+    u64ToBytes32(laneKindByte), leviedBy, u16ToBytes32(700), remitAddress2,
+    u64ToBytes32(0), appHash2, statHash2,
+    u64ToBytes32(2n), u64ToBytes32(0),
+    registry.currentEpochBytes(), u64ToBytes32(t + 300n),
+  ]);
+  approve(registry, laneActionHash2);
+  registry.registerLane({
+    scheduleId, laneKindByte, leviedBy, bpsShare: 700,
+    remitAddress: remitAddress2, basis: 0, applicabilityHash: appHash2,
+    statuteRefHash: statHash2, effectiveEpoch: 2n, remittanceMode: 0,
+    charterProof: proof, currentTime: t + 300n, now: t + 300n,
+  });
+
+  // Resolve: new record supersedes (register-after-retire on the same
+  // composite key succeeds; the fresh record replaces the retired one).
+  const resolved = registry.resolveLane({ scheduleId, leviedBy, laneKindByte });
+  assert.equal(resolved.bpsShare, 700);
+  assert.equal(resolved.retiredEpoch, 0n);
+});
