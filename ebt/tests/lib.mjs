@@ -144,6 +144,7 @@ export class EBT {
   }) {
     this.self = Buffer.isBuffer(self) ? self : randomBytes(32);
     this._initialized = true;
+    this._owner = randomBytes(32);
     this._meterAuthorityPubkey = Buffer.from(meterAuthorityPubkey);
     this._multisigAuthority = Buffer.from(multisigAuthority ?? randomBytes(32));
     this._operationsRecipient = Buffer.from(operationsRecipient);
@@ -231,11 +232,10 @@ export class EBT {
   setLivingDividendAddress(addr) { this._livingDividendAddress = Buffer.from(addr); }
 
   // ---------------------------- mirror trust anchors -----------------------
-  // Review-pass-1 fix: witness-gated. Any real registry event has a real
-  // Merkle path under the real registry root, so the caller must supply a
-  // sample entry + inclusion witness that reconstructs to `newRoot`. This
-  // removes the owner-only trust anchor without losing the anchor's integrity.
-  mirrorActionLogRoot({ newRoot, sampleEntry, proof }) {
+  // Round-2 fix: owner gate is the trust anchor; witness is sanity-only.
+  mirrorActionLogRoot({ newRoot, sampleEntry, proof, caller }) {
+    const who = caller ? Buffer.from(caller) : this._owner;
+    if (!bufEq(who, this._owner)) revert('Only owner');
     if (!bufEq(sampleEntry.payloadHash, proof.payloadHash)) revert('EVENT_PROOF_INVALID');
     const recon = reconstructActionLogRoot(proof.payloadHash, proof.siblings, proof.pathBits);
     if (!bufEq(recon, newRoot)) revert('EVENT_PROOF_INVALID');
@@ -243,10 +243,10 @@ export class EBT {
   }
   // Review-pass-1 fix: witness-gated. The caller cites the latest event they
   // can prove is included under the CURRENTLY-mirrored root; the proof's
-  // actionSeq bounds how far ahead the head can advance.
+  // actionSeq must exactly equal the new head.
   mirrorActionLogHead({ newHeadSeq, latestEntry, proof }) {
     verifyEventProof(latestEntry, proof, this._registryActionLogRootMirror);
-    if (!(BigInt(proof.actionSeq) <= BigInt(newHeadSeq))) {
+    if (!(BigInt(proof.actionSeq) === BigInt(newHeadSeq))) {
       revert('HEAD_ADVANCE_BEYOND_WITNESS');
     }
     asUintChecked(BigInt(newHeadSeq) - this._registryActionLogHeadSeqMirror, 64,
@@ -771,7 +771,7 @@ function pickSampleWitness(fx) {
 //
 // Review-pass-1 fix: the two trust-anchor setters are witness-gated, so this
 // helper installs the root using any real event's inclusion proof (the head
-// advance then reuses the highest-seq event's proof).
+// advance then reuses the exact new-head event's proof).
 export function warmMirror(ebt, fx, opts = {}) {
   const registry = fx.registry;
   const sample = pickSampleWitness(fx);
@@ -805,9 +805,15 @@ export function warmMirror(ebt, fx, opts = {}) {
     latestBundle = { entry, proof };
   }
   const finalHead = opts.headSeq ?? maxSeq;
-  // Head advance is witness-gated. Use latestBundle by default; opts may
-  // override with an explicit witness that exceeds the latest event's seq.
-  const headWitness = opts.headWitness ?? latestBundle;
+  // Head advance requires an exact witness for newHeadSeq.
+  const headWitness = opts.headWitness ?? (
+    opts.headSeq !== undefined
+      ? {
+          entry: registry.getActionEntry(BigInt(finalHead)),
+          proof: buildProof(registry, BigInt(finalHead)),
+        }
+      : latestBundle
+  );
   ebt.mirrorActionLogHead({
     newHeadSeq: finalHead,
     latestEntry: headWitness.entry,

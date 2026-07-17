@@ -739,20 +739,21 @@ export circuit revokeProducerOwnership(
 // Mirror-write circuits (VNEXT-DESIGN §7) — PUBLIC; auth is on the event proof
 // =============================================================================
 
-// Witness-gated trust-anchor setters (review-pass-1 fix; design §3.2/§7.1).
-// mirrorActionLogRoot: PUBLIC. Any real registry event has a real Merkle path
-// under the real registry root; installing a fake root requires forging a
-// Merkle proof under the hash assumption. The caller supplies a sample entry
-// + inclusion witness that must reconstruct to `newRoot`. Design option (iii)
-// closes the WI-13.2 authoritative-source loop:
-// `_actionSeq`/`registryActionLogRoot`/`getActionEntry` on the registry are
-// consumed here via witness proof — no owner gate needed.
+// TRUST MODEL: owner is the sole trust anchor for root advances (round 2
+// review-pass-2 fix). The witness (sampleEntry + proof) is
+// defense-in-depth against typo'd/malformed root installs by the owner
+// itself - it proves newRoot is internally consistent with a
+// well-formed Merkle path from a leaf, but does NOT anchor newRoot to
+// previously-trusted registry state. Full option-(iii) anchoring
+// requires TariffRegistry to expose per-transition commitments
+// (deferred to WI-14.1 pre-mainnet-Phase-2). In production the owner
+// is under multisig control so this is effectively multisig-gated.
 export circuit mirrorActionLogRoot(
   newRoot:     Bytes<32>,
   sampleEntry: RegistryActionEntry,
   proof:       EventProof,
 ): [] {
-  assertInitialized();
+  assertOnlyOwner();
   // (1) The entry's committed payloadHash must equal the proof leaf.
   assert(disclose(sampleEntry.payloadHash) == disclose(proof.payloadHash),
          "EVENT_PROOF_INVALID");
@@ -770,9 +771,8 @@ export circuit mirrorActionLogRoot(
 // LANE_MIRROR_STALE window, witness-gated (review-pass-1 fix). PUBLIC.
 // The caller supplies the latest event they can cite; verifyEventProof proves
 // it is included under the CURRENTLY-mirrored root, then we assert the proof's
-// actionSeq <= newHeadSeq to bound the head advance to the seq of a proven
-// event (the keeper cannot install a head ahead of any event the mirror has
-// actually witnessed). Monotone check preserved.
+// actionSeq == newHeadSeq so head updates are exact (no lookahead). Monotone
+// check preserved.
 export circuit mirrorActionLogHead(
   newHeadSeq:  Uint<64>,
   latestEntry: RegistryActionEntry,
@@ -780,8 +780,8 @@ export circuit mirrorActionLogHead(
 ): [] {
   assertInitialized();
   verifyEventProof(latestEntry, proof);
-  // The cited event must be at or before the new head.
-  assert(disclose(proof.actionSeq) <= disclose(newHeadSeq),
+  // The cited event must be exactly the new head.
+  assert(disclose(proof.actionSeq) == disclose(newHeadSeq),
          "HEAD_ADVANCE_BEYOND_WITNESS");
   const _mono = (disclose(newHeadSeq) - _registryActionLogHeadSeqMirror) as Uint<64>;
   // ^ checked-cast reverts unless newHeadSeq >= current head (monotone).
@@ -1069,6 +1069,10 @@ export circuit settle(
   const statTotal32 = statutoryTotalBps as Uint<32>;
   // Overflow (design §5.2 step 10): all 4 slots populated-live AND the enumerated
   // sum is short of the declared total => there are > 4 live lanes.
+  // TODO(WI-14.1): pass-2 review noted label precision ambiguity: when >4 live
+  // lanes exist but keeper enumerates fewer than 4 slots, settle currently lands
+  // LANE_SUM_MISMATCH instead of SCHEDULE_LANE_OVERFLOW. This is non-security
+  // (settle still fails) and needs explicit keeper signaling in a wider change.
   if (populatedCount == 4 as Uint<8>) {
     assert(statutorySum >= statTotal32, "SCHEDULE_LANE_OVERFLOW");
   }
