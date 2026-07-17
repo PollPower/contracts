@@ -959,3 +959,383 @@ the primary keeper is offline or misbehaving. There is no auth check on
 the caller; the auth is entirely on the event proof.
 
 ---
+
+## §8. Read-only helper circuits
+
+Semantic parity with WI-13.1's registry-side reads, backed by the mirror.
+
+### 8.1 `resolveLanesMirror`
+
+Byte-identical signature to WI-13.1's `resolveLanes`:
+
+```
+circuit resolveLanesMirror(
+  scheduleId:    Bytes<32>,
+  leviedBys:     Vector<4, Bytes<32>>,
+  laneKindBytes: Vector<4, Uint<8>>,
+): Vector<4, LaneRecord>
+```
+
+Body: read the four `laneKey` entries from `_registeredLanesMirror`,
+returning the zero-record sentinel `LaneRecord` (all fields zero — same
+shape as WI-13.1 uses) for absent keys. Unwraps `MirroredLaneRecord` to
+return the raw `LaneRecord` — the `writeActionSeq` bookkeeping is not part
+of the semantic interface.
+
+This helper is invoked inline by `settle` (§5.2 step 8). Its public
+availability lets off-chain simulators, dashboard reads, and audit tools
+query the mirror without duplicating the read logic.
+
+### 8.2 `isLaneActiveMirror`
+
+Byte-identical signature to WI-13.1's `isLaneActive`:
+
+```
+circuit isLaneActiveMirror(
+  scheduleId:   Bytes<32>,
+  leviedBy:     Bytes<32>,
+  laneKindByte: Uint<8>,
+): Boolean
+```
+
+Must produce byte-identical results to registry `isLaneActive` at the same
+epoch, when the mirror is fresh. Body implements the four-part liveness
+predicate against the mirrored `LaneRecord` and `_scheduleLiveMirror`:
+
+```
+1. key = laneKey(scheduleId, leviedBy, laneKindByte)
+2. if (!_registeredLanesMirror.member(key)) return false
+3. rec = _registeredLanesMirror.lookup(key).record
+4. if (rec.retiredEpoch != 0) return false
+5. if (!_scheduleLiveMirror.member(scheduleId)) return false
+6. if (_scheduleLiveMirror.lookup(scheduleId) == false) return false
+7. return _currentEpoch.read() >= rec.effectiveEpoch
+```
+
+Step 7's `_currentEpoch` is a new ledger scalar on EBT, updated via a
+keeper circuit that carries an inclusion proof against a registry epoch
+commitment. (Alternative: settle takes the epoch as an input and asserts
+it against a mirrored `_epochBound`. The executing session picks the
+cleaner shape at implementation time — flagged in §11.)
+
+### 8.3 `getRegistryActionLogHeadSeq`
+
+```
+circuit getRegistryActionLogHeadSeq(): Uint<64>
+```
+
+Read the mirrored head seq. Diagnostic; used by off-chain callers to
+assess mirror freshness before submitting a settle.
+
+### 8.4 `settleSimulate` — out of scope for this cut
+
+A `settleSimulate` circuit would re-execute `settle`'s validation without
+minting, so callers can preview success/failure and inspect the exact
+error label. Useful but not required for the settle circuit itself.
+Deferred to a follow-up.
+
+---
+
+## §9. Migration from v7.4.2
+
+vNext is a fresh contract deployment with a new address, a new token color
+(different `domainSep`), and a new state layout. Existing v7.4.2 EBT does
+NOT automatically move.
+
+### 9.1 Recommendation: parallel deployment, sunset schedule for v7.4.2
+
+Three candidate paths were considered:
+
+**(a) Fresh mint, no migration.** vNext deploys alongside v7.4.2. v7.4.2
+stays live for redemption of existing coins; no new mints go through it.
+All new settlement flows through vNext. v7.4.2 sunset triggers when its
+supply drains to zero (or is close to zero and the remainder is
+administratively bought back).
+
+**(b) Burn-and-remint bridge.** A one-shot migration circuit lets
+v7.4.2 holders burn their coins and receive vNext coins at 1:1. Requires
+the bridge to have mint authority on vNext (delegated at ceremony),
+requires holders to actively participate, requires an off-chain campaign
+to drive migration.
+
+**(c) Claim-based migration.** Snapshot v7.4.2 supply at a cutover epoch,
+deploy vNext with a claim map, holders claim their new coins by proving
+ownership of the old coins. Similar to (b) but with a proof-based claim
+instead of an active burn.
+
+**Recommendation: (a) parallel deployment.**
+
+Why:
+
+- The pilot supply is small enough (five consumers, one producer per
+  MEMORY.md status) that a sunset-by-drain approach is operationally
+  feasible. The five consumers can redeem their v7.4.2 coins and receive
+  new v7.4.2 mints in the last pre-cutover settle, or accept a
+  parallel-holdings period.
+- (b) and (c) both require ceremony-level setup on vNext's mint authority
+  (a bridge with delegated mint is a bigger surface than we want on a
+  contract whose main job is to make sure only HAT-attested settles can
+  mint).
+- The v7.4.2 audit hardening (M-4 cap/cooldown/co-sign on manualReissue,
+  L-1 ownership guard, L-3 timestamp validation) is preserved into vNext
+  by construction — (a) doesn't risk regressing those.
+- (a) sidesteps the §2.3 non-goal tension: v7.4.2 doesn't have per-coin
+  tariff-path metadata, so migrating supply forward would leave every
+  migrated coin without a `fiatValueAtMint`. Simpler to say: v7.4.2 coins
+  redeem under v7.4.2 rules; vNext coins redeem under D-10 per-coin fiat
+  rules. Clean partition.
+
+### 9.2 Sunset schedule
+
+Proposed:
+
+1. **T+0 (vNext deploy ceremony):** deploy vNext. Switch settlement-api to
+   point new attestations at vNext. Legacy v7.4.2 accepts no new attests.
+2. **T+1 to T+30 days:** parallel-hold period. Holders may redeem v7.4.2
+   coins as normal. New settles go to vNext.
+3. **T+30:** administrative pass. Any residual v7.4.2 supply is
+   ackowledged; supply typically small.
+4. **T+90:** v7.4.2 deprecation notice; deploy addresses documented as
+   redeem-only. No further settles possible.
+5. **T+180:** v7.4.2 status = archive. Redemption still callable indefinitely
+   (contracts don't shut down); off-chain tooling stops pointing at it by
+   default.
+
+Garrett + supervising session own the final schedule; this is a starting
+draft.
+
+### 9.3 Caller-side impact
+
+Settlement-api, dashboard, consumer/producer apps all currently key off
+v7.4.2's contract address + protocol-split reads. Migration to vNext
+requires:
+
+- **settlement-api**: attests to vNext instead of v7.4.2. HAT payload
+  widens (add producerAddr). Fetch splits from tariff-registry (via
+  keeper-mirror events or directly) rather than from v7.4.2's retired
+  setters. See MEMORY.md 2026-07-05 for how the v7.3→v7.4.2 retarget
+  batched off-chain callers — same pattern applies here.
+- **keeper (session-3 batch-payer)**: `_dividendMintedLog` shape
+  preserved (I-14-H); Session 9's recipient-filter fix continues to work.
+  Keeper reads from vNext contract address.
+- **dashboard**: read `unshieldedBalance(vNextColor)` for balances; drop
+  the retired split-getter reads.
+- **consumer/producer apps**: same balance-read change; redemption UI
+  needs `redemptionKind` + `TariffPath` inputs.
+
+See `VNEXT-MIGRATION.md` (to be authored under the vNext PR, per v2 brief
+§DELIVERABLE) for the caller-side runbook.
+
+---
+
+## §10. Test scaffold
+
+Map of v2 brief's T1–T18 to concrete test files. All tests live in
+`ebt/tests/`, mirror v7.4.2's offline-tests layout (TypeScript,
+deterministic, no network).
+
+### 10.1 Test file layout
+
+```
+ebt/tests/
+  vnext/
+    fixtures/
+      registry-events.ts         // synthetic RegistryActionEntry fixtures
+      lane-records.ts            // synthetic LaneRecord fixtures per T-case
+      escrow-attestations.ts     // synthetic solvency-attestation fixtures
+      schedules.ts               // 4-lane fixture, overflow fixture, mixed-mode fixture
+    T01-happy-path.test.ts
+    T02-dual-redemption.test.ts
+    T03-reissue-preserves-metadata.test.ts
+    T04-mint-redirection-fails.test.ts
+    T05-unregistered-schedule-fails.test.ts
+    T06-retired-schedule-fails.test.ts
+    T07-sum-mismatch.test.ts
+    T08-onchain-remit-zero-addr.test.ts
+    T09-solvency-guard.test.ts
+    T10-defederated-operator.test.ts
+    T11-ld-binding-regression.test.ts
+    T12-property-schedules-splits.test.ts
+    T13-schedule-lane-overflow.test.ts
+    T14-lane-dup-key.test.ts
+    T15-dropped-lane-under-enum.test.ts
+    T16-mirror-stale.test.ts
+    T17-zero-sentinel-discipline.test.ts
+    T18-fiat-and-onchain-siblings.test.ts
+    helpers/
+      mirror-warm.ts              // build a well-formed mirror state from event fixtures
+      settle-driver.ts            // parameterized settle harness
+      redeem-driver.ts
+```
+
+### 10.2 Test-to-invariant map
+
+| Test | Proves | Error label | Notes |
+|---|---|---|---|
+| T01 | End-to-end happy path | (none — positive) | Confirms mint output count, LD `bumpOnMint` fires |
+| T02 | Dual redemption per-coin fiat | (none — positive) | KES + KWH siblings against different `fiatValueAtMint` |
+| T03 | I-14-E | (none) | Reissue preserves TariffPath byte-for-byte |
+| T04 | I-14-A | HAT sig failure label | Observer takes valid HAT, submits with wrong producerAddr, MUST fail |
+| T05 | I-14-B | `SCHEDULE_NOT_LIVE` (or class equiv) | Schedule missing from mirror |
+| T06 | I-14-B | `SCHEDULE_NOT_LIVE` | Schedule mirrored as `live == false` |
+| T07 | I-14-K | `LANE_SUM_MISMATCH` | Property test, 1000 crafted vectors summing to 9999 or 10001 |
+| T08 | I-14-D | `LANE_REMIT_ADDR_ZERO_ON_CHAIN` | On-chain-remit lane with zero remitAddress. Also confirms fiat-door sibling doesn't trip |
+| T09 | I-14-F | `SOLVENCY_GUARD_FAILED` | Trust float at boundary + one unit over |
+| T10 | I-14-G | (v7.4.2 label or new) | De-federated operator cannot start new settle; in-flight completes |
+| T11 | I-14-H | (none — shape check) | `_dividendMintedLog` bytes identical to v7.4.2 for same inputs; keeper contract-scope filter still works |
+| T12 | I-14-C + I-14-K + I-14-H | (none) | Property test, 1000 random schedules, all three invariants hold simultaneously |
+| T13 | I-14-I | `SCHEDULE_LANE_OVERFLOW` | 5-lane schedule warm; settle fails; retire-and-replace to 4-lane succeeds |
+| T14 | I-14-J | `LANE_DUP_KEY` | Duplicate `(leviedBy, laneKindByte)` in request vector |
+| T15 | I-14-K | `LANE_SUM_MISMATCH` | Keeper drops a lane; under-enumeration detected |
+| T16 | Mirror discipline | `LANE_MIRROR_STALE` | Emit `LANE_RETIRED` event, don't run mirror-write, settle fails |
+| T17 | Zero-record sentinel | (positive) | 2 real + 2 zero slots in vector; settle succeeds; NEGATIVE cross-check: real record with `bpsShare == 0` NOT treated as sentinel |
+| T18 | I-14-D siblings | (positive on fiat-door, no trip) | fiat-door + on-chain-remit siblings on same schedule; on-chain routes, fiat-door doesn't |
+
+### 10.3 Property-test discipline
+
+T07 and T12 both fuzz. `fast-check` (or equivalent) at 1000 runs each,
+seed pinned in the test file so failures are reproducible. Property
+generators live in `ebt/tests/vnext/fixtures/` next to the fixtures they
+underlie.
+
+### 10.4 Fixtures
+
+`schedules.ts` should carry at least these baseline fixtures:
+
+- **KenyaStandardStack**: 4-lane statutory (VAT + REP + EPRA + WARMA) at
+  realistic bps values, `remittanceMode == 1` for all four. Used by T01,
+  T02, T11, T12.
+- **OverflowStack**: 5 statutory lanes on a single schedule (feeds T13's
+  overflow trigger; 5th lane cannot be enumerated in Vector<4>).
+- **MixedModeStack**: 1 fiat-door lane (`mode==0, remitAddress==0`) + 1
+  on-chain-remit lane (`mode==1, remitAddress=non-zero`). Feeds T18.
+- **ZeroBpsInformationalStack**: a real lane with `bpsShare == 0` (e.g. an
+  informational statutory tag with no routing). Feeds T17's cross-check.
+- **RetiredParentSchedule**: schedule marked retired in mirror. Feeds T06.
+
+### 10.5 Deferred: on-chain integration tests
+
+The offline suite is the primary review gate per v2 brief §ACCEPTANCE
+CRITERIA. On-chain integration tests against Preview follow after the
+full-ZK compile transcript lands in the PR. That's a separate item;
+test scaffold here is offline only.
+
+---
+
+## §11. Open questions / escalation triggers hit during design
+
+Every design decision here that isn't fully anchored in the v2 brief or
+WI-13.1's exports is listed. Reviewers: this is the priority list for
+your attention before dispatch to `.compact` authoring.
+
+### 11.1 Hard escalations (require Garrett + supervising-session decision before dispatch)
+
+**E-1. Mirror freshness mechanism blocks on WI-13.2 amendment.** §3's
+recommendation of option (iii) requires TariffRegistry to expose
+`registryActionLogRoot` and widen `RegistryActionEntry.payloadHash` for
+five event kinds. This is a WI-13.1 amendment (WI-13.2). WI-14 vNext
+cannot be dispatched to `.compact` authoring until WI-13.2 lands on
+`main`. Dispatch ordering: WI-13.2 dispatch → WI-13.2 merge → WI-14
+vNext dispatch → vNext merge → deploy ceremony. This corresponds to
+v2 brief §ESCALATION TRIGGERS #7.
+
+**E-2. CAL-vNext-M1 (mirror stale tolerance).** §3.3 introduces a new
+calibration placeholder for the `LANE_MIRROR_STALE` window. Draft value:
+4 (event-count window). Not resolved in this design pass; Garrett +
+supervising-session at dispatch. Corresponds to v2 brief §CALIBRATION
+PLACEHOLDERS.
+
+**E-3. CAL-vNext-M2 (escrow attestation stale tolerance).** §6.2 step 5
+introduces a similar tolerance for the escrow solvency attestation
+freshness. Not resolved.
+
+**E-4. Version label (v7.5 vs v8).** v2 brief §DELIVERABLE explicitly
+defers this to the supervising session at dispatch. Design pass
+recommendation: **v8**. Rationale: HAT payload widening + new ledger
+fields + new mint recipients + retired setters is not additive. But the
+final call is not the design pass's.
+
+**E-5. Migration path.** §9 recommends (a) parallel deployment with a
+30/90/180 day sunset. Garrett + supervising-session own the final path
+per v2 brief §DO NOT ("DO NOT let the migration decision be made by the
+executing session").
+
+### 11.2 Design decisions made without full brief anchor (flag for reviewer sanity check)
+
+**D-1. SplitShares mirroring is partial.** §5.2 step 12 mirrors only
+`statutoryTotalBps` on the class side, not the full `SplitShares` struct
+(LD / ops / DAO / operatorMargin bps values). The caller supplies the
+four non-statutory bps values as settle inputs and the circuit re-checks
+their sum against `10000 - statutoryTotalBps`. Rationale: narrower
+mirror surface; the four values are relatively stable per schedule. But
+this puts trust in the caller to supply values consistent with the
+registered schedule, and drift is only caught via the sum check
+(not a direct comparison). Alternative: mirror the full `SplitShares` +
+add four more mirror-writes on `retuneClass`. Executing session may
+reverse this. FLAG for review.
+
+**D-2. Epoch source (mirrored ledger vs settle input).** §8.2 step 7
+calls out that `_currentEpoch` needs to live on EBT (mirrored from
+registry or from the operator's own epoch clock). Two shapes possible:
+(a) EBT maintains `_currentEpoch: Uint<64>` and a `bumpEpoch` circuit
+verifying against a registry-side epoch commitment; (b) `settle` takes
+epoch as an input and validates against a mirrored `_epochBound` scalar.
+Design pass leans (a) for symmetry with the other mirrored state, but
+did not lock it. Executing session picks at implementation time.
+
+**D-3. `redeem` KWH branch.** §6.3 explicitly underspecifies the kWh
+redemption. Delivery-attestation channel design is downstream (WI-01
+D-5..D-9) and the on-chain shape depends on it. Decision deferred.
+
+**D-4. Mirror-write authentication is proof-only, no per-caller check.**
+§7.7 makes mirror-writes public (anyone can submit). This is a
+deliberate choice: public writes mean the mirror is repairable by any
+honest actor. But it means a spammy caller can burn gas by re-submitting
+valid mirror writes redundantly. Mitigation: idempotency — the
+mirror-write circuits should be no-ops (assert-equal) if the mirror
+already reflects the event at the given actionSeq. Flag for the
+executing session to implement.
+
+**D-5. `_dividendMintedLog.recipient` is set to the LD pool address.**
+§5.2 step 14 preserves v7.4.2's shape here. Session 9's
+contract-scope filter on the keeper reads this recipient field to scope
+log entries to the correct LD binding. FLAG for review: confirm the
+executing session doesn't inadvertently change `recipient` in the mint
+event shape — this is a keeper-facing regression risk.
+
+### 11.3 Calibration placeholders inherited from v2 brief
+
+| CAL | Where used in vNext |
+|---|---|
+| CAL-1 | LD floor / ops floor (via schedule-registered SplitShares) |
+| CAL-2 | Fiat-value sanity band at settle (§5.2 step 7) and redeem (§6.2 step 4) |
+| CAL-8 | Statute-to-lane ceremony parameters (reference only) |
+| CAL-11 | Remittance default shaping I-14-D mode-conditional guard |
+| CAL-vNext-M1 | Mirror stale tolerance (§3.3, new in this design pass) |
+| CAL-vNext-M2 | Escrow attestation stale tolerance (§6.2, new in this design pass) |
+
+All six unresolved. Executing session marks with `TODO(calibration)`,
+does NOT resolve.
+
+### 11.4 Cross-brief coherence to re-check at dispatch
+
+- v2 brief §KEEPER MIRROR CONTRACT lists five event kinds requiring
+  mirror updates: kinds 1, 7, `SCHEDULE_REGISTERED`, `SCHEDULE_RETIRED`,
+  `retuneClass`. All five have mirror-write circuits designed in §7.
+  Confirm at dispatch that WI-13.1 emits all five as-listed, and that
+  WI-13.2's payload widening covers all five.
+- v2 brief §INVARIANTS THAT MUST HOLD lists I-14-A through I-14-K.
+  This design pass covers A/B/C/D/E/F/G/H/I/J/K. Confirm coverage at
+  dispatch.
+- v2 brief §ERROR LABELS lists five WI-14-specific labels. This design
+  pass raises all five (plus v7.4.2 preserved labels + one new solvency
+  label `SOLVENCY_GUARD_FAILED` + one new escrow-freshness label
+  `ESCROW_ATTESTATION_STALE`). Reviewer may want the two new labels
+  added to the v2 brief's normative table.
+
+---
+
+*Design pass authored 2026-07-17 against `dispatch-briefs/WI-14-EBT-vNext-v2.md`.
+No `.compact` code written; this is the design of record for the next
+session's authoring. Two BIG-review passes required at PR time per v2 brief
+§ACCEPTANCE CRITERIA §3.*
