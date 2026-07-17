@@ -400,3 +400,562 @@ Coordinating dispatch: WI-13.2 → WI-14 vNext → deploy ceremony. WI-14 vNext
 cannot be dispatched until WI-13.2 lands on `main`.
 
 ---
+
+## §4. Circuit inventory
+
+Complete enumeration of every circuit vNext exposes. Grouped by lineage.
+Signatures given in Compact syntax; pre/post-conditions and invariants are
+prose per row. Byte-exact circuit bodies are the next session's job — this
+inventory is the shape.
+
+### 4.1 Kept from v7.4.2 (identical signature, identical semantics)
+
+| Circuit | Signature | Purpose | Invariants |
+|---|---|---|---|
+| `transferOwnership` | `(newOwner: Bytes<32>): []` | Multisig-gated owner rotation | L-1 (is_left guard) |
+| `setMeterAuthority` | `(newAuthority: Bytes<32>): []` | Multisig-gated authority rotation | v7.4.2 |
+| `attestProducerOwnership` | `(producerKey, wallet, ...): []` | Bind producer key ↔ wallet address | M-1 |
+| `revokeProducerOwnership` | `(producerKey): []` | Revoke attestation | v7.4.2 |
+| `getMeterAuthority` | `(): Bytes<32>` | Read | v7.4.2 |
+| `getMarginPolicy` | `(): MarginPolicy` | Read (retained for external callers) | v7.4.2 |
+| `getAttestation` | `(producerKey): ProducerAttestation` | Read | v7.4.2 |
+| `totalSupply` | `(): Uint<128>` | Read | v7.4.2 |
+| `transfer` | `(amount: Uint<128>, recipient: UserAddress): []` | Native unshielded send wrapper | v7 §5.2 |
+| `claim` | (v7.4.2 signature) | LD claim (member-side) | I-14-H |
+| `claimSplit` | (v7.4.2 signature) | LD split + bumpOnMint | I-14-H |
+
+### 4.2 Modified from v7.4.2
+
+| Circuit | v7.4.2 signature | vNext signature | What changes |
+|---|---|---|---|
+| `settle` | `(sessionID, hatSig, hatPubkey, kWh, producerKey, producerAddr, ...)` | `(sessionID, hatSig, hatPubkey, kWh, producerKey, producerAddr, scheduleId, classPath, fiatValueAtMint, epoch, laneRequest: LaneRequestVector, ...)` | (a) HAT payload widens to 5 fields including `producerAddr` (I-14-A); (b) mint recipients come from `_registeredLanesMirror` reads per `laneRequest`; (c) sum + overflow + dedup + remit-address + liveness checks fire in the settle body (I-14-C..K). Full spec in §5. |
+| `redeem` | `(amount, redeemer, payoutRef, currentTime): []` | `(amount, redeemer, payoutRef, redemptionKind: Uint<8>, tariffPath: TariffPath, currentTime): []` | Adds `redemptionKind ∈ {KES, KWH}` and takes the coin's own `TariffPath` for per-coin fiat metadata (D-10). Solvency guard added (I-14-F). Full spec in §6. |
+| `manualReissue` | v7.4.2 (M-4-hardened) | + `sourceTariffPath` copied to reissued output | Preserves `TariffPath` on reissue (I-14-E). Cap / cooldown / co-sign preserved unchanged from v7.4.2. |
+| HAT verification helper | `verifyHat(...): Boolean` on 4-field payload | Same helper on 5-field payload | Domain-sep tag becomes `pollpower:ebt:vNext:epoch1`; payload adds `producerAddr` (I-14-A). |
+
+### 4.3 Net-new for vNext (mirror-write surface)
+
+| Circuit | Signature | Purpose | Invariants |
+|---|---|---|---|
+| `mirrorRegisterLane` | `(entry: RegistryActionEntry, laneRecord: LaneRecord, inclusionProof: EventProof): []` | Copy a registry `LANE_REGISTERED` event into `_registeredLanesMirror` | Mirror discipline; verifies event against `registryActionLogRoot` |
+| `mirrorRetireLane` | `(entry: RegistryActionEntry, laneRecord: LaneRecord, inclusionProof: EventProof): []` | Copy a `LANE_RETIRED` event, overwrites the mirror with `retiredEpoch != 0` | Mirror discipline |
+| `mirrorScheduleLifecycle` | `(entry: RegistryActionEntry, scheduleId: Bytes<32>, isLive: Boolean, inclusionProof: EventProof): []` | Copy `SCHEDULE_REGISTERED` / `SCHEDULE_RETIRED` events into `_scheduleLiveMirror` | Mirror discipline |
+| `mirrorClassStatutoryTotal` | `(entry: RegistryActionEntry, scheduleId: Bytes<32>, classPath: Bytes<32>, statutoryTotalBps: Uint<16>, inclusionProof: EventProof): []` | Copy `retuneClass` (and initial-registration) events into `_classStatutoryTotalBpsMirror` | Mirror discipline |
+| `mirrorActionLogHead` | `(newHeadSeq: Uint<64>, inclusionProof: EventProof): []` | Update `_registryActionLogHeadSeqMirror` scalar so the settle-time freshness check has a head to compare against | `LANE_MIRROR_STALE` machinery |
+
+### 4.4 Net-new read helpers (in-circuit or off-chain)
+
+| Circuit | Signature | Purpose | Notes |
+|---|---|---|---|
+| `resolveLanesMirror` | `(scheduleId, leviedBys: Vector<4, Bytes<32>>, laneKindBytes: Vector<4, Uint<8>>): Vector<4, LaneRecord>` | Byte-identical to WI-13.1 `resolveLanes` but reads the EBT-side mirror | Convenience; also invoked by `settle` inline |
+| `isLaneActiveMirror` | `(scheduleId, leviedBy, laneKindByte): Boolean` | Byte-identical to WI-13.1 `isLaneActive` but reads the mirror | Must produce byte-identical results to registry `isLaneActive` at the same epoch |
+| `getRegistryActionLogHeadSeq` | `(): Uint<64>` | Read the mirrored head seq | Diagnostic |
+
+### 4.5 Retired from v7.4.2
+
+The protocol-split setters and getters (`setBpsProducer`, `setBpsOperations`,
+`setBpsDividend`, `setBpsDao`, `setOperationsRecipient`, `setDividendRecipient`,
+`setDaoRecipient`) are removed. Settlement policy is now sourced from the
+registered schedule; there is nothing for these to configure. Same for the
+corresponding read circuits — `getBpsProducer` etc. are removed. Callers that
+read them today (settlement-api, dashboard) need re-pointing to registry
+reads. See §9 migration for the caller-side impact.
+
+---
+
+## §5. `settle` circuit design — the money circuit
+
+Full sequential specification. Every step cites the invariant it enforces
+and the error label it may raise. Body is prose + pseudocode; not Compact.
+
+### 5.1 Inputs
+
+```
+circuit settle(
+  // HAT bundle (5-field payload — I-14-A)
+  sessionID:         Bytes<32>,
+  hatSig:            HatSignature,
+  hatPubkey:         Bytes<32>,
+  kWh:               Uint<64>,
+  producerKey:       Bytes<32>,
+  producerAddr:      Bytes<32>,
+
+  // Tariff path binding
+  scheduleId:        Bytes<32>,
+  classPath:         Bytes<32>,
+  epoch:             Uint<64>,
+  fiatValueAtMint:   Uint<64>,
+
+  // Lane request — what the keeper claims are the live statutory lanes at
+  // (scheduleId, classPath, epoch). Width 4 matches WI-13.1 resolveLanes.
+  leviedBys:         Vector<4, Bytes<32>>,
+  laneKindBytes:     Vector<4, Uint<8>>,
+
+  // Split ceremony inputs (for the non-statutory portion of the class)
+  ldRecipient:       UserAddress,   // living-dividend pool address
+  opsRecipient:      UserAddress,   // ops split (WI-06 opsShareBps)
+
+  // Timestamp for L-3 block-time validation
+  currentTime:       Uint<64>,
+): []
+```
+
+Note the deliberate absence of `_bpsProducer` etc. — splits come from the
+registered schedule's `SplitShares` (mirrored) plus the resolved statutory
+lanes (mirrored). The caller does not supply bps values.
+
+### 5.2 Sequential body
+
+```
+1. PRE-CONDITIONS
+   a. assert(_initialized)
+   b. assert(kWh > 0)
+   c. assert(!_settledSessions.member(sessionID))          // replay guard
+   d. assert(blockTimeGte(currentTime))                    // L-3
+   e. assert(currentTime <= disclose(now) + epsilon)       // L-3 (upper bound)
+
+2. HAT VERIFICATION — I-14-A
+   const payloadHash = persistentHash<Vector<6, Bytes<32>>>([
+     pad(32, "pollpower:ebt:vNext:epoch1"),
+     sessionID,
+     hatPubkey,
+     (kWh as Field) as Bytes<32>,
+     producerKey,
+     producerAddr,                                        // <-- I-14-A
+   ]);
+   assert(hatPubkey == _meterAuthorityPubkey);            // HAT signer is authority
+   assert(verifySig(hatSig, hatPubkey, payloadHash));
+
+3. PRODUCER ATTESTATION
+   const att = producerAttestations.lookup(producerKey);
+   assert(att.wallet == producerAddr);                    // I-14-A end-to-end
+   assert(!att.revoked);
+
+4. MIRROR FRESHNESS PRECHECK — LANE_MIRROR_STALE machinery per §3.3
+   // The settle circuit does not know about registry events directly. It
+   // asserts against the mirror's own head-tracker scalar. If the keeper
+   // has not kept the head fresh, every settle fails until the head is
+   // caught up via mirrorActionLogHead. This is the coarse guard; the
+   // per-record guard is at step 8.
+   const headSeq = _registryActionLogHeadSeqMirror.read();
+
+5. SCHEDULE LIVENESS — I-14-B
+   assert(_scheduleLiveMirror.member(scheduleId));
+   assert(_scheduleLiveMirror.lookup(scheduleId) == true);
+     // else: SCHEDULE_NOT_LIVE (label from v7.4.2 or new)
+
+6. CLASS STATUTORY TOTAL — mirror lookup for I-14-K
+   const cKey = classKey(scheduleId, classPath);
+   assert(_classStatutoryTotalBpsMirror.member(cKey));
+   const statutoryTotalBps = _classStatutoryTotalBpsMirror.lookup(cKey);
+     // else: CLASS_NOT_LIVE
+
+7. FIAT SANITY BAND — CAL-2
+   assert(fiatValueAtMint >= CAL_2_FIAT_FLOOR);
+   assert(fiatValueAtMint <= CAL_2_FIAT_CEIL);
+     // CAL-2 placeholders; not resolved here.
+
+8. LANE RESOLUTION (mirror read + per-slot verification)
+   const laneVec: Vector<4, LaneRecord> =
+     resolveLanesMirror(scheduleId, leviedBys, laneKindBytes);
+
+   // Per-slot freshness (I-14 mirror discipline; LANE_MIRROR_STALE per §3.3)
+   for i in 0..4:
+     if (laneVec[i].scheduleId != zero32):
+       // Populated slot — check freshness
+       assert(laneVec[i].writeActionSeq >=
+              headSeq - CAL_MIRROR_STALE_TOLERANCE);
+         // else: LANE_MIRROR_STALE
+
+9. DEDUP CHECK — I-14-J (LANE_DUP_KEY)
+   // Fail-loud on duplicate (scheduleId, laneKindByte) pairs.
+   // Since scheduleId is constant across the vector, dedup is on laneKindByte
+   // among populated slots.
+   for i in 0..4:
+     for j in (i+1)..4:
+       if (laneVec[i].scheduleId != zero32 &&
+           laneVec[j].scheduleId != zero32):
+         assert(laneVec[i].laneKindByte != laneVec[j].laneKindByte);
+           // else: LANE_DUP_KEY
+
+10. OVERFLOW CHECK — I-14-I (SCHEDULE_LANE_OVERFLOW)
+    // The keeper is expected to enumerate all live statutory lanes for the
+    // class. If the class has more than 4 live lanes, the keeper cannot
+    // fit them into Vector<4>. Settle detects this by comparing the sum of
+    // populated-live-slot bpsShares against statutoryTotalBps: if the sum
+    // is < statutoryTotalBps AND there's no zero slot to absorb the
+    // difference, we've overflowed. Cleaner detection: the keeper is
+    // required to signal overflow explicitly by leaving all 4 slots
+    // populated-live AND the sum-check in step 11 fails high. In practice:
+    //
+    //   if (populated-live-slot-count == 4 AND sum < statutoryTotalBps):
+    //     fail SCHEDULE_LANE_OVERFLOW
+    //
+    // vs LANE_SUM_MISMATCH which fires when sum != statutoryTotalBps in
+    // the < 4 case. Both are honest-keeper failures; overflow is a
+    // schedule-lifecycle bug the operator must fix per I-14-I recovery.
+
+11. LIVENESS + SUM — four-part predicate per v2 brief §LIVENESS PREDICATE;
+    sum invariant I-14-K (LANE_SUM_MISMATCH)
+    var statutorySum: Uint<32> = 0;
+    var populatedLiveCount: Uint<8> = 0;
+    for i in 0..4:
+      const rec = laneVec[i];
+      // Zero-record sentinel (v2 brief §INVARIANT DISCRIMINATOR RULES)
+      if (rec.scheduleId == zero32):
+        continue;                                          // skip empty slot
+      populatedLiveCount += 1;
+      // Four-part liveness
+      assert(rec.retiredEpoch == 0 || rec.retiredEpoch > epoch);
+      assert(rec.effectiveEpoch <= epoch);
+      // (parent-schedule-live already checked at step 5)
+      // On-chain-remit address guard — I-14-D (LANE_REMIT_ADDR_ZERO_ON_CHAIN)
+      if (rec.remittanceMode == 1):
+        assert(rec.remitAddress != zero32);
+      statutorySum += rec.bpsShare;
+    assert(statutorySum == statutoryTotalBps);              // I-14-K
+
+12. NON-STATUTORY SPLIT COMPUTATION
+    // The class's SplitShares (mirrored under _classSplitSharesMirror if we
+    // choose to mirror the full ClassEntry.bps, otherwise recovered from
+    // schedule-side reads) gives us the LD / ops / DAO / operatorMargin
+    // components. For this design cut we mirror only statutoryTotalBps and
+    // require the caller to pass the four remaining bps values as inputs;
+    // the settle circuit re-checks their sum == 10000 - statutoryTotalBps.
+    //
+    // Rationale: the LD / ops / DAO / operatorMargin values are relatively
+    // stable and the caller (producer's wallet client) can supply them from
+    // its off-chain schedule cache. If they drift from the registry, the
+    // sum check fails and settle reverts. This keeps the mirror surface
+    // narrow at the cost of one more caller input; the alternative is
+    // mirroring the full SplitShares struct which balloons the mirror. The
+    // executing session may reverse this at implementation time — flag it
+    // in §11 as an open decision.
+    //
+    // For now:
+    //   input to settle: ldBps, opsBps, daoBps, operatorMarginBps
+    //   assert(ldBps + opsBps + daoBps + operatorMarginBps + statutoryTotalBps == 10000)
+    //     // I-14-C
+
+13. MINT — one output per lane + LD + ops + (DAO if configured) + producer
+    // Per v7.4.2 (§5.1 in V7-DESIGN.md) via mintUnshieldedToken. Producer
+    // gets what remains after all shares.
+    const producerBps = operatorMarginBps;  // producer-share is the operator margin
+    const totalAmount = kWh;                 // 1 EBT = 1 kWh (I-1)
+    const ldAmt   = (kWh * ldBps  ) / 10000;
+    const opsAmt  = (kWh * opsBps ) / 10000;
+    const daoAmt  = (kWh * daoBps ) / 10000;
+    const prodAmt = (kWh * producerBps) / 10000;
+    // Statutory lane amounts (per lane):
+    // laneAmt[i] = (kWh * laneVec[i].bpsShare) / 10000
+    // Sum of laneAmt[i] equals (kWh * statutoryTotalBps) / 10000.
+    // Note the division above is witness-computed divmod + checkedDivide
+    // per Compact discipline §0.2 (no integer / in-circuit).
+    //
+    // Mint calls (all through mintUnshieldedToken with
+    // domainSep = pad(32, "pollpower:ebt:vNext:epoch1")):
+    mintUnshielded(prodAmt, producerAddr);
+    mintUnshielded(ldAmt,   ldRecipient);
+    mintUnshielded(opsAmt,  opsRecipient);
+    if (daoBps > 0) mintUnshielded(daoAmt, DAO_ADDR_FROM_SCHEDULE);
+    for i in 0..4:
+      const rec = laneVec[i];
+      if (rec.scheduleId == zero32) continue;
+      // Fiat-door (mode==0): DO NOT mint on-chain. The keeper handles it
+      // off-chain against the fiat door; the amount is enumerated in the
+      // sum check (I-14-K) but no mint call fires.
+      if (rec.remittanceMode == 0) continue;
+      const laneAmt = (kWh * rec.bpsShare) / 10000;
+      mintUnshielded(laneAmt, rec.remitAddress);
+
+14. STATE UPDATES + LD BINDING — I-14-H
+    _totalSupply = _totalSupply + totalAmount;
+    _settledSessions.insert(sessionID);
+    settlementCount.increment(1);
+    // LD binding: bumpOnMint follows v7.4.2 shape (Session 9's
+    // recipient-filter fix already lives in the keeper; the mint entry we
+    // emit must carry the ld recipient in its recipient field so the
+    // keeper's contract-scope filter continues to work).
+    _dividendMintedLog.insert(seq, DividendMintedEntry {
+      amount: ldAmt,
+      recipient: ldRecipient,
+      // ...v7.4.2 shape preserved
+    });
+
+15. EVENT EMISSION — tariff-path in event body per §2.3
+    emitAction(kind = SETTLE, payload = TariffPath {
+      scheduleId, classPath, epoch, fiatValueAtMint
+    }, ...v7.4.2 fields);
+```
+
+### 5.3 Error labels raised
+
+The following labels MUST appear verbatim in the settle body's assert
+messages. Test suites will pin against these strings.
+
+- `SCHEDULE_NOT_LIVE` — step 5 (v7.4.2 or new; label locked at implementation time)
+- `CLASS_NOT_LIVE` — step 6
+- Fiat-band label (from CAL-2) — step 7
+- `LANE_MIRROR_STALE` — step 8 (per §3.3)
+- `LANE_DUP_KEY` — step 9 (I-14-J)
+- `SCHEDULE_LANE_OVERFLOW` — step 10 (I-14-I)
+- `LANE_REMIT_ADDR_ZERO_ON_CHAIN` — step 11 (I-14-D)
+- `LANE_SUM_MISMATCH` — step 11 (I-14-K)
+- `WHOLE_CLASS_SUM_MISMATCH` — step 12 (I-14-C, label author's choice)
+- v7.4.2 labels for HAT / attestation / replay preserved.
+
+### 5.4 Invariants enforced by settle
+
+I-14-A (HAT payload includes producerAddr — step 2)
+I-14-B (schedule-path exists, live — steps 5, 6, 8)
+I-14-C (whole class sums to 10000 — step 12)
+I-14-D (on-chain-remit address non-zero — step 11)
+I-14-E (per-coin fiat metadata written at mint — step 15)
+I-14-G (drain-window check — step 3's `att.revoked` extended to operator status; details for the executing session)
+I-14-H (LD binding shape preserved — step 14)
+I-14-I (overflow — step 10)
+I-14-J (dedup — step 9)
+I-14-K (statutory sum — step 11)
+
+I-14-F is a `redeem` invariant, not `settle`. See §6.
+
+---
+
+## §6. `redeem` circuit design
+
+Dual redemption per D-10 + WI-01 D-5..D-9. Coin's own `TariffPath` drives
+the per-coin fiat obligation.
+
+### 6.1 Inputs
+
+```
+circuit redeem(
+  amount:          Uint<128>,      // EBT base units to burn
+  redeemer:        Bytes<32>,      // holder identity for the audit log
+  payoutRef:       Bytes<32>,      // off-chain payout correlation id
+  redemptionKind:  Uint<8>,        // 0 = KES, 1 = KWH
+  tariffPath:      TariffPath,     // coin's own metadata (§2.3) — I-14-E
+  currentTime:     Uint<64>,
+): []
+```
+
+### 6.2 Sequential body
+
+```
+1. PRE-CONDITIONS
+   assert(_initialized);
+   assert(amount > 0);
+   assert(redemptionKind == 0 || redemptionKind == 1);
+   assert(blockTimeGte(currentTime));
+
+2. BALANCE CHECK
+   const color = tokenType(pad(32, "pollpower:ebt:vNext:epoch1"), kernel.self());
+   assert(unshieldedBalanceGte(color, amount));
+
+3. TARIFF-PATH VALIDATION — I-14-E
+   // The caller supplies the coin's TariffPath; the coin was minted with it
+   // (settle step 15). We validate the path against the currently-active
+   // schedule state — a coin whose scheduleId has been retired since mint is
+   // still redeemable (retirement doesn't invalidate outstanding coins) but
+   // its fiatValueAtMint is fixed at mint-time (I-14-E).
+   //
+   // The path itself is not re-hashed against a coin identifier because
+   // Compact unshielded tokens don't give us per-coin identity; the settle-time
+   // event log is the audit trail.
+
+4. FIAT SANITY BAND — CAL-2 (again — redemption side)
+   assert(tariffPath.fiatValueAtMint >= CAL_2_FIAT_FLOOR);
+   assert(tariffPath.fiatValueAtMint <= CAL_2_FIAT_CEIL);
+
+5. SOLVENCY GUARD — I-14-F (KES only)
+   if (redemptionKind == 0):  // KES
+     // Compute the KES obligation this redemption would create.
+     // amount * fiatValueAtMint gives KES base units (with CAL-2 units
+     // agreed at ceremony).
+     const kesObligation = amount * tariffPath.fiatValueAtMint;
+     // The escrow's trust-float commitment lives off-chain (D-8 published
+     // solvency invariant). vNext cannot read escrow state in-circuit;
+     // instead, redeem carries a witness proof of trust-float sufficiency
+     // from the escrow's attestation channel.
+     //
+     // Concretely: an `EscrowSolvencyAttestation` struct carrying
+     // (attestedTrustFloat: Uint<128>, attestedOutstandingEbt: Uint<128>,
+     // attestationSig: Signature, attestationEpoch: Uint<64>) is a witness
+     // input; the circuit verifies the sig against a
+     // _escrowAttestorPubkey ledger field (new — set at constructor time,
+     // rotated via multisig-gated setter) and asserts:
+     //   attestedTrustFloat >= attestedOutstandingEbt + kesObligation
+     //     // else: SOLVENCY_GUARD_FAILED (I-14-F)
+     // and:
+     //   attestationEpoch >= currentTime - CAL_ESCROW_STALE_TOLERANCE
+     //     // else: ESCROW_ATTESTATION_STALE
+
+6. BURN
+   sendUnshielded(color, amount, BURN_SINK);
+   _totalSupply = _totalSupply - amount;
+
+7. AUDIT LOG
+   const entry = RedemptionEntry {
+     redeemer, amount, payoutRef, redeemedAt: currentTime,
+     tariffPath,                                          // I-14-E persisted
+     redemptionKind,
+   };
+   _redemptionLog.insert(_redemptionCount.read(), entry);
+   _redemptionCount.increment(1);
+
+8. EVENT EMISSION
+   emitAction(kind = REDEEM, payload = entry, ...);
+```
+
+### 6.3 KWH redemption
+
+The `KWH` branch is intentionally underspecified here. WI-01 D-5..D-9
+describe the kWh delivery path from the operator side; the on-chain shape
+for a kWh redemption is a burn + delivery-attestation lookup + delivery-log
+write. Whether this belongs in the same `redeem` circuit with a switch, or
+splits into a companion `redeemForKwh` circuit, is a design decision the
+supervising session at dispatch may want to revisit. Recommendation: keep
+them in one circuit for API simplicity, branch on `redemptionKind`, and
+defer the kWh-side witness plumbing to a follow-up when the operator-side
+kWh delivery attestation channel is more concrete.
+
+### 6.4 Escrow attestor pubkey — new ledger field
+
+```
+export ledger _escrowAttestorPubkey: Bytes<32>;
+```
+
+Set at constructor time. Rotated via a multisig-gated setter
+(`setEscrowAttestorPubkey`, same shape as `setMeterAuthority`). This is the
+trust anchor for the solvency guard's witness proof (§6.2 step 5).
+
+### 6.5 Error labels raised
+
+- `INSUFFICIENT_BALANCE` — step 2 (v7.4.2 label preserved)
+- Fiat-band label — step 4
+- `SOLVENCY_GUARD_FAILED` — step 5 (I-14-F)
+- `ESCROW_ATTESTATION_STALE` — step 5
+- v7.4.2 labels for time / init preserved.
+
+---
+
+## §7. Mirror-write circuits
+
+Five mirror-write circuits, one per event kind in scope, plus the head-seq
+tracker. Each follows the same shape: accept the registry event body,
+verify against `registryActionLogRoot`, write the mirror.
+
+### 7.1 Common witness — `EventProof`
+
+```
+struct EventProof {
+  actionSeq:      Uint<64>,       // registry _actionLog sequence number
+  payloadHash:    Bytes<32>,      // hash of the event body (I-14-A style)
+  merkleProof:    Vector<D, Bytes<32>>,  // D = registry action-log depth (WI-13.2 output)
+  merkleSiblings: Vector<D, Bool>,       // path bits
+}
+```
+
+Verification (in every mirror-write circuit):
+
+```
+circuit verifyEventProof(
+  entry:       RegistryActionEntry,     // WI-13.1 struct
+  proof:       EventProof,
+): [] {
+  const computedHash = persistentHash<...>(entry fields);
+  assert(computedHash == proof.payloadHash);
+  // Reconstruct merkle root from (payloadHash, merkleProof, merkleSiblings)
+  const reconstructedRoot = reconstructRoot(proof);
+  assert(reconstructedRoot == _registryActionLogRootMirror.read());
+    // else: EVENT_PROOF_INVALID
+}
+```
+
+`_registryActionLogRootMirror: Bytes<32>` is a scalar ledger field on EBT,
+mirrored from TariffRegistry's `registryActionLogRoot` by a thin
+`mirrorActionLogRoot(newRoot, oldEntry: RegistryActionEntry, proof:
+EventProof)` circuit whose auth model is the same event-inclusion check
+applied to the root-transition event. (Bootstrap of this mirror is a
+deploy-ceremony concern — the initial value is set at constructor time from
+TariffRegistry's post-WI-13.2 state.)
+
+### 7.2 `mirrorRegisterLane`
+
+```
+circuit mirrorRegisterLane(
+  entry:        RegistryActionEntry,
+  laneRecord:   LaneRecord,
+  proof:        EventProof,
+): [] {
+  assert(entry.kind == 1);                                 // LANE_REGISTERED
+  verifyEventProof(entry, proof);
+  // Cross-check the LaneRecord fields against the event payload
+  const recHash = persistentHash<...>(laneRecord fields);
+  assert(recHash == entry.payloadHash);                    // wired to WI-13.2
+  // Write mirror
+  const key = laneKey(laneRecord.scheduleId, laneRecord.leviedBy,
+                      laneRecord.laneKindByte);
+  // Attach mirror-write bookkeeping
+  const mirrored = MirroredLaneRecord {
+    record:          laneRecord,
+    writeActionSeq:  proof.actionSeq,
+  };
+  _registeredLanesMirror.insert(key, mirrored);
+}
+```
+
+Note the wrapping struct `MirroredLaneRecord` — the mirror stores the raw
+`LaneRecord` plus a `writeActionSeq` for the §3.3 freshness check. §2.2's
+type signature is simplified; the real Compact declaration is `Map<Bytes<32>,
+MirroredLaneRecord>`.
+
+### 7.3 `mirrorRetireLane`
+
+Same shape as `mirrorRegisterLane` but expects `entry.kind == 7`
+(`LANE_RETIRED`). Overwrites the existing mirror entry with the retired
+version (`retiredEpoch != 0`). Does not delete — retired records stay in
+the mirror to preserve the four-part liveness predicate's ability to
+distinguish retired from never-registered.
+
+### 7.4 `mirrorScheduleLifecycle`
+
+Handles both `SCHEDULE_REGISTERED` and `SCHEDULE_RETIRED` events. Writes
+`_scheduleLiveMirror[scheduleId] = true` or `false` respectively.
+
+### 7.5 `mirrorClassStatutoryTotal`
+
+Handles `retuneClass` events. Writes `_classStatutoryTotalBpsMirror` at
+`classKey(scheduleId, classPath) → statutoryTotalBps`. Also handles the
+initial `SCHEDULE_REGISTERED` event (which for a fresh schedule may carry
+zero classes; the class entries populate via subsequent `retuneClass`
+calls per WI-13.1).
+
+### 7.6 `mirrorActionLogHead`
+
+```
+circuit mirrorActionLogHead(
+  newHeadSeq:   Uint<64>,
+  proof:        EventProof,       // proof that newHeadSeq is the current head
+): [] {
+  // Assert monotonicity
+  assert(newHeadSeq > _registryActionLogHeadSeqMirror.read());
+  // Verify against registry state — the proof shape may differ from
+  // per-event proofs (head is a scalar, not an event); WI-13.2 will spec
+  // a getActionLogHeadSeq() commitment path.
+  verifyHeadProof(newHeadSeq, proof);
+  _registryActionLogHeadSeqMirror = newHeadSeq;
+}
+```
+
+The keeper is expected to call this circuit at the top of every settle
+batch. If it doesn't, `LANE_MIRROR_STALE` starts firing at settle time.
+
+### 7.7 Public callable
+
+All five circuits are PUBLIC — anyone can submit a mirror-write. This is
+intentional: it means the mirror can be repaired by any honest actor if
+the primary keeper is offline or misbehaving. There is no auth check on
+the caller; the auth is entirely on the event proof.
+
+---
