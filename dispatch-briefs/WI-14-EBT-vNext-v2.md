@@ -24,6 +24,16 @@ this v2 brief.
 **v1 preserved for adversarial diff.** Do not delete or edit v1. v2 is
 the current spec; v1 is the audit trail.
 
+**Post-design-pass mini-revision (2026-07-17 12:08 JST):** design pass
+(`ebt/VNEXT-DESIGN.md` on branch `docs/wi14-vnext-design`) surfaced two
+additional error labels needed by the `redeem` circuit's solvency guard
+(I-14-F) that were absent from this brief's ERROR LABELS table:
+`SOLVENCY_GUARD_FAILED` and `ESCROW_ATTESTATION_STALE`. Added to the
+table (alphabetical). Two matching calibration placeholders added:
+`CAL-vNext-M1` (mirror stale tolerance) and `CAL-vNext-M2` (escrow
+attestation stale tolerance). All other invariant/label content
+unchanged from the initial v2 revision.
+
 ---
 
 **Status:** Dispatch brief. Written for a supervising BIG session at
@@ -487,11 +497,13 @@ messages.
 
 | Label                            | Guards            | Where fired                                                    |
 |----------------------------------|-------------------|----------------------------------------------------------------|
+| `ESCROW_ATTESTATION_STALE`       | I-14-F (freshness)| Escrow solvency-attestation witness older than `CAL-vNext-M2` tolerance at `redeem`. |
 | `LANE_DUP_KEY`                   | I-14-J            | Duplicate `(scheduleId, laneKindByte)` in mirror-read vector.  |
 | `LANE_MIRROR_STALE`              | Mirror discipline | Mirror entry fails freshness check against latest registry event. |
 | `LANE_REMIT_ADDR_ZERO_ON_CHAIN`  | I-14-D            | On-chain-remit (`mode==1`) lane with `remitAddress == 0`.      |
 | `LANE_SUM_MISMATCH`              | I-14-K            | Statutory sum ≠ `_classStatutoryTotalBpsMirror` value.         |
 | `SCHEDULE_LANE_OVERFLOW`         | I-14-I            | Mirror-read enumeration returns > 4 live statutory lanes.      |
+| `SOLVENCY_GUARD_FAILED`          | I-14-F            | `redeem` where escrow-attested trust-float < outstanding EBT + KES obligation. |
 | *(v7.4.2 labels preserved; v1 EBT-H-1 label at design pass)* | I-14-A | HAT payload mismatch — exact label design-pass choice.         |
 
 The design pass MUST NOT rename any of the labels above; test suites
@@ -673,6 +685,8 @@ Executing session MUST mark and continue with placeholders:
 | CAL-2 | Sanity-band width — bounds `fiatValueAtMint` at settle. TODO. |
 | CAL-8 | Statute-to-lane ceremony parameters — reference only. |
 | CAL-11 | Remittance default (option 1 fiat door vs option 2 on-chain lane) — shapes statutory `remitAddress` semantics AND the mode-conditional I-14-D guard. TODO. |
+| CAL-vNext-M1 | Mirror stale tolerance (event-count window) for `LANE_MIRROR_STALE` guard. Draft value: 4. TODO. |
+| CAL-vNext-M2 | Escrow-attestation stale tolerance (seconds) for `ESCROW_ATTESTATION_STALE` guard in `redeem`. TODO. |
 
 Any temptation to resolve any of these to make a test pass is an
 escalation trigger, not a workaround.
