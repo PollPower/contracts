@@ -67,7 +67,11 @@
 // The mirror-write circuits are PUBLIC (design §7.7): any honest actor can
 // repair the mirror. Auth is entirely on the event proof. The two trust-anchor
 // scalars (_registryActionLogRootMirror, _registryActionLogHeadSeqMirror) are
-// gated (owner) because they are the reconstruction anchors — see their setters.
+// also PUBLIC and witness-gated: any real registry event has a real Merkle
+// path under the real registry root, so a witness that reconstructs to the new
+// root (or proves inclusion of a real entry under the currently mirrored root
+// for the head advance) closes the trust-anchor gap without needing an owner
+// gate (review-pass-1 fix; VNEXT-DESIGN §3.2/§3.3/§7.1/§7.6 option iii).
 //
 // =============================================================================
 
@@ -551,7 +555,10 @@ export circuit initialize(
 // Owner-only + multisig operations (preserved bit-for-bit from v7.4.2)
 // =============================================================================
 
-// op 0 = transferOwnership, op 1 = setMeterAuthority, op 2 = setEscrowAttestor.
+// op 0 = transferOwnership, op 1 = setMeterAuthority.
+// (Review-pass-1 fix: escrow-attestor rotation moved to execMultisigOp op 4;
+// per VNEXT-DESIGN §6.4 the escrow-attestor signer controls whether KES
+// redemptions can drain the escrow, so its rotation MUST be multisig-gated.)
 export circuit execOwnerOp(
   op: Uint<8>,
   newOwner: Either<ZswapCoinPublicKey, ContractAddress>,
@@ -563,22 +570,19 @@ export circuit execOwnerOp(
     assert(newOwner.is_left, "owner must be a public key, not contract address");
     _owner = disclose(newOwner);
   } else {
-    if (k == 1 as Uint<8>) {
-      _meterAuthorityPubkey = disclose(newAuthorityPubkey);
-    } else {
-      assert(k == 2 as Uint<8>, "execOwnerOp: bad op");
-      // vNext: rotate the escrow solvency-attestation signer (design §6.4).
-      _escrowAttestorPubkey = disclose(newAuthorityPubkey);
-    }
+    assert(k == 1 as Uint<8>, "execOwnerOp: bad op");
+    _meterAuthorityPubkey = disclose(newAuthorityPubkey);
   }
 }
 
-// Multisig-gated LD binding — bit-for-bit from v7.4.2 (domains unchanged so
-// existing off-chain bundle builders are unaffected).
-//   op 0 = setLivingDividendAddress   ("ebt:v7.3:setLD",       Vector<3>)
-//   op 1 = clearLivingDividendAddress ("ebt:v7.3:clearLD",     Vector<2>)
-//   op 2 = setDividendRecipient       ("ebt:v7.3:setDivRecip", Vector<3>)
-//   op 3 = setMultisigAuthority       ("ebt:v7.4:rotateAuth",  Vector<5>)
+// Multisig-gated LD binding — bit-for-bit from v7.4.2 for ops 0-3 (domains
+// unchanged so existing off-chain bundle builders are unaffected). Op 4 is
+// review-pass-1 net-new: escrow-attestor rotation lives here now (design §6.4).
+//   op 0 = setLivingDividendAddress   ("ebt:v7.3:setLD",           Vector<3>)
+//   op 1 = clearLivingDividendAddress ("ebt:v7.3:clearLD",         Vector<2>)
+//   op 2 = setDividendRecipient       ("ebt:v7.3:setDivRecip",     Vector<3>)
+//   op 3 = setMultisigAuthority       ("ebt:v7.4:rotateAuth",      Vector<5>)
+//   op 4 = setEscrowAttestor          ("ebt:v8:setEscrowAttestor", Vector<3>)
 export circuit execMultisigOp(
   op:               Uint<8>,
   ldAddr:           ContractAddress,
@@ -586,6 +590,7 @@ export circuit execMultisigOp(
   newAuthorityHash: Bytes<32>,
   nonceIn:          Uint<64>,
   currentTime:      Uint<64>,
+  newEscrowAttestor: Bytes<32>,
 ): [] {
   assertInitialized();
   assert(disclose(blockTimeGte(disclose(currentTime))),
@@ -629,31 +634,52 @@ export circuit execMultisigOp(
         );
         _dividendRecipient = disclose(newRecipient);
       } else {
-        assert(k == 3 as Uint<8>, "execMultisigOp: bad op");
-        const zeroAuth = pad(32, "");
-        const disclosedNew = disclose(newAuthorityHash);
-        assert(disclosedNew != zeroAuth,
-               "setMultisigAuthority: zero hash rejected");
-        assert(disclosedNew != _multisigAuthority,
-               "setMultisigAuthority: no-op rotation");
-        const expectedNonce = (_authorityRotationNonce.read() + 1 as Uint<64>) as Uint<64>;
-        assert(disclose(nonceIn) == expectedNonce,
-               "setMultisigAuthority: invalid nonce");
-        const selfBytes = disclose(kernel.self()).bytes;
-        const nonceBytes = (disclose(nonceIn) as Field) as Bytes<32>;
-        const payload = persistentHash<Vector<5, Bytes<32>>>([
-          pad(32, "ebt:v7.4:rotateAuth"),
-          selfBytes,
-          disclosedNew,
-          nonceBytes,
-          timeBytes,
-        ]);
-        assert(
-          disclose(multisig_signature_valid(payload, _multisigAuthority)),
-          "setMultisigAuthority: multisig signature invalid"
-        );
-        _multisigAuthority = disclosedNew;
-        _authorityRotationNonce.increment(1);
+        if (k == 3 as Uint<8>) {
+          const zeroAuth = pad(32, "");
+          const disclosedNew = disclose(newAuthorityHash);
+          assert(disclosedNew != zeroAuth,
+                 "setMultisigAuthority: zero hash rejected");
+          assert(disclosedNew != _multisigAuthority,
+                 "setMultisigAuthority: no-op rotation");
+          const expectedNonce = (_authorityRotationNonce.read() + 1 as Uint<64>) as Uint<64>;
+          assert(disclose(nonceIn) == expectedNonce,
+                 "setMultisigAuthority: invalid nonce");
+          const selfBytes = disclose(kernel.self()).bytes;
+          const nonceBytes = (disclose(nonceIn) as Field) as Bytes<32>;
+          const payload = persistentHash<Vector<5, Bytes<32>>>([
+            pad(32, "ebt:v7.4:rotateAuth"),
+            selfBytes,
+            disclosedNew,
+            nonceBytes,
+            timeBytes,
+          ]);
+          assert(
+            disclose(multisig_signature_valid(payload, _multisigAuthority)),
+            "setMultisigAuthority: multisig signature invalid"
+          );
+          _multisigAuthority = disclosedNew;
+          _authorityRotationNonce.increment(1);
+        } else {
+          assert(k == 4 as Uint<8>, "execMultisigOp: bad op");
+          // Review-pass-1 fix: escrow-attestor rotation is multisig-gated
+          // (design §6.4). Same shape as op 2 setDividendRecipient.
+          const disclosedAttestor = disclose(newEscrowAttestor);
+          const zeroAttestor = pad(32, "");
+          assert(disclosedAttestor != zeroAttestor,
+                 "setEscrowAttestor: zero pubkey rejected");
+          assert(disclosedAttestor != _escrowAttestorPubkey,
+                 "setEscrowAttestor: no-op rotation");
+          const payload = persistentHash<Vector<3, Bytes<32>>>([
+            pad(32, "ebt:v8:setEscrowAttestor"),
+            disclosedAttestor,
+            timeBytes,
+          ]);
+          assert(
+            disclose(multisig_signature_valid(payload, _multisigAuthority)),
+            "setEscrowAttestor: multisig signature invalid"
+          );
+          _escrowAttestorPubkey = disclosedAttestor;
+        }
       }
     }
   }
@@ -713,19 +739,50 @@ export circuit revokeProducerOwnership(
 // Mirror-write circuits (VNEXT-DESIGN §7) — PUBLIC; auth is on the event proof
 // =============================================================================
 
-// Owner-gated trust-anchor setters. The root + head are the reconstruction
-// anchors for every EventProof; a keeper cannot be allowed to forge them
-// (design §3.4(c) only holds if the root is honest; §7.1 bootstrap concern).
-export circuit mirrorActionLogRoot(newRoot: Bytes<32>): [] {
-  assertOnlyOwner();
+// Witness-gated trust-anchor setters (review-pass-1 fix; design §3.2/§7.1).
+// mirrorActionLogRoot: PUBLIC. Any real registry event has a real Merkle path
+// under the real registry root; installing a fake root requires forging a
+// Merkle proof under the hash assumption. The caller supplies a sample entry
+// + inclusion witness that must reconstruct to `newRoot`. Design option (iii)
+// closes the WI-13.2 authoritative-source loop:
+// `_actionSeq`/`registryActionLogRoot`/`getActionEntry` on the registry are
+// consumed here via witness proof — no owner gate needed.
+export circuit mirrorActionLogRoot(
+  newRoot:     Bytes<32>,
+  sampleEntry: RegistryActionEntry,
+  proof:       EventProof,
+): [] {
+  assertInitialized();
+  // (1) The entry's committed payloadHash must equal the proof leaf.
+  assert(disclose(sampleEntry.payloadHash) == disclose(proof.payloadHash),
+         "EVENT_PROOF_INVALID");
+  // (2) The reconstructed root must equal the new root the caller is
+  // installing (NOT the currently-mirrored root — this is the advance
+  // itself; the witness must be internally consistent with the new root).
+  const reconstructedRoot = reconstructActionLogRoot(
+    proof.payloadHash, proof.merkleProof, proof.merkleSiblings);
+  assert(disclose(reconstructedRoot) == disclose(newRoot),
+         "EVENT_PROOF_INVALID");
   _registryActionLogRootMirror = disclose(newRoot);
 }
 
 // mirrorActionLogHead (design §7.6) — monotone head advance for the §3.3
-// LANE_MIRROR_STALE window. TODO(WI-13.2): carry a getActionLogHeadSeq()
-// commitment proof; today the anchor is owner-gated + monotone.
-export circuit mirrorActionLogHead(newHeadSeq: Uint<64>): [] {
-  assertOnlyOwner();
+// LANE_MIRROR_STALE window, witness-gated (review-pass-1 fix). PUBLIC.
+// The caller supplies the latest event they can cite; verifyEventProof proves
+// it is included under the CURRENTLY-mirrored root, then we assert the proof's
+// actionSeq <= newHeadSeq to bound the head advance to the seq of a proven
+// event (the keeper cannot install a head ahead of any event the mirror has
+// actually witnessed). Monotone check preserved.
+export circuit mirrorActionLogHead(
+  newHeadSeq:  Uint<64>,
+  latestEntry: RegistryActionEntry,
+  proof:       EventProof,
+): [] {
+  assertInitialized();
+  verifyEventProof(latestEntry, proof);
+  // The cited event must be at or before the new head.
+  assert(disclose(proof.actionSeq) <= disclose(newHeadSeq),
+         "HEAD_ADVANCE_BEYOND_WITNESS");
   const _mono = (disclose(newHeadSeq) - _registryActionLogHeadSeqMirror) as Uint<64>;
   // ^ checked-cast reverts unless newHeadSeq >= current head (monotone).
   _registryActionLogHeadSeqMirror = disclose(newHeadSeq);

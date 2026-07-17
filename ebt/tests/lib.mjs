@@ -181,9 +181,25 @@ export class EBT {
 
     this._settleLog = new Map();
 
+    // Multisig approval bundle store (mirror of the multisig_signature_valid
+    // witness). Tests call approveMultisig(payloadHash) to authorize an
+    // execMultisigOp payload; a missing bundle causes the witness to fail.
+    this._multisigApprovals = new Map();
+
     // Test-observable side effects.
     this.mints = [];            // [{ amount, recipient }]
     this._poolBalance = 0n;     // circulating on-chain balance (for redeem)
+  }
+
+  // Multisig-witness helpers (mirror of the .compact multisig_signature_valid
+  // witness). approveMultisig binds a payload hash to the current authority so
+  // multisigSignatureValid returns true; used by execMultisigOp mirror below.
+  approveMultisig(payloadHash) {
+    this._multisigApprovals.set(toHex(payloadHash), Buffer.from(this._multisigAuthority));
+  }
+  multisigSignatureValid(payload, authorityHash) {
+    const bound = this._multisigApprovals.get(toHex(payload));
+    return !!bound && bufEq(bound, authorityHash);
   }
 
   ebtColorPool() { return this._poolBalance; }
@@ -215,13 +231,64 @@ export class EBT {
   setLivingDividendAddress(addr) { this._livingDividendAddress = Buffer.from(addr); }
 
   // ---------------------------- mirror trust anchors -----------------------
-  mirrorActionLogRoot({ newRoot }) {
+  // Review-pass-1 fix: witness-gated. Any real registry event has a real
+  // Merkle path under the real registry root, so the caller must supply a
+  // sample entry + inclusion witness that reconstructs to `newRoot`. This
+  // removes the owner-only trust anchor without losing the anchor's integrity.
+  mirrorActionLogRoot({ newRoot, sampleEntry, proof }) {
+    if (!bufEq(sampleEntry.payloadHash, proof.payloadHash)) revert('EVENT_PROOF_INVALID');
+    const recon = reconstructActionLogRoot(proof.payloadHash, proof.siblings, proof.pathBits);
+    if (!bufEq(recon, newRoot)) revert('EVENT_PROOF_INVALID');
     this._registryActionLogRootMirror = Buffer.from(newRoot);
   }
-  mirrorActionLogHead({ newHeadSeq }) {
+  // Review-pass-1 fix: witness-gated. The caller cites the latest event they
+  // can prove is included under the CURRENTLY-mirrored root; the proof's
+  // actionSeq bounds how far ahead the head can advance.
+  mirrorActionLogHead({ newHeadSeq, latestEntry, proof }) {
+    verifyEventProof(latestEntry, proof, this._registryActionLogRootMirror);
+    if (!(BigInt(proof.actionSeq) <= BigInt(newHeadSeq))) {
+      revert('HEAD_ADVANCE_BEYOND_WITNESS');
+    }
     asUintChecked(BigInt(newHeadSeq) - this._registryActionLogHeadSeqMirror, 64,
                   'mirrorActionLogHead: not monotone');
     this._registryActionLogHeadSeqMirror = BigInt(newHeadSeq);
+  }
+
+  // ---------------------------- execMultisigOp (mirror) --------------------
+  // Only op 4 (setEscrowAttestor) is implemented in the JS mirror — the other
+  // ops (LD binding / dividend recipient / multisig authority rotation) have
+  // no offline-suite coverage today and are exercised only on-chain.
+  execMultisigOp({ op, newEscrowAttestor, currentTime, now }) {
+    if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('execMultisigOp: timestamp cannot be in the future');
+    const k = Number(op);
+    if (k !== 4) revert('execMultisigOp: bad op');
+    const zero = Buffer.alloc(32);
+    if (bufEq(newEscrowAttestor, zero)) revert('setEscrowAttestor: zero pubkey rejected');
+    if (bufEq(newEscrowAttestor, this._escrowAttestorPubkey)) {
+      revert('setEscrowAttestor: no-op rotation');
+    }
+    const payload = persistentHash([
+      pad32('ebt:v8:setEscrowAttestor'),
+      Buffer.from(newEscrowAttestor),
+      u64ToBytes32(currentTime),
+    ]);
+    if (!this.multisigSignatureValid(payload, this._multisigAuthority)) {
+      revert('setEscrowAttestor: multisig signature invalid');
+    }
+    this._escrowAttestorPubkey = Buffer.from(newEscrowAttestor);
+  }
+
+  // ---------------------------- execOwnerOp (mirror) -----------------------
+  // Review-pass-1 fix: only ops 0 and 1 remain. Op 2 (setEscrowAttestor) moved
+  // to execMultisigOp op 4. Op 0 (transferOwnership) requires an owner model
+  // the JS mirror doesn't otherwise carry, so only op 1 is implemented.
+  execOwnerOp({ op, newAuthorityPubkey }) {
+    const k = Number(op);
+    if (k === 1) {
+      this._meterAuthorityPubkey = Buffer.from(newAuthorityPubkey);
+      return;
+    }
+    revert('execOwnerOp: bad op');
   }
 
   // ---------------------------- mirror-write circuits ----------------------
@@ -683,14 +750,41 @@ export function buildProof(registry, seq) {
   return { actionSeq: BigInt(seq), payloadHash: Buffer.from(entry.payloadHash), siblings, pathBits };
 }
 
+// Pick any event with a payloadHash in fx.events (registry action seq order)
+// and build a { entry, proof } bundle suitable for the witness-gated
+// trust-anchor setters. Returns null if the registry has no mirrorable events
+// yet (which would be a test-setup bug for witness-gated warmMirror).
+function pickSampleWitness(fx) {
+  for (const ev of fx.events) {
+    if (ev.kind === 4 || ev.kind === 5 || ev.kind === 6) continue;
+    const proof = buildProof(fx.registry, ev.seq);
+    const entry = fx.registry.getActionEntry(BigInt(ev.seq));
+    return { entry, proof };
+  }
+  return null;
+}
+
 // Warm the EBT mirror from every mirrorable event in fx.events, verifying each
-// EventProof against the registry's committed root. Sets the head tracker to the
-// highest mirrored seq (keeper "caught up to latest"). Pass { headSeq } to force
-// a specific head (e.g. staleness tests).
+// EventProof against the registry's committed root. Sets the head tracker to
+// the highest mirrored seq (keeper "caught up to latest"). Pass { headSeq } to
+// force a specific head (e.g. staleness tests).
+//
+// Review-pass-1 fix: the two trust-anchor setters are witness-gated, so this
+// helper installs the root using any real event's inclusion proof (the head
+// advance then reuses the highest-seq event's proof).
 export function warmMirror(ebt, fx, opts = {}) {
   const registry = fx.registry;
-  ebt.mirrorActionLogRoot({ newRoot: registry.registryActionLogRoot });
+  const sample = pickSampleWitness(fx);
+  if (!sample) {
+    throw new Error('warmMirror: no mirrorable events in fixture; witness-gated setters need at least one real event');
+  }
+  ebt.mirrorActionLogRoot({
+    newRoot: registry.registryActionLogRoot,
+    sampleEntry: sample.entry,
+    proof: sample.proof,
+  });
   let maxSeq = 0n;
+  let latestBundle = sample;   // fallback if no mirrorable events beyond sample
   for (const ev of fx.events) {
     if (ev.kind === 4 || ev.kind === 5 || ev.kind === 6) continue; // non-mirrored
     const proof = buildProof(registry, ev.seq);
@@ -708,8 +802,17 @@ export function warmMirror(ebt, fx, opts = {}) {
       });
     }
     if (BigInt(ev.seq) > maxSeq) maxSeq = BigInt(ev.seq);
+    latestBundle = { entry, proof };
   }
-  ebt.mirrorActionLogHead({ newHeadSeq: opts.headSeq ?? maxSeq });
+  const finalHead = opts.headSeq ?? maxSeq;
+  // Head advance is witness-gated. Use latestBundle by default; opts may
+  // override with an explicit witness that exceeds the latest event's seq.
+  const headWitness = opts.headWitness ?? latestBundle;
+  ebt.mirrorActionLogHead({
+    newHeadSeq: finalHead,
+    latestEntry: headWitness.entry,
+    proof: headWitness.proof,
+  });
 }
 
 // =============================================================================
