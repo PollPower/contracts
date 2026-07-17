@@ -52,7 +52,19 @@ export const DOMAIN = Object.freeze({
   LANE_KEY:          'pp:tariff:v1:laneKey',
   REGISTER_LANE:     'pp:tariff:v1:registerLane',
   RETIRE_LANE:       'pp:tariff:v1:retireLane',
+  // WI-13.2 action-log commitment domains
+  ACTION_PAYLOAD:    'pp:tariff:v1:actionPayload',
+  ACTION_LOG_ROOT:   'pp:tariff:v1:actionLogRoot',
+  ACTION_LOG_NODE:   'pp:tariff:v1:actionLogNode',
+  ACTION_LOG_EMPTY:  'pp:tariff:v1:actionLogEmpty',
 });
+
+// WI-13.2: default action-log Merkle depth for the offline harness. This is a
+// SPEED/harness choice and is INDEPENDENT of the contract's CAL-13.2-D
+// placeholder (24). AL-T3 proves correctness is D-independent by re-running the
+// mirror at several depths. Tests parameterize D freely; nothing here resolves
+// CAL-13.2-D.
+export const ACTION_LOG_DEPTH_DEFAULT = 24;
 
 // Calibration values from CALIBRATION-DECISIONS-RESOLVED-2026-07-14.md.
 export const CAL = Object.freeze({
@@ -253,6 +265,160 @@ export function sumSplit(s) {
        + BigInt(s.statutoryTotalBps);
 }
 
+// ------------------------------ WI-13.2 payload hashes -----------------------
+// Byte-for-byte mirror of the .compact per-kind actionPayloadHash helpers
+// (§SCOPE B). Fixed tag `pp:tariff:v1:actionPayload` + kind byte as the first
+// hashed field, then the source struct's fields in DECLARATION order, each
+// widened `(x as Field) as Bytes<32>` (mirrored via u64/u16ToBytes32).
+
+// Kind 1 (LANE_REGISTERED) and kind 7 (LANE_RETIRED): all 12 LaneRecord fields.
+export function laneActionPayloadHash(kind, r) {
+  return persistentHash([
+    pad32(DOMAIN.ACTION_PAYLOAD),
+    u64ToBytes32(BigInt(kind)),
+    r.scheduleId,
+    u64ToBytes32(BigInt(r.laneKindByte)),
+    r.leviedBy,
+    u16ToBytes32(r.bpsShare),
+    r.remitAddress,
+    u64ToBytes32(BigInt(r.basis)),
+    r.applicabilityHash,
+    r.statuteRefHash,
+    u64ToBytes32(r.effectiveEpoch),
+    u64ToBytes32(r.retiredEpoch),
+    u64ToBytes32(BigInt(r.remittanceMode)),
+    u64ToBytes32(r.registeredAt),
+  ]);
+}
+
+// Kind 0 (SCHEDULE_REGISTERED) and kind 3 (SCHEDULE_RETIRED): 8 ScheduleRecord
+// fields.
+export function scheduleActionPayloadHash(kind, r) {
+  return persistentHash([
+    pad32(DOMAIN.ACTION_PAYLOAD),
+    u64ToBytes32(BigInt(kind)),
+    r.scheduleId,
+    r.nodeId,
+    r.scheduleHash,
+    r.operatorPubkey,
+    u64ToBytes32(r.effectiveEpoch),
+    u64ToBytes32(r.retiredEpoch),
+    u64ToBytes32(r.refRateFiatPerKwh),
+    u64ToBytes32(r.registeredAt),
+  ]);
+}
+
+// Kind 2 (retuneClass): scheduleId, classPath, 6 SplitShares subfields,
+// rateFiatPerKwh, lastUpdatedAt.
+export function retuneActionPayloadHash(scheduleId, classPath, split, rateFiatPerKwh, lastUpdatedAt) {
+  return persistentHash([
+    pad32(DOMAIN.ACTION_PAYLOAD),
+    u64ToBytes32(2n),
+    scheduleId,
+    classPath,
+    u16ToBytes32(split.producerShareBps),
+    u16ToBytes32(split.ldShareBps),
+    u16ToBytes32(split.opsShareBps),
+    u16ToBytes32(split.daoShareBps),
+    u16ToBytes32(split.operatorMarginBps),
+    u16ToBytes32(split.statutoryTotalBps),
+    u64ToBytes32(rateFiatPerKwh),
+    u64ToBytes32(lastUpdatedAt),
+  ]);
+}
+
+// The pad(32,"") sentinel payloadHash for non-mirrored kinds (4/5/6) and
+// pre-amendment entries.
+export function sentinelPayloadHash() { return Buffer.alloc(32); }
+
+// ------------------------------ WI-13.2 action-log Merkle tree ---------------
+// Append-only incremental Merkle tree over raw payloadHash leaves. Mirrors the
+// .compact frontier fold: leaf = raw payloadHash (NOT re-hashed), pair-node
+// hash = persistentHash([nodeTag, left, right]), empty-leaf = pad32(tag). The
+// keeper keeps the full sparse node store (the in-circuit contract keeps only
+// the frontier) so it can generate WI-14 EventProof inclusion witnesses.
+
+export function actionLogNodeHash(left, right) {
+  return persistentHash([pad32(DOMAIN.ACTION_LOG_NODE), left, right]);
+}
+export function actionLogEmptyLeaf() { return pad32(DOMAIN.ACTION_LOG_EMPTY); }
+
+// Per-level empty-subtree hashes z[0..depth-1] + the depth-`depth` empty root.
+export function actionLogZeros(depth) {
+  const zeros = [];
+  let z = actionLogEmptyLeaf();
+  for (let i = 0; i < depth; i++) { zeros.push(z); z = actionLogNodeHash(z, z); }
+  return { zeros, emptyRoot: z };
+}
+
+export class ActionLogTree {
+  constructor(depth) {
+    this.depth = depth;
+    const { zeros, emptyRoot } = actionLogZeros(depth);
+    this.zeros = zeros;
+    this.emptyRoot = emptyRoot;
+    this.root = emptyRoot;
+    this.nextIndex = 0;
+    // Sparse node store: nodes[level] = Map<indexStr, Buffer>. Absent = zeros.
+    this.nodes = Array.from({ length: depth + 1 }, () => new Map());
+    this.leaves = [];
+  }
+  _get(level, index) {
+    const m = this.nodes[level];
+    const k = String(index);
+    return m.has(k) ? m.get(k) : this.zeros[level];
+  }
+  _set(level, index, val) { this.nodes[level].set(String(index), Buffer.from(val)); }
+
+  append(leaf) {
+    const idx = this.nextIndex;
+    if (idx >= 2 ** this.depth) throw new Error('ActionLogTree: capacity exceeded (2^D)');
+    this.leaves.push(Buffer.from(leaf));
+    this._set(0, idx, leaf);
+    let h = Buffer.from(leaf);
+    let i = idx;
+    for (let lvl = 0; lvl < this.depth; lvl++) {
+      // LSB-first path bit: (i & 1) === 0 -> left child, else right child.
+      const parent = (i & 1) === 0
+        ? actionLogNodeHash(h, this._get(lvl, i + 1))     // right sibling (empty->zeros)
+        : actionLogNodeHash(this._get(lvl, i - 1), h);    // left sibling (stored)
+      this._set(lvl + 1, i >> 1, parent);
+      h = parent;
+      i = i >> 1;
+    }
+    this.root = h;
+    this.nextIndex += 1;
+    return this.root;
+  }
+
+  // Inclusion proof for the leaf at `index` against the CURRENT tree state,
+  // in WI-14 EventProof shape: { siblings: Vector<D>, pathBits: Vector<D> }.
+  proof(index) {
+    const siblings = [];
+    const pathBits = [];
+    let i = index;
+    for (let lvl = 0; lvl < this.depth; lvl++) {
+      const isRight = (i & 1) === 1;
+      pathBits.push(isRight);
+      siblings.push(this._get(lvl, isRight ? i - 1 : i + 1));
+      i = i >> 1;
+    }
+    return { siblings, pathBits };
+  }
+}
+
+// WI-14 §7.1 reference `reconstructRoot`: climb from `payloadHash` using
+// (siblings, pathBits). Leaf is the raw payloadHash (design decision #4).
+export function reconstructActionLogRoot(payloadHash, siblings, pathBits) {
+  let h = Buffer.from(payloadHash);
+  for (let lvl = 0; lvl < siblings.length; lvl++) {
+    h = pathBits[lvl]
+      ? actionLogNodeHash(siblings[lvl], h)
+      : actionLogNodeHash(h, siblings[lvl]);
+  }
+  return h;
+}
+
 // ------------------------------ WI-13.1 Lane helpers -------------------------
 
 // Composite key for a lane record (scheduleId, leviedBy, laneKindByte).
@@ -288,7 +454,7 @@ export function zeroLaneRecord() {
 
 // The registry state. Mirror of the ledger fields.
 export class TariffRegistry {
-  constructor({ federationAuthority, governanceRoot, refRateFiatPerKwh, self }) {
+  constructor({ federationAuthority, governanceRoot, refRateFiatPerKwh, self, actionLogDepth }) {
     // Self-address (32 bytes) — mirrors kernel.self().bytes.
     this.self = Buffer.isBuffer(self) ? self : randomBytes(32);
     // Ledger fields (constructor-set).
@@ -317,6 +483,11 @@ export class TariffRegistry {
     // Event log.
     this._actionLog = new Map();             // seq -> RegistryActionEntry
     this._actionSeq = 0n;
+    // WI-13.2 action-log commitment. Fresh init: empty tree + baseSeq 0.
+    this.actionLogDepth = actionLogDepth ?? ACTION_LOG_DEPTH_DEFAULT;
+    this._actionLogTree = new ActionLogTree(this.actionLogDepth);
+    this.registryActionLogRoot = Buffer.from(this._actionLogTree.root);
+    this._actionLogBaseSeq = 0n;
     // Witness surface.
     this._witnesses = {
       // Default multisig witness: returns true iff the approval bundle was
@@ -393,7 +564,7 @@ export class TariffRegistry {
     this._consumedFederationApprovals.add(toHex(actionHash));
   }
 
-  emitAction(kind, scheduleId, nodeId, actionHash, currentTime) {
+  emitAction(kind, scheduleId, nodeId, actionHash, payloadHash, currentTime) {
     const entry = {
       kind,
       scheduleId: Buffer.from(scheduleId),
@@ -401,9 +572,52 @@ export class TariffRegistry {
       epoch: this._currentEpoch,
       actionHash: Buffer.from(actionHash),
       emittedAt: BigInt(currentTime),
+      payloadHash: Buffer.from(payloadHash),   // WI-13.2
+    };
+    this._actionLog.set(this._actionSeq, entry);
+    // WI-13.2: append the payloadHash leaf and recommit the root.
+    this._actionLogTree.append(payloadHash);
+    this.registryActionLogRoot = Buffer.from(this._actionLogTree.root);
+    this._actionSeq += 1n;
+  }
+
+  // WI-13.2 §SCOPE D read circuits.
+  getActionEntry(seq) {
+    const s = BigInt(seq);
+    if (!this._actionLog.has(s)) revert('ACTION_LOG_SEQ_MISSING');
+    return this._actionLog.get(s);
+  }
+  getActionPayloadHash(seq) {
+    const s = BigInt(seq);
+    if (!this._actionLog.has(s)) revert('ACTION_LOG_SEQ_MISSING');
+    return this._actionLog.get(s).payloadHash;
+  }
+
+  // WI-13.2 §SCOPE F — model forward-only migration. Simulate a WI-13.1
+  // pre-amendment entry: an _actionLog row with the sentinel payloadHash whose
+  // leaf is NOT committed to the root, and bump _actionSeq. (Used only by the
+  // migration test to build a realistic pre-amendment state.)
+  pushLegacyEntry({ kind, scheduleId, nodeId, actionHash, currentTime }) {
+    const entry = {
+      kind,
+      scheduleId: Buffer.from(scheduleId ?? Buffer.alloc(32)),
+      nodeId: Buffer.from(nodeId ?? Buffer.alloc(32)),
+      epoch: this._currentEpoch,
+      actionHash: Buffer.from(actionHash ?? randomBytes(32)),
+      emittedAt: BigInt(currentTime ?? 0n),
+      payloadHash: Buffer.alloc(32),   // pre-amendment sentinel
     };
     this._actionLog.set(this._actionSeq, entry);
     this._actionSeq += 1n;
+  }
+
+  // "Activate" the WI-13.2 amendment on a migrated instance: seed the root to
+  // the empty-tree root, reset the (forward-only) tree, and record baseSeq =
+  // the current head. From here every emitAction commits a payloadHash leaf.
+  bootstrapActionLogRoot() {
+    this._actionLogBaseSeq = this._actionSeq;
+    this._actionLogTree = new ActionLogTree(this.actionLogDepth);
+    this.registryActionLogRoot = Buffer.from(this._actionLogTree.root);
   }
 
   // -------------------------- registerSchedule ------------------------------
@@ -456,8 +670,9 @@ export class TariffRegistry {
     };
     this._registeredSchedules.set(toHex(scheduleId), record);
     this._activeScheduleByNode.set(toHex(nodeId), toHex(scheduleId));
-    this.emitAction(0, scheduleId, nodeId, actionHash, currentTime);
-    return { scheduleId, actionHash };
+    const payloadHash = scheduleActionPayloadHash(0, record);
+    this.emitAction(0, scheduleId, nodeId, actionHash, payloadHash, currentTime);
+    return { scheduleId, actionHash, payloadHash };
   }
 
   // -------------------------- retireSchedule --------------------------------
@@ -482,8 +697,9 @@ export class TariffRegistry {
     if (this._activeScheduleByNode.get(nodeKey) === key) {
       this._activeScheduleByNode.delete(nodeKey);
     }
-    this.emitAction(3, scheduleId, rec.nodeId, actionHash, currentTime);
-    return { actionHash };
+    const payloadHash = scheduleActionPayloadHash(3, rec);
+    this.emitAction(3, scheduleId, rec.nodeId, actionHash, payloadHash, currentTime);
+    return { actionHash, payloadHash };
   }
 
   // -------------------------- advanceEpoch ---------------------------------
@@ -517,7 +733,7 @@ export class TariffRegistry {
       this._pendingOpsFloorBps = 0;
       this._pendingSanityBandPct = 0;
     }
-    this.emitAction(4, Buffer.alloc(32), Buffer.alloc(32), actionHash, currentTime);
+    this.emitAction(4, Buffer.alloc(32), Buffer.alloc(32), actionHash, sentinelPayloadHash(), currentTime);
     return { actionHash };
   }
 
@@ -540,7 +756,7 @@ export class TariffRegistry {
     this._pendingOpsFloorBps = Number(newOpsFloorBps);
     this._pendingSanityBandPct = Number(newSanityBandPct);
     this._hasPendingContext = true;
-    this.emitAction(5, Buffer.alloc(32), Buffer.alloc(32), actionHash, currentTime);
+    this.emitAction(5, Buffer.alloc(32), Buffer.alloc(32), actionHash, sentinelPayloadHash(), currentTime);
     return { actionHash };
   }
 
@@ -557,7 +773,7 @@ export class TariffRegistry {
     ]);
     this.consumeFederationApproval(actionHash);
     this._federationAuthority = Buffer.from(newAuthorityHash);
-    this.emitAction(6, Buffer.alloc(32), Buffer.alloc(32), actionHash, currentTime);
+    this.emitAction(6, Buffer.alloc(32), Buffer.alloc(32), actionHash, sentinelPayloadHash(), currentTime);
     return { actionHash };
   }
 
@@ -588,9 +804,11 @@ export class TariffRegistry {
       asUintChecked(BigInt(currentTime) - earliest, 64, 'RETUNE_COOLDOWN_NOT_ELAPSED');
     }
 
-    // Operator signature (new field order includes rate).
+    // Operator signature (new field order includes rate). WI-13.2 design
+    // decision #5: this is the AUTHORIZATION hash (-> actionHash slot), renamed
+    // authHash to avoid conflation with the canonical mirror payloadHash below.
     const shHash = splitSharesHash(newSplitBps);
-    const payloadHash = persistentHash([
+    const authHash = persistentHash([
       pad32(DOMAIN.RETUNE_CLASS),
       this.self,
       scheduleId,
@@ -601,7 +819,7 @@ export class TariffRegistry {
       u64ToBytes32(nonceIn),
       u64ToBytes32(currentTime),
     ]);
-    if (!signatureValid(operatorId, payloadHash, operatorSignature)) revert('RETUNE_OPERATOR_SIG_INVALID');
+    if (!signatureValid(operatorId, authHash, operatorSignature)) revert('RETUNE_OPERATOR_SIG_INVALID');
 
     // I-B floor re-check.
     asUintChecked(BigInt(newSplitBps.ldShareBps) - BigInt(this._LD_FLOOR_BPS), 16, 'RETUNE_LD_FLOOR_VIOLATION');
@@ -631,8 +849,11 @@ export class TariffRegistry {
     });
     this._retuneNonces.set(toHex(nonceKey), BigInt(nonceIn));
     this._retuneLastTime.set(toHex(cdKey), BigInt(currentTime));
-    this.emitAction(2, scheduleId, rec.nodeId, payloadHash, currentTime);
-    return { payloadHash };
+    // WI-13.2: canonical payload (distinct from the authorization hash).
+    const payloadHash = retuneActionPayloadHash(
+      scheduleId, classPath, newSplitBps, BigInt(newRateFiatPerKwh), BigInt(currentTime));
+    this.emitAction(2, scheduleId, rec.nodeId, authHash, payloadHash, currentTime);
+    return { authHash, payloadHash };
   }
 
   // -------------------------- resolvePath ----------------------------------
@@ -748,8 +969,9 @@ export class TariffRegistry {
     this._registeredLanes.set(toHex(lKey), record);
 
     // (h) Emit action kind 1 = LANE_REGISTERED.
-    this.emitAction(1, scheduleId, schedRec.nodeId, actionHash, currentTime);
-    return { actionHash };
+    const payloadHash = laneActionPayloadHash(1, record);
+    this.emitAction(1, scheduleId, schedRec.nodeId, actionHash, payloadHash, currentTime);
+    return { actionHash, payloadHash };
   }
 
   // -------------------------- WI-13.1 retireLane -------------------------------
@@ -788,8 +1010,9 @@ export class TariffRegistry {
 
     // (f) Emit action kind 7 = LANE_RETIRED.
     const schedRec = this._registeredSchedules.get(toHex(scheduleId));
-    this.emitAction(7, scheduleId, schedRec.nodeId, actionHash, currentTime);
-    return { actionHash };
+    const payloadHash = laneActionPayloadHash(7, rec);
+    this.emitAction(7, scheduleId, schedRec.nodeId, actionHash, payloadHash, currentTime);
+    return { actionHash, payloadHash };
   }
 
   // -------------------------- WI-13.1 resolveLane ------------------------------

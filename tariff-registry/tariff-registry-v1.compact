@@ -138,6 +138,13 @@ witness charter_membership_proof(
 // Witness divmod, for checkedDivide (copied from LD v2.2.1).
 witness witness_divmod(numerator: Field, divisor: Field): DivResult;
 
+// WI-13.2: action-log Merkle append path. Returns the LSB-first bits of the
+// leaf position `seq` (bit i = level-i left/right choice). The witness is
+// prover-supplied *data*, not truth — appendActionLogLeaf reconstructs `seq`
+// from the returned bits (two-sided checked cast) and reverts on any mismatch,
+// so a lying prover cannot misplace a leaf. Width = ACTION_LOG_DEPTH (24).
+witness action_log_path_bits(seq: Uint<64>): Vector<24, Boolean>;
+
 // =============================================================================
 // Structs
 // =============================================================================
@@ -181,13 +188,22 @@ struct ScheduleRecord {
 }
 
 // Event log entry.
+//
+// WI-13.2 widens this with `payloadHash` (additive; struct order preserved for
+// kind/scheduleId/nodeId/epoch/actionHash/emittedAt). `actionHash` keeps its
+// exact WI-13/13.1 meaning (federation/operator AUTHORIZATION commitment,
+// non-invertible). `payloadHash` is a NEW, DISTINCT canonical commitment over
+// the mirror-relevant event body (§SCOPE B) — the two are never conflated.
 struct RegistryActionEntry {
-  kind:       Uint<8>,     // 0..6 per V1-DESIGN.md §3.1
-  scheduleId: Bytes<32>,   // 0 if not schedule-scoped
-  nodeId:     Bytes<32>,   // 0 if not node-scoped
-  epoch:      Uint<64>,    // registry epoch at time of action
-  actionHash: Bytes<32>,   // federation actionHash or operator payload hash
-  emittedAt:  Uint<64>,    // block time
+  kind:        Uint<8>,     // 0..7 per V1-DESIGN.md §3.1 (+ WI-13.1 lane kinds)
+  scheduleId:  Bytes<32>,   // 0 if not schedule-scoped
+  nodeId:      Bytes<32>,   // 0 if not node-scoped
+  epoch:       Uint<64>,    // registry epoch at time of action
+  actionHash:  Bytes<32>,   // UNCHANGED — authorization commitment
+  emittedAt:   Uint<64>,    // block time
+  payloadHash: Bytes<32>,   // WI-13.2 NEW — canonical mirror-payload commitment
+                            //   (pad(32,"") sentinel for non-mirrored kinds
+                            //   4/5/6 and pre-amendment entries — §SCOPE A/F)
 }
 
 // checkedDivide return (copied from LD v2.2.1).
@@ -276,6 +292,44 @@ export ledger _consumedFederationApprovals: Set<Bytes<32>>;
 // Event log (MIP-0002 pattern — keeper-observable).
 export ledger _actionLog: Map<Uint<64>, RegistryActionEntry>;
 export ledger _actionSeq: Counter;
+
+// =============================================================================
+// WI-13.2 action-log commitment (§SCOPE C)
+// =============================================================================
+//
+// Append-only incremental Merkle tree over the per-entry `payloadHash` leaves,
+// fixed depth ACTION_LOG_DEPTH. Leaf at position `seq` = the entry's raw
+// `payloadHash` (NOT re-hashed — design decision #4, so WI-14's reconstructRoot
+// climbs directly from proof.payloadHash). Updated on EVERY emitAction (all
+// kinds; only the *payload* is kind-selective). WI-14's EventProof
+// (VNEXT-DESIGN §7.1) generates fixed-width inclusion proofs against this root.
+
+// The committed root over the action-log leaves. Empty-tree root at init.
+export ledger registryActionLogRoot: Bytes<32>;
+
+// Frontier: rightmost filled node cached at each level (incremental-tree
+// bookkeeping). Keyed by level 0..ACTION_LOG_DEPTH-1. Initialized to the
+// per-level empty-subtree hash in the constructor so lookups never miss.
+// (Map, not ledger Vector — same incremental-Merkle scheme; Map is the
+// proven container idiom in this codebase. See §DECISIONS in the PR body.)
+export ledger _actionLogFrontier: Map<Uint<64>, Bytes<32>>;
+
+// Precomputed empty-subtree hash at each level 0..ACTION_LOG_DEPTH-1
+// (zeros[0] = empty-leaf tag; zeros[i] = node(zeros[i-1], zeros[i-1])).
+export ledger _actionLogZeros: Map<Uint<64>, Bytes<32>>;
+
+// §SCOPE F: the first seq at which payloadHash is populated + committed to the
+// root. Fresh init = 0. Forward-only migration = the head at amendment time.
+// WI-14 keepers use this to know where the mirrorable range starts.
+export ledger _actionLogBaseSeq: Uint<64>;
+
+// Transient climb accumulator for the Merkle fold (read-modify-write inside a
+// bounded for-loop, per the documented Compact ledger-in-loop pattern). Holds
+// no cross-call meaning; reset to the leaf at the start of every append. Kept
+// as an exported ledger cell only because a for-loop accumulator must live in
+// ledger state (locals are immutable across iterations); NOT part of the
+// WI-14-facing surface.
+export ledger _actionLogClimb: Bytes<32>;
 
 // =============================================================================
 // Helpers
@@ -435,24 +489,165 @@ pure circuit checkedDivide(
   return r.quotient;
 }
 
-// Insert a RegistryActionEntry into _actionLog.
+// =============================================================================
+// WI-13.2 action-log commitment helpers (§SCOPE B, C)
+// =============================================================================
+//
+// CALIBRATION PLACEHOLDER — CAL-13.2-D (action-log Merkle depth `D`).
+// ---------------------------------------------------------------------------
+// TODO(calibration): CAL-13.2-D is Garrett's call and is DELIBERATELY NOT
+// resolved here. The literal `24` used below (in the action_log_path_bits
+// witness Vector width, ACTION_LOG_POWERS, the for-loop bounds, and the
+// constructor init loop) is a NON-AUTHORITATIVE compilable scaffold ONLY — it
+// is NOT the resolved production depth. The dispatch brief §CALIBRATION points
+// at the depth-20..24 national-scale band (≈1M–16M lifetime entries) traded
+// against the per-emit hash cost. When CAL-13.2-D is resolved, update EVERY
+// occurrence of the literal 24 in this file in lockstep (they are enumerated in
+// the PR body). The offline harness proves correctness is D-independent; do
+// NOT treat 24 as a decision. Caps lifetime action-log entries at 2^D.
+pure circuit ACTION_LOG_DEPTH(): Uint<64> { return 24 as Uint<64>; }
+
+// Powers of two 2^0..2^23, for reconstructing `seq` from its LSB-first bits.
+// Width MUST equal ACTION_LOG_DEPTH (see CAL-13.2-D note).
+pure circuit ACTION_LOG_POWERS(): Vector<24, Field> {
+  return [
+    1 as Field,        2 as Field,        4 as Field,        8 as Field,
+    16 as Field,       32 as Field,       64 as Field,       128 as Field,
+    256 as Field,      512 as Field,      1024 as Field,     2048 as Field,
+    4096 as Field,     8192 as Field,     16384 as Field,    32768 as Field,
+    65536 as Field,    131072 as Field,   262144 as Field,   524288 as Field,
+    1048576 as Field,  2097152 as Field,  4194304 as Field,  8388608 as Field,
+  ];
+}
+
+// fold step: acc + (bit ? pow : 0). Reconstructs an integer from weighted bits.
+pure circuit actionLogBitAccum(acc: Field, bit: Boolean, pow: Field): Field {
+  return acc + (bit ? pow : (0 as Field));
+}
+
+// §SCOPE B — canonical payload hash for a LaneRecord event (kinds 1 & 7).
+// N = 14 = tag + kindByte + 12 LaneRecord fields, declaration order.
+circuit laneActionPayloadHash(kind: Uint<8>, r: LaneRecord): Bytes<32> {
+  return persistentHash<Vector<14, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:actionPayload"),
+    (disclose(kind) as Field) as Bytes<32>,   // kind byte first-hashed field
+    r.scheduleId,
+    (r.laneKindByte as Field) as Bytes<32>,
+    r.leviedBy,
+    (r.bpsShare as Field) as Bytes<32>,
+    r.remitAddress,
+    (r.basis as Field) as Bytes<32>,
+    r.applicabilityHash,
+    r.statuteRefHash,
+    (r.effectiveEpoch as Field) as Bytes<32>,
+    (r.retiredEpoch as Field) as Bytes<32>,
+    (r.remittanceMode as Field) as Bytes<32>,
+    (r.registeredAt as Field) as Bytes<32>,
+  ]);
+}
+
+// §SCOPE B — canonical payload hash for a ScheduleRecord event (kinds 0 & 3).
+// N = 10 = tag + kindByte + 8 ScheduleRecord fields, declaration order.
+circuit scheduleActionPayloadHash(kind: Uint<8>, r: ScheduleRecord): Bytes<32> {
+  return persistentHash<Vector<10, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:actionPayload"),
+    (disclose(kind) as Field) as Bytes<32>,
+    r.scheduleId,
+    r.nodeId,
+    r.scheduleHash,
+    r.operatorPubkey,
+    (r.effectiveEpoch as Field) as Bytes<32>,
+    (r.retiredEpoch as Field) as Bytes<32>,
+    (r.refRateFiatPerKwh as Field) as Bytes<32>,
+    (r.registeredAt as Field) as Bytes<32>,
+  ]);
+}
+
+// §SCOPE B — canonical payload hash for a retuneClass event (kind 2).
+// N = 12 = tag + kindByte + scheduleId + classPath + 6 SplitShares subfields
+//          + rateFiatPerKwh + lastUpdatedAt, declaration order.
+circuit retuneActionPayloadHash(
+  scheduleId:     Bytes<32>,
+  classPath:      Bytes<32>,
+  split:          SplitShares,
+  rateFiatPerKwh: Uint<64>,
+  lastUpdatedAt:  Uint<64>,
+): Bytes<32> {
+  const s = disclose(split);
+  return persistentHash<Vector<12, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:actionPayload"),
+    (2 as Field) as Bytes<32>,
+    disclose(scheduleId),
+    disclose(classPath),
+    (s.producerShareBps  as Field) as Bytes<32>,
+    (s.ldShareBps        as Field) as Bytes<32>,
+    (s.opsShareBps       as Field) as Bytes<32>,
+    (s.daoShareBps       as Field) as Bytes<32>,
+    (s.operatorMarginBps as Field) as Bytes<32>,
+    (s.statutoryTotalBps as Field) as Bytes<32>,
+    (disclose(rateFiatPerKwh) as Field) as Bytes<32>,
+    (disclose(lastUpdatedAt)  as Field) as Bytes<32>,
+  ]);
+}
+
+// Append `leaf` (= the entry's raw payloadHash) at position `seq` into the
+// incremental Merkle tree and recommit registryActionLogRoot. O(D) hashes.
+// Pair-hash shape is LOCKED to match assertCharterMembership / WI-14
+// reconstructRoot: persistentHash<Vector<3,Bytes<32>>>([nodeTag, left, right]).
+circuit appendActionLogLeaf(seq: Uint<64>, leaf: Bytes<32>): [] {
+  // Prover-supplied path bits, verified by reconstructing seq (I-13.2-D
+  // soundness). Two-sided checked cast = equality assertion with the
+  // compiler-generic underflow message (existing bare-assert idiom; no new
+  // error label, per §ERROR LABELS).
+  const bits = disclose(action_log_path_bits(disclose(seq) as Uint<64>));
+  const reconF = fold(actionLogBitAccum, 0 as Field, bits, ACTION_LOG_POWERS());
+  const seqF = disclose(seq) as Field;
+  const _r1 = (reconF - seqF) as Uint<64>;   // reverts unless reconF >= seqF
+  const _r2 = (seqF - reconF) as Uint<64>;   // reverts unless seqF >= reconF
+  //  ^ both pass only when reconF == seqF (Field is a large prime).
+
+  const nodeTag = pad(32, "pp:tariff:v1:actionLogNode");
+  _actionLogClimb = leaf;
+  for (const i of 0..24) {   // ACTION_LOG_DEPTH levels (CAL-13.2-D)
+    const bit = bits[i];
+    const cur = _actionLogClimb;
+    const sib = bit
+      ? _actionLogFrontier.lookup(i as Uint<64>)   // right child: sibling is the cached left node
+      : _actionLogZeros.lookup(i as Uint<64>);      // left child: sibling is the empty subtree
+    if (!bit) {
+      _actionLogFrontier.insert(i as Uint<64>, cur);   // cache this left node for future appends
+    }
+    _actionLogClimb = bit
+      ? persistentHash<Vector<3, Bytes<32>>>([nodeTag, sib, cur])
+      : persistentHash<Vector<3, Bytes<32>>>([nodeTag, cur, sib]);
+  }
+  registryActionLogRoot = _actionLogClimb;
+}
+
+// Insert a RegistryActionEntry into _actionLog AND append its payloadHash to
+// the action-log Merkle tree (WI-13.2). `payloadHash` is computed per-kind by
+// the caller (§SCOPE B helpers) or is the pad(32,"") sentinel for non-mirrored
+// kinds 4/5/6.
 circuit emitAction(
-  kind:       Uint<8>,
-  scheduleId: Bytes<32>,
-  nodeId:     Bytes<32>,
-  actionHash: Bytes<32>,
+  kind:        Uint<8>,
+  scheduleId:  Bytes<32>,
+  nodeId:      Bytes<32>,
+  actionHash:  Bytes<32>,
+  payloadHash: Bytes<32>,
   currentTime: Uint<64>,
 ): [] {
   const seq = _actionSeq.read();
   const entry = RegistryActionEntry {
-    kind:       disclose(kind),
-    scheduleId: disclose(scheduleId),
-    nodeId:     disclose(nodeId),
-    epoch:      disclose(_currentEpoch.read()),
-    actionHash: disclose(actionHash),
-    emittedAt:  disclose(currentTime),
+    kind:        disclose(kind),
+    scheduleId:  disclose(scheduleId),
+    nodeId:      disclose(nodeId),
+    epoch:       disclose(_currentEpoch.read()),
+    actionHash:  disclose(actionHash),
+    emittedAt:   disclose(currentTime),
+    payloadHash: disclose(payloadHash),
   };
   _actionLog.insert(disclose(seq) as Uint<64>, disclose(entry));
+  appendActionLogLeaf(disclose(seq) as Uint<64>, disclose(payloadHash));
   _actionSeq.increment(1);
 }
 
@@ -488,6 +683,24 @@ constructor(
   _SANITY_BAND_PCT = 20 as Uint<16>;
 
   _hasPendingContext = false;
+
+  // WI-13.2 (§SCOPE C/F): initialize the append-only action-log Merkle tree.
+  // Compute per-level empty-subtree hashes, seed the frontier to those empties
+  // (so appends never miss a lookup), and set the committed root to the
+  // depth-D empty-tree root. Forward-only migration (design decision #2):
+  // _actionLogBaseSeq = the head at construction (0 on a fresh deploy). This
+  // constructor is additive over WI-13.1 state — pre-amendment _actionLog
+  // entries (if any) keep payloadHash == pad(32,"") and are NOT retro-committed.
+  _actionLogClimb = pad(32, "pp:tariff:v1:actionLogEmpty");
+  const nodeTag = pad(32, "pp:tariff:v1:actionLogNode");
+  for (const i of 0..24) {   // ACTION_LOG_DEPTH levels (CAL-13.2-D)
+    const z = _actionLogClimb;
+    _actionLogZeros.insert(i as Uint<64>, z);
+    _actionLogFrontier.insert(i as Uint<64>, z);
+    _actionLogClimb = persistentHash<Vector<3, Bytes<32>>>([nodeTag, z, z]);
+  }
+  registryActionLogRoot = _actionLogClimb;   // depth-D empty-tree root
+  _actionLogBaseSeq = _actionSeq.read();      // 0 on fresh deploy
 
   _initialized = true;
 }
@@ -574,11 +787,14 @@ export circuit registerSchedule(
   _registeredSchedules.insert(disclose(scheduleId), disclose(record));
   _activeScheduleByNode.insert(disclose(nodeId), disclose(scheduleId));
 
+  // WI-13.2: canonical payload over the exact ScheduleRecord just inserted.
+  const payloadHash = scheduleActionPayloadHash(0 as Uint<8>, record);
   emitAction(
     0 as Uint<8>,
     scheduleId,
     disclose(nodeId),
     actionHash,
+    payloadHash,
     currentTime,
   );
 }
@@ -635,11 +851,15 @@ export circuit retireSchedule(
     }
   }
 
+  // WI-13.2: canonical payload over the RETIRED ScheduleRecord (retiredEpoch
+  // != 0), so WI-14's mirrorScheduleLifecycle reconstructs the same hash.
+  const payloadHash = scheduleActionPayloadHash(3 as Uint<8>, retired);
   emitAction(
     3 as Uint<8>,
     dSid,
     rec.nodeId,
     actionHash,
+    payloadHash,
     currentTime,
   );
 }
@@ -699,11 +919,13 @@ export circuit advanceEpoch(
     _pendingSanityBandPct = 0 as Uint<16>;
   }
 
+  // WI-13.2: kind 4 (advanceEpoch) is NOT mirrored — sentinel payloadHash.
   emitAction(
     4 as Uint<8>,
     pad(32, ""),
     pad(32, ""),
     actionHash,
+    pad(32, ""),
     currentTime,
   );
 }
@@ -751,11 +973,13 @@ export circuit setNationalContext(
   _pendingSanityBandPct = disclose(newSanityBandPct);
   _hasPendingContext    = true;
 
+  // WI-13.2: kind 5 (setNationalContext) is NOT mirrored — sentinel payloadHash.
   emitAction(
     5 as Uint<8>,
     pad(32, ""),
     pad(32, ""),
     actionHash,
+    pad(32, ""),
     currentTime,
   );
 }
@@ -792,11 +1016,13 @@ export circuit setFederationAuthority(
 
   _federationAuthority = dNew;
 
+  // WI-13.2: kind 6 (setFederationAuthority) is NOT mirrored — sentinel payloadHash.
   emitAction(
     6 as Uint<8>,
     pad(32, ""),
     pad(32, ""),
     actionHash,
+    pad(32, ""),
     currentTime,
   );
 }
@@ -915,11 +1141,14 @@ export circuit registerLane(
   _registeredLanes.insert(dKey, disclose(record));
 
   // (h) Emit action kind 1 = LANE_REGISTERED.
+  // WI-13.2: canonical payload over all 12 LaneRecord fields just inserted.
+  const payloadHash = laneActionPayloadHash(1 as Uint<8>, record);
   emitAction(
     1 as Uint<8>,
     scheduleId,
     schedRec.nodeId,
     actionHash,
+    payloadHash,
     currentTime,
   );
 }
@@ -988,11 +1217,15 @@ export circuit retireLane(
   // (f) Emit action kind 7 = LANE_RETIRED.
   //     nodeId: look it up from the parent schedule for keeper-mirror parity.
   const schedRec = _registeredSchedules.lookup(disclose(scheduleId));
+  // WI-13.2: canonical payload over the RETIRED LaneRecord (retiredEpoch != 0),
+  // so WI-14's mirrorRetireLane overwrites its mirror with the same hash.
+  const payloadHash = laneActionPayloadHash(7 as Uint<8>, retired);
   emitAction(
     7 as Uint<8>,
     scheduleId,
     schedRec.nodeId,
     actionHash,
+    payloadHash,
     currentTime,
   );
 }
@@ -1056,7 +1289,11 @@ export circuit retuneClass(
   const rateBytes  = (disclose(newRateFiatPerKwh) as Field) as Bytes<32>;
   const shHash     = splitSharesHash(newSplitBps);
 
-  const payloadHash = persistentHash<Vector<9, Bytes<32>>>([
+  // WI-13.2 design decision #5: this is the operator AUTHORIZATION/signature
+  // hash (flows into emitAction's actionHash slot), NOT the new canonical
+  // mirror payloadHash. Renamed retuneAuthHash to avoid conflation with the
+  // RegistryActionEntry.payloadHash added by this amendment.
+  const retuneAuthHash = persistentHash<Vector<9, Bytes<32>>>([
     pad(32, "pp:tariff:v1:retuneClass"),
     selfBytes(),
     dSid,
@@ -1067,7 +1304,7 @@ export circuit retuneClass(
     nonceBytes,
     timeBytes,
   ]);
-  assert(disclose(signature_valid(disclose(operatorId), payloadHash,
+  assert(disclose(signature_valid(disclose(operatorId), retuneAuthHash,
                                   disclose(operatorSignature))),
          "RETUNE_OPERATOR_SIG_INVALID");
 
@@ -1136,10 +1373,16 @@ export circuit retuneClass(
   _retuneNonces.insert(disclose(nonceKey), disclose(nonceIn));
   _retuneLastTime.insert(disclose(cdKey), disclose(currentTime));
 
+  // WI-13.2: canonical payload over (scheduleId, classPath, the 6 SplitShares
+  // subfields, rateFiatPerKwh, lastUpdatedAt = currentTime). Distinct from the
+  // authorization hash (retuneAuthHash → actionHash slot).
+  const payloadHash = retuneActionPayloadHash(
+    scheduleId, classPath, newSplitBps, newRateFiatPerKwh, currentTime);
   emitAction(
     2 as Uint<8>,
     dSid,
     rec.nodeId,
+    retuneAuthHash,
     payloadHash,
     currentTime,
   );
@@ -1255,6 +1498,25 @@ export circuit isScheduleActive(scheduleId: Bytes<32>): Boolean {
   }
   // effectiveEpoch <= currentEpoch → live.
   return _currentEpoch.read() >= rec.effectiveEpoch;
+}
+
+// =============================================================================
+// WI-13.2 action-log read circuits (§SCOPE D — pure reads, I-F preserved)
+// =============================================================================
+
+// Full authoritative event body at `seq` (incl. payloadHash). Keepers fetch
+// this to reconstruct-and-verify the mirror against registryActionLogRoot.
+export circuit getActionEntry(seq: Uint<64>): RegistryActionEntry {
+  assertInitialized();
+  assert(_actionLog.member(disclose(seq)), "ACTION_LOG_SEQ_MISSING");
+  return _actionLog.lookup(disclose(seq));
+}
+
+// Cheap targeted read: just the canonical payloadHash at `seq`.
+export circuit getActionPayloadHash(seq: Uint<64>): Bytes<32> {
+  assertInitialized();
+  assert(_actionLog.member(disclose(seq)), "ACTION_LOG_SEQ_MISSING");
+  return _actionLog.lookup(disclose(seq)).payloadHash;
 }
 
 // =============================================================================
