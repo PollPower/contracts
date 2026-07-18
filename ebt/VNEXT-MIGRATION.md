@@ -46,8 +46,22 @@ Each prerequisite is ceremony-start checkable.
    - `settlement-api`, keeper process, dashboard, consumer app, producer app, relay APIs updated or explicitly confirmed unaffected.
 
 7. **Mirror-write daemon exists, tested, and deploy-ready.**
-   - It must watch TariffRegistry events and submit v8 `mirror*` circuits.
+   - It must watch TariffRegistry events and submit v8 `mirror*` circuits
+     for events at seqs `<= _registryActionLogHeadSeqMirror` (see §5.3
+     for the constraint and §5.9 for the owner-advance ceremony that
+     periodically raises this bound).
    - Without it, `_registeredLanesMirror` remains empty and settles revert.
+
+8. **Owner-advance ceremony operational owner + schedule signed off.**
+   - Weekly cadence confirmed 2026-07-18 (Garrett + supervising session);
+     trigger-on-alert supersedes the calendar when daemon queue-lag
+     reaches `>= 50%` of `CAL_MIRROR_STALE_TOLERANCE`.
+   - Ceremony script + runbook must exist and be tested against the
+     bootstrap flow before T+0.
+   - Multisig keyholder availability commitment for weekly cadence must
+     be signed off in writing.
+   - See `WI-14-CEREMONY-SKELETON.md` §12 for the operational ceremony
+     spec (authored under the docs patch that lands alongside this file).
 
 ## 4. Migration approach — expand VNEXT-DESIGN section 9.1
 
