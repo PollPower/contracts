@@ -1,0 +1,25 @@
+{
+  "name": "tariff-registry-tooling",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy:preview": "tsx deploy-tariff-registry-preview.ts",
+    "typecheck": "tsc --noEmit deploy-tariff-registry-preview.ts"
+  },
+  "dependencies": {
+    "@midnight-ntwrk/midnight-js-contracts": "latest",
+    "@midnight-ntwrk/compact-js": "latest",
+    "@midnight-ntwrk/compact-runtime": "latest",
+    "@midnight-ntwrk/wallet-sdk-hd": "latest",
+    "@midnight-ntwrk/wallet-sdk-address-format": "latest",
+    "@midnight-ntwrk/ledger-v8": "latest",
+    "@noble/ed25519": "latest",
+    "@noble/hashes": "latest",
+    "rxjs": "latest",
+    "buffer": "latest"
+  },
+  "devDependencies": {
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}

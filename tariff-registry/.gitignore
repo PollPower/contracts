@@ -1,0 +1,4 @@
+build/
+deployment.json
+node_modules/
+*.log

@@ -48,3 +48,8 @@ tariff-registry/
 - 0.31.0 upgrade — WI-13.1 follow-up (V1-DESIGN.md §11).
 
 See PR #31 for the review discussion.
+
+## Preview deploy
+
+Preview deploy tooling and kenya handoff steps are documented in
+[`PREVIEW-DEPLOY.md`](./PREVIEW-DEPLOY.md).
