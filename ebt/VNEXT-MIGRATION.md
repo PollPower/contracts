@@ -442,6 +442,8 @@ All checks must pass before declaring T+0 complete.
 7. Confirm mirror-write daemon exists, tested, and deploy-ready.
 8. Execute T+0 deploy ceremony; record deployed v8 address.
 9. Bootstrap mirror root/head and start mirror-write daemon.
+9a. Confirm owner-advance ceremony script + runbook are staged and tested (§5.9 + `WI-14-CEREMONY-SKELETON.md` §12).
+9b. Confirm multisig keyholder availability commitment for the weekly cadence is signed off in writing.
 10. Repoint settlement-api and dependent services to v8; restart processes.
 11. Run first canary settle on v8; verify success.
 12. Verify checklist in section 9 completely.
