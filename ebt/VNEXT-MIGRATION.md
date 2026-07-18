@@ -459,6 +459,7 @@ All items below require explicit resolution before ceremony execution.
 1. **Sequencing lock:** exact merge order and timing between this migration doc and `WI-14-CEREMONY-SKELETON.md` on `main`. **[GARRETT + SUPERVISING SESSION]**
 2. **T+0 calendar date:** what exact date/time defines T+0 for this cutover. **[GARRETT + SUPERVISING SESSION]**
 3. **Ceremony keyholders:** proceed with pilot-mock keys or complete H-1 remediation first. **[GARRETT + SUPERVISING SESSION]**
-4. **Mirror-write daemon ownership:** if not already productionized, who delivers and operates it for ceremony day. **[GARRETT + SUPERVISING SESSION]**
-5. **CAL-vNext-M1:** final mirror-stale tolerance calibration for operational liveness margin. **[GARRETT + SUPERVISING SESSION]**
+4. **Mirror-write daemon ownership:** implementation branch `feat/wi14-mirror-daemon` in `PollPower/settlement-api` (per `MIRROR-DAEMON-BRIEF.md` in workspace scratch - not merged at time of this doc patch). Operator TBD. **[GARRETT + SUPERVISING SESSION]**
+5. **CAL-vNext-M1:** final mirror-stale tolerance calibration for operational liveness margin. Weekly owner-advance cadence confirmed 2026-07-18. Draft value from `VNEXT-DESIGN.md` §3.3 is 4 (events). For weekly cadence at pilot-scale event rate this is very tight; reconsider upward before mainnet Phase 2. **Cadence: RESOLVED (weekly + alert-on-50%-lag). Tolerance value: [GARRETT + SUPERVISING SESSION]**
 6. **CAL-13.2-D:** final Merkle depth calibration for action-log scaffold (currently noted as 24). **[GARRETT + SUPERVISING SESSION]**
+7. **Owner-advance ceremony operator + multisig availability commitment.** Weekly cadence confirmed; who signs off on the weekly availability commitment, and what is the escalation path if quorum is unreachable in a given week? **[GARRETT + SUPERVISING SESSION]**
