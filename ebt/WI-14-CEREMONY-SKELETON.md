@@ -32,7 +32,8 @@ This document is the T+0 deploy ceremony plan for EBT v8 on Midnight Preview mai
 6. Contract owner + multisig quorum are physically/logically available for the ceremony window (no asynchronous "sign later" assumption).
 7. Deploy operator has Kenya environment ready (network sync, DUST, build artifacts, exact commit checkout).
 8. Bootstrap value for `_registryActionLogRootMirror` is precomputed from live TariffRegistry state using the section 5 method, with witness package prepared (`sampleEntry + proof`).
-9. `initialize()` input set is signed off in writing: meter authority pubkey, escrow attestor pubkey, multisig authority hash, recipient addresses, and any other constructor/init inputs.  
+9. **Weekly owner-advance ceremony procedure signed off and tested end-to-end** (see §12). Weekly cadence + alert-triggered supersession confirmed by Garrett + supervising session 2026-07-18. Multisig keyholder availability commitment for the weekly cadence is signed off in writing.
+10. `initialize()` input set is signed off in writing: meter authority pubkey, escrow attestor pubkey, multisig authority hash, recipient addresses, and any other constructor/init inputs.  
    Recipient addresses remain `[GARRETT-DECIDED]`.
 
 ## 4. Ceremony steps (ordered list)
