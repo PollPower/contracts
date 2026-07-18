@@ -171,3 +171,102 @@ Assuming no failures, expect roughly: deploy about 5 minutes, initialize about 5
 6. **Ceremony date/time (T+0)** — Calendar lock for keyholder availability and change window. **[GARRETT + SUPERVISING SESSION]**
 7. **Bootstrap witness tooling provenance** — Which specific tool/script produces `sampleEntry + proof` from live TariffRegistry at ceremony time, and who signs off its output. **[GARRETT + SUPERVISING SESSION]**
 8. **Weekly owner-advance ceremony operator + escalation path** — Who owns the weekly ceremony execution and what happens if multisig quorum is unreachable in a given week? See §12 for the ceremony procedure. **[GARRETT + SUPERVISING SESSION]**
+
+## 12. Steady-state owner-advance ceremony (post-T+0, weekly)
+
+This is the operational ceremony that keeps `_registryActionLogRootMirror` current with the on-chain `TariffRegistry.registryActionLogRoot` throughout the v8 lifetime, until WI-14.1 replaces the owner-advance model with a public-witness advance.
+
+### 12.1 Purpose
+
+The mirror-write circuits (`mirrorRegisterLane`, `mirrorRetireLane`, `mirrorScheduleLifecycle`, `mirrorClassStatutoryTotal`, `mirrorActionLogHead`) verify inclusion proofs against `_registryActionLogRootMirror`, NOT against the current on-chain `registryActionLogRoot`. See `ebt/ebt-v8.compact` L491-500 (`verifyEventProof` asserts `reconstructedRoot == _registryActionLogRootMirror`).
+
+`_registryActionLogRootMirror` is updated only by `mirrorActionLogRoot`, which is `assertOnlyOwner()`-gated per `ebt/ebt-v8.compact` L742-770 (round-2 review-pass-2 fix, commit `9308a40`, 2026-07-18 00:20 JST). Verbatim trust-model comment:
+
+> TRUST MODEL: owner is the sole trust anchor for root advances (round 2
+> review-pass-2 fix). The witness (sampleEntry + proof) is
+> defense-in-depth against typo'd/malformed root installs by the owner
+> itself - it proves newRoot is internally consistent with a
+> well-formed Merkle path from a leaf, but does NOT anchor newRoot to
+> previously-trusted registry state. Full option-(iii) anchoring
+> requires TariffRegistry to expose per-transition commitments
+> (deferred to WI-14.1 pre-mainnet-Phase-2). In production the owner
+> is under multisig control so this is effectively multisig-gated.
+
+The registry rewrites `registryActionLogRoot` on every `emitAction` (`tariff-registry-v1.compact` L620). Between owner advances, the mirror-write daemon can only mirror events at seqs whose leaves are committed under the currently-mirrored root - see `VNEXT-MIGRATION.md` §5.3 for the operational-model explanation and daemon shape.
+
+Behaviour confirmed by `ebt/tests/vnext/T19-mirror-root-witness.test.mjs`.
+
+### 12.2 Cadence
+
+- **Baseline: weekly** (confirmed by Garrett + supervising session 2026-07-18 17:50 JST).
+- **Trigger-on-alert supersedes calendar:** when the daemon's `queueLagEvents` metric reaches `>= 50% * CAL_MIRROR_STALE_TOLERANCE`, the ceremony must be triggered immediately, not deferred to the weekly slot.
+- **Escalation if quorum unreachable in a given week:** owner-advance is deferred; the daemon continues serving reads on already-mirrored seqs; new-lane / retire / retune events queue; settles for events past the mirrored-root-seq fail with `LANE_MIRROR_STALE` once tolerance closes. Recovery is completing the ceremony as soon as quorum is available. Operator responsibility to declare degraded service in the interim.
+
+### 12.3 Keyholders required
+
+Same set as T+0 ceremony (see §2):
+
+- Contract owner (or multisig quorum acting as owner per production control path).
+- Multisig quorum (3-of-5) for the co-sign.
+- Mirror-write daemon operator (produces witness bundle).
+- Ceremony observer (records minute-by-minute).
+
+The meter authority, escrow attestor, deploy operator, and settlement-api operator roles from §2 are NOT required at each weekly ceremony (they were T+0 only).
+
+### 12.4 Prerequisites (checkable at each weekly ceremony)
+
+1. Mirror-write daemon healthy and reporting current `queueLagEvents`, `mirrorHeadSeq`, `registryHeadSeq`, and `mirroredRootSeq` metrics.
+2. Owner (multisig quorum) available; identity-checked; hardware wallets / signing tooling operational.
+3. Daemon operator has run the witness-bundle-generation script against the current registry state within the last 60 minutes and holds a valid candidate `(newRoot, sampleEntry, proof)` bundle.
+4. Bundle checksum has been posted to the keyholder channel for out-of-band verification.
+
+### 12.5 Ceremony steps (ordered list)
+
+1. **Step 1: Daemon operator produces the witness bundle**
+   - **Who:** Mirror-write daemon operator.
+   - **Command / action:** run the witness-bundle-generation script against the current TariffRegistry state (same procedure as §5 of this document - the T+0 bootstrap-witness tooling, re-run at the current registry tip).
+   - **Expected output:** `(newRoot, sampleEntry, proof)` bundle with reproducible checksum.
+   - **Verify:** operator posts the bundle checksum to the keyholder channel; at least one other keyholder recomputes the checksum independently within 30 minutes.
+   - **If failed:** regenerate; do NOT proceed until bundle is reproducible.
+
+2. **Step 2: Multisig quorum verifies the bundle**
+   - **Who:** Multisig quorum members (3-of-5).
+   - **Command / action:** each participant independently reads the current on-chain `registryActionLogRoot` from TariffRegistry, and confirms `newRoot` matches.
+   - **Expected output:** quorum agreement on the bundle validity.
+   - **Verify:** observer records each participant's confirmation.
+   - **If failed:** freeze ceremony; investigate discrepancy (indexer staleness, wrong contract address, bundle recompute bug).
+
+3. **Step 3: Owner (multisig) submits `mirrorActionLogRoot`**
+   - **Who:** Contract owner via multisig quorum co-sign path.
+   - **Command / action:** submit `mirrorActionLogRoot(newRoot, sampleEntry, proof)` to v8.
+   - **Expected output:** Transaction succeeds; `_registryActionLogRootMirror` equals `newRoot`.
+   - **Verify:** observer reads `_registryActionLogRootMirror` from v8 and compares to `newRoot`.
+   - **If failed:** correct witness/root and retry with new bundle; do NOT retry with the same bundle if the failure was a proof mismatch (indicates witness-generation drift).
+
+4. **Step 4: Daemon detects advance and drains queue**
+   - **Who:** Mirror-write daemon (automatic).
+   - **Expected output:** `queueLagEvents` drops toward zero over the next N poll intervals as the daemon submits mirror-writes for previously-queued events.
+   - **Verify:** observer + daemon operator confirm `queueLagEvents < 5%` of `CAL_MIRROR_STALE_TOLERANCE` within 10 minutes.
+   - **If failed:** debug daemon; check daemon logs for `EVENT_PROOF_INVALID` reverts (indicates a hash-shape mismatch between daemon's local tree and the newly-installed root - halt daemon and reconcile).
+
+5. **Step 5: Post-ceremony attestation**
+   - **Who:** Multisig quorum + observer.
+   - **Command / action:** sign a ceremony attestation document (hash of new root, submitting tx hash, participant list, queue-drain confirmation).
+   - **Expected output:** signed attestation stored with weekly ceremony records.
+
+### 12.6 Post-ceremony verification checklist
+
+- [ ] `_registryActionLogRootMirror` equals current on-chain `registryActionLogRoot`.
+- [ ] Daemon `queueLagEvents` returned to baseline.
+- [ ] Latest settle canary succeeds (recommended: one canary settle against v8 within 60 minutes of ceremony completion).
+- [ ] Signed attestation filed.
+
+### 12.7 Rollback
+
+- **Bundle rejected on-chain (proof invalid):** correct bundle generation and retry. Failed submission is a no-op; no state change. Daemon queue continues to grow until a successful advance.
+- **Daemon halts after advance (root mismatch during drain):** debug daemon-side tree state; if local tree diverges from registry, halt daemon and reconstruct tree from a fresh replay of the registry `_actionLog`. No fund risk; this is availability only.
+- **Quorum unreachable:** defer ceremony; declare degraded service; reschedule as soon as quorum available. If settles begin failing with `LANE_MIRROR_STALE` before ceremony recovers, that is expected degradation, not a fund-safety incident.
+
+### 12.8 Sunset condition
+
+This ceremony can be retired once WI-14.1 lands and v8 is upgraded (or forked) to expose a `mirrorActionLogRootPublic` circuit backed by per-transition commitments from TariffRegistry (option-(iii) trust anchor). Until then, weekly owner-advance is the operational reality.
