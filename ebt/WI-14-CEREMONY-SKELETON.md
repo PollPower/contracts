@@ -8,12 +8,12 @@ This document is the T+0 deploy ceremony plan for EBT v8 on Midnight Preview mai
 
 | Role | Key material | Custody today | Custody at ceremony |
 |---|---|---|---|
-| Contract owner (for `execOwnerOp` / owner-gated circuits such as `initialize` and `mirrorActionLogRoot`) | Owner signing key (production control path is under multisig governance per WI-14 review notes) | `[GARRETT-DECIDED]` | Present, identity-checked, signs owner operations live |
-| Multisig quorum members (for `execMultisigOp`) | Multisig admin Ed25519 keys (3-of-5) | Pilot ring set currently active (see H-1 note below) | 3-of-5 online and able to co-sign required governance actions |
+| Contract owner (for `execOwnerOp` / owner-gated circuits such as `initialize` and `mirrorActionLogRoot`) | Owner signing key (production control path is under multisig governance per WI-14 review notes) | `[GARRETT-DECIDED]` | Present, identity-checked, signs owner operations live at T+0 AND signs weekly owner-advance ceremonies (see §12) throughout the v8 lifetime until WI-14.1 lands |
+| Multisig quorum members (for `execMultisigOp`) | Multisig admin Ed25519 keys (3-of-5) | Pilot ring set currently active (see H-1 note below) | 3-of-5 online and able to co-sign required governance actions at T+0 AND for the weekly owner-advance ceremony (§12) throughout v8 lifetime |
 | Meter authority | Meter Authority signer pubkey for `_meterAuthorityPubkey` | Live relay meter-authority service key (`GET /metadata`) | Same key installed at `initialize()` unless rotated in a prior approved ceremony |
 | Escrow attestor | Escrow attestor pubkey for `_escrowAttestorPubkey` (redeem solvency guard) | `[GARRETT-DECIDED]` | Pubkey supplied at `initialize()` and attestor reachable for post-cutover checks |
 | Deploy operator | Deployer key + deployment workstation/session on Kenya | `[GARRETT-DECIDED]` | Runs deploy transaction and records tx hash/address |
-| Mirror-write daemon operator | Daemon runtime key(s) and service credentials for mirror transactions | No productionized v8 mirror daemon path found in this repo; PR #40 flags this as a prerequisite gap | Must own a tested deployable daemon before ceremony starts |
+| Mirror-write daemon operator | Daemon runtime key(s) and service credentials for mirror transactions | No productionized v8 mirror daemon path found in this repo; PR #40 flags this as a prerequisite gap | Must own a tested deployable daemon before ceremony starts AND own the pre-flight witness-bundle-generation procedure for each weekly owner-advance ceremony (§12 step 1) |
 | Settlement-api operator | Kenya service access (pm2 + config secrets) | Existing operator for `settlement-api` | Flips contract target to v8 and validates first settle |
 | Ceremony observer / recorder | No signing key (audit witness role) | `[GARRETT-DECIDED]` | Maintains minute-by-minute record and captures attestation artifacts |
 
