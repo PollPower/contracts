@@ -135,21 +135,52 @@ This runbook implements (a). It does not re-litigate the path decision.
   - Expected home: `settlement-api` operational stack (same operator domain), exact file path currently **not present**.
 - **Files needing change (grep evidence)**
   - No existing `mirrorRegisterLane`, `mirrorRetireLane`, `mirrorClassStatutoryTotal`, `mirrorActionLogRoot`, or `mirrorActionLogHead` caller found in `settlement-api` source tree at author-time.
+- **Design finding (2026-07-18 discovery, confirmed by Garrett 17:48 JST):** the mirror-write circuits verify inclusion against `_registryActionLogRootMirror`, NOT against the current on-chain `registryActionLogRoot`. See `ebt/ebt-v8.compact` L491-500 (`verifyEventProof` reconstructs a root from leaf+proof and asserts equality with the mirrored root scalar). `_registryActionLogRootMirror` is updated only by `mirrorActionLogRoot`, which is `assertOnlyOwner()`-gated (round-2 review-pass-2 fix, commit `9308a40`). The trust-model comment at `ebt-v8.compact` L742-750 states verbatim:
+
+  > "TRUST MODEL: owner is the sole trust anchor for root advances (round 2
+  > review-pass-2 fix). The witness (sampleEntry + proof) is defense-in-depth
+  > against typo'd/malformed root installs by the owner itself - it proves
+  > newRoot is internally consistent with a well-formed Merkle path from a
+  > leaf, but does NOT anchor newRoot to previously-trusted registry state.
+  > Full option-(iii) anchoring requires TariffRegistry to expose
+  > per-transition commitments (deferred to WI-14.1 pre-mainnet-Phase-2).
+  > In production the owner is under multisig control so this is effectively
+  > multisig-gated."
+
+  The registry rewrites `registryActionLogRoot` on every `emitAction` call (`tariff-registry/tariff-registry-v1.compact` L620: `registryActionLogRoot = _actionLogClimb;`), so registry root and mirrored root diverge after the first post-bootstrap event.
+
+  Behaviour confirmed by `ebt/tests/vnext/T19-mirror-root-witness.test.mjs` test named "T19 valid witness under a new root advances the trust anchor" — which explicitly walks bootstrap -> new event -> owner-called `mirrorActionLogRoot` with the new-root + new-event witness. Non-owner cases at test names "T19 non-owner cannot call mirrorActionLogRoot even with valid witness" and "T19 non-owner cannot install self-consistent attacker-computed root+witness" confirm the owner gate is enforced.
+
+- **Operational model — (A) periodic-owner-advance (confirmed by Garrett + supervising session 2026-07-18 17:48 JST):**
+  - The daemon operates ONLY on registry events at seqs `<= _registryActionLogHeadSeqMirror`. It queues events past that bound.
+  - The owner (multisig) periodically calls `mirrorActionLogRoot` to advance `_registryActionLogRootMirror` — see §5.9 for the operational ceremony spec.
+  - The daemon exposes a `queueLagEvents` metric equal to (`registry._actionSeq - 1`) - `_registryActionLogHeadSeqMirror`.
+  - **Owner-advance cadence:** weekly, unless the daemon's `queueLagEvents` metric reaches `>= 50%` of `CAL_MIRROR_STALE_TOLERANCE`, in which case ceremony is triggered immediately.
+  - Full option-(iii) public-witness root advance (removing the weekly-ceremony burden) is deferred to WI-14.1 pre-mainnet-Phase-2 per the ebt-v8 trust-model comment quoted above.
 - **Nature of change**
   - New daemon must:
-    - Subscribe to TariffRegistry event stream.
-    - Build witness payloads.
-    - Submit v8 `mirror*` transactions.
-    - Track health and lag.
+    - Subscribe to TariffRegistry state (via Midnight indexer `queryContractState`) and detect new `_actionSeq` values.
+    - Reconstruct the event body from live registry state, verify the locally computed `payloadHash` matches `entry.payloadHash`, halt + alert on mismatch.
+    - Maintain a full local depth-24 Merkle replica of the registry's `_actionLog` tree, byte-exact-shape with `appendActionLogLeaf` (`tariff-registry-v1.compact` L597-627) and `reconstructActionLogRoot` (`ebt-v8.compact` L467-484).
+    - Build inclusion proofs against `_registryActionLogRootMirror` (NOT against the current on-chain registry root).
+    - Submit `mirrorRegisterLane` / `mirrorRetireLane` / `mirrorScheduleLifecycle` / `mirrorClassStatutoryTotal` for events at seqs `<= _registryActionLogHeadSeqMirror`.
+    - Periodically submit `mirrorActionLogHead(newHeadSeq, latestEntry, proof)` where `newHeadSeq <= _registryActionLogHeadSeqMirror` (the head advance is also bounded by the mirrored root — the cited event must be included under the mirrored root).
+    - Expose `queueLagEvents`, `mirrorHeadSeq`, `registryHeadSeq`, `mirroredRootSeq`, `secondsSinceLastOwnerAdvance` metrics.
+    - Fire an alert when `queueLagEvents >= 50% * CAL_MIRROR_STALE_TOLERANCE` to trigger the owner-advance ceremony ahead of the weekly cadence.
+    - Track health, lag, and single-instance advisory lock (same pattern as `contracts/dev/session-3/batch-payer/keeper.ts`).
 - **Testing gate before deploy**
-  - Fresh v8 deploy with empty mirror: daemon catches up from live TariffRegistry and settles start succeeding.
-  - Induced lag test: stale mirror blocks settle; daemon recovery unblocks settle.
+  - Fresh v8 deploy with owner-installed bootstrap root: daemon mirrors all events at seqs `<= bootstrapSeq` and settles start succeeding.
+  - Owner-advance simulation: owner calls `mirrorActionLogRoot` with a new root; daemon detects the advance and drains its queue up to the new mirrored-root seq.
+  - Induced lag test: stall the owner-advance simulator; confirm `queueLagEvents` grows monotonically and the daemon's alert fires at 50% tolerance. Settle failures with `LANE_MIRROR_STALE` become expected once the mirrored head lags past `CAL_MIRROR_STALE_TOLERANCE`.
+  - Recovery test: unstall owner advance; daemon drains queue; settles resume.
 - **Rollback**
   - If daemon fails at cutover, either:
     - bring daemon healthy and re-run mirror bootstrap, or
     - temporarily flip settlement-api back to v7.4.2 until daemon is restored.
+  - If owner-advance ceremony fails (multisig quorum unavailable), daemon continues serving reads on already-mirrored seqs. Settles for events past the mirrored-root-seq fail with `LANE_MIRROR_STALE` once the tolerance window closes. Recovery is to complete the owner-advance ceremony.
 - **Prerequisite linkage**
   - If daemon is not written + tested by ceremony, T+0 must not proceed.
+  - If owner-advance ceremony script is not written + tested by ceremony, T+0 must not proceed (see §5.9).
 
 ### 5.4 dashboard (`pollpower-ops-dashboard`)
 
