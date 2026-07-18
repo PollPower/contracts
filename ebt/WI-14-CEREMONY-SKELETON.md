@@ -164,9 +164,10 @@ Assuming no failures, expect roughly: deploy about 5 minutes, initialize about 5
 ## 9. Open questions
 
 1. **Pilot-mock keys vs H-1 remediation sequencing** — Does v8 cutover run before Tangem ring swap, or is H-1 remediation a hard gate first? **[GARRETT + SUPERVISING SESSION]**
-2. **CAL-vNext-M1 final lock** — Final mirror-stale tolerance for production freshness checks. **[GARRETT + SUPERVISING SESSION]**
+2. **CAL-vNext-M1 final lock** — Final mirror-stale tolerance for production freshness checks. Weekly owner-advance cadence confirmed 2026-07-18. Draft tolerance value from `VNEXT-DESIGN.md` §3.3 is 4 events; for weekly cadence at pilot-scale event rate this is very tight and should be reconsidered upward before mainnet Phase 2. **Cadence: RESOLVED (weekly + alert-on-50%-lag). Tolerance value: [GARRETT + SUPERVISING SESSION]**
 3. **CAL-13.2-D final lock** — Action-log Merkle depth is scaffolded as 24 in current registry source; production value unresolved. **[GARRETT + SUPERVISING SESSION]**
-4. **Mirror-write daemon delivery owner + readiness** — No concrete v8 mirror-daemon implementation path is present in this repo; assign owner and readiness criteria before T+0. **[GARRETT + SUPERVISING SESSION]**
+4. **Mirror-write daemon delivery owner + readiness** — No concrete v8 mirror-daemon implementation path is present in this repo; assign owner and readiness criteria before T+0. Daemon implementation brief authored on 2026-07-18 in workspace scratch (`MIRROR-DAEMON-BRIEF.md`) reflecting operational model (A) confirmed by Garrett at 17:48 JST; implementation branch expected at `PollPower/settlement-api:feat/wi14-mirror-daemon`. **Operator: [GARRETT + SUPERVISING SESSION]**
 5. **`initialize()` recipient addresses** — Exact recipient address set is not specified in-repo and must be supplied explicitly. **[GARRETT-DECIDED]**
 6. **Ceremony date/time (T+0)** — Calendar lock for keyholder availability and change window. **[GARRETT + SUPERVISING SESSION]**
 7. **Bootstrap witness tooling provenance** — Which specific tool/script produces `sampleEntry + proof` from live TariffRegistry at ceremony time, and who signs off its output. **[GARRETT + SUPERVISING SESSION]**
+8. **Weekly owner-advance ceremony operator + escalation path** — Who owns the weekly ceremony execution and what happens if multisig quorum is unreachable in a given week? See §12 for the ceremony procedure. **[GARRETT + SUPERVISING SESSION]**
