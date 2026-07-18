@@ -46,8 +46,22 @@ Each prerequisite is ceremony-start checkable.
    - `settlement-api`, keeper process, dashboard, consumer app, producer app, relay APIs updated or explicitly confirmed unaffected.
 
 7. **Mirror-write daemon exists, tested, and deploy-ready.**
-   - It must watch TariffRegistry events and submit v8 `mirror*` circuits.
+   - It must watch TariffRegistry events and submit v8 `mirror*` circuits
+     for events at seqs `<= _registryActionLogHeadSeqMirror` (see §5.3
+     for the constraint and §5.9 for the owner-advance ceremony that
+     periodically raises this bound).
    - Without it, `_registeredLanesMirror` remains empty and settles revert.
+
+8. **Owner-advance ceremony operational owner + schedule signed off.**
+   - Weekly cadence confirmed 2026-07-18 (Garrett + supervising session);
+     trigger-on-alert supersedes the calendar when daemon queue-lag
+     reaches `>= 50%` of `CAL_MIRROR_STALE_TOLERANCE`.
+   - Ceremony script + runbook must exist and be tested against the
+     bootstrap flow before T+0.
+   - Multisig keyholder availability commitment for weekly cadence must
+     be signed off in writing.
+   - See `WI-14-CEREMONY-SKELETON.md` §12 for the operational ceremony
+     spec (authored under the docs patch that lands alongside this file).
 
 ## 4. Migration approach — expand VNEXT-DESIGN section 9.1
 
@@ -121,21 +135,52 @@ This runbook implements (a). It does not re-litigate the path decision.
   - Expected home: `settlement-api` operational stack (same operator domain), exact file path currently **not present**.
 - **Files needing change (grep evidence)**
   - No existing `mirrorRegisterLane`, `mirrorRetireLane`, `mirrorClassStatutoryTotal`, `mirrorActionLogRoot`, or `mirrorActionLogHead` caller found in `settlement-api` source tree at author-time.
+- **Design finding (2026-07-18 discovery, confirmed by Garrett 17:48 JST):** the mirror-write circuits verify inclusion against `_registryActionLogRootMirror`, NOT against the current on-chain `registryActionLogRoot`. See `ebt/ebt-v8.compact` L491-500 (`verifyEventProof` reconstructs a root from leaf+proof and asserts equality with the mirrored root scalar). `_registryActionLogRootMirror` is updated only by `mirrorActionLogRoot`, which is `assertOnlyOwner()`-gated (round-2 review-pass-2 fix, commit `9308a40`). The trust-model comment at `ebt-v8.compact` L742-750 states verbatim:
+
+  > TRUST MODEL: owner is the sole trust anchor for root advances (round 2
+  > review-pass-2 fix). The witness (sampleEntry + proof) is
+  > defense-in-depth against typo'd/malformed root installs by the owner
+  > itself - it proves newRoot is internally consistent with a
+  > well-formed Merkle path from a leaf, but does NOT anchor newRoot to
+  > previously-trusted registry state. Full option-(iii) anchoring
+  > requires TariffRegistry to expose per-transition commitments
+  > (deferred to WI-14.1 pre-mainnet-Phase-2). In production the owner
+  > is under multisig control so this is effectively multisig-gated.
+
+  The registry rewrites `registryActionLogRoot` on every `emitAction` call (`tariff-registry/tariff-registry-v1.compact` L620: `registryActionLogRoot = _actionLogClimb;`), so registry root and mirrored root diverge after the first post-bootstrap event.
+
+  Behaviour confirmed by `ebt/tests/vnext/T19-mirror-root-witness.test.mjs` test named "T19 valid witness under a new root advances the trust anchor" — which explicitly walks bootstrap -> new event -> owner-called `mirrorActionLogRoot` with the new-root + new-event witness. Non-owner cases at test names "T19 non-owner cannot call mirrorActionLogRoot even with valid witness" and "T19 non-owner cannot install self-consistent attacker-computed root+witness" confirm the owner gate is enforced.
+
+- **Operational model — (A) periodic-owner-advance (confirmed by Garrett + supervising session 2026-07-18 17:48 JST):**
+  - The daemon operates ONLY on registry events at seqs `<= _registryActionLogHeadSeqMirror`. It queues events past that bound.
+  - The owner (multisig) periodically calls `mirrorActionLogRoot` to advance `_registryActionLogRootMirror` — see §5.9 for the operational ceremony spec.
+  - The daemon exposes a `queueLagEvents` metric equal to (`registry._actionSeq - 1`) - `_registryActionLogHeadSeqMirror`.
+  - **Owner-advance cadence:** weekly, unless the daemon's `queueLagEvents` metric reaches `>= 50%` of `CAL_MIRROR_STALE_TOLERANCE`, in which case ceremony is triggered immediately.
+  - Full option-(iii) public-witness root advance (removing the weekly-ceremony burden) is deferred to WI-14.1 pre-mainnet-Phase-2 per the ebt-v8 trust-model comment quoted above.
 - **Nature of change**
   - New daemon must:
-    - Subscribe to TariffRegistry event stream.
-    - Build witness payloads.
-    - Submit v8 `mirror*` transactions.
-    - Track health and lag.
+    - Subscribe to TariffRegistry state (via Midnight indexer `queryContractState`) and detect new `_actionSeq` values.
+    - Reconstruct the event body from live registry state, verify the locally computed `payloadHash` matches `entry.payloadHash`, halt + alert on mismatch.
+    - Maintain a full local depth-24 Merkle replica of the registry's `_actionLog` tree, byte-exact-shape with `appendActionLogLeaf` (`tariff-registry-v1.compact` L597-627) and `reconstructActionLogRoot` (`ebt-v8.compact` L467-484).
+    - Build inclusion proofs against `_registryActionLogRootMirror` (NOT against the current on-chain registry root).
+    - Submit `mirrorRegisterLane` / `mirrorRetireLane` / `mirrorScheduleLifecycle` / `mirrorClassStatutoryTotal` for events at seqs `<= _registryActionLogHeadSeqMirror`.
+    - Periodically submit `mirrorActionLogHead(newHeadSeq, latestEntry, proof)` where `newHeadSeq <= _registryActionLogHeadSeqMirror` (the head advance is also bounded by the mirrored root — the cited event must be included under the mirrored root).
+    - Expose `queueLagEvents`, `mirrorHeadSeq`, `registryHeadSeq`, `mirroredRootSeq`, `secondsSinceLastOwnerAdvance` metrics.
+    - Fire an alert when `queueLagEvents >= 50% * CAL_MIRROR_STALE_TOLERANCE` to trigger the owner-advance ceremony ahead of the weekly cadence.
+    - Track health, lag, and single-instance advisory lock (same pattern as `contracts/dev/session-3/batch-payer/keeper.ts`).
 - **Testing gate before deploy**
-  - Fresh v8 deploy with empty mirror: daemon catches up from live TariffRegistry and settles start succeeding.
-  - Induced lag test: stale mirror blocks settle; daemon recovery unblocks settle.
+  - Fresh v8 deploy with owner-installed bootstrap root: daemon mirrors all events at seqs `<= bootstrapSeq` and settles start succeeding.
+  - Owner-advance simulation: owner calls `mirrorActionLogRoot` with a new root; daemon detects the advance and drains its queue up to the new mirrored-root seq.
+  - Induced lag test: stall the owner-advance simulator; confirm `queueLagEvents` grows monotonically and the daemon's alert fires at 50% tolerance. Settle failures with `LANE_MIRROR_STALE` become expected once the mirrored head lags past `CAL_MIRROR_STALE_TOLERANCE`.
+  - Recovery test: unstall owner advance; daemon drains queue; settles resume.
 - **Rollback**
   - If daemon fails at cutover, either:
     - bring daemon healthy and re-run mirror bootstrap, or
     - temporarily flip settlement-api back to v7.4.2 until daemon is restored.
+  - If owner-advance ceremony fails (multisig quorum unavailable), daemon continues serving reads on already-mirrored seqs. Settles for events past the mirrored-root-seq fail with `LANE_MIRROR_STALE` once the tolerance window closes. Recovery is to complete the owner-advance ceremony.
 - **Prerequisite linkage**
   - If daemon is not written + tested by ceremony, T+0 must not proceed.
+  - If owner-advance ceremony script is not written + tested by ceremony, T+0 must not proceed (see §5.9).
 
 ### 5.4 dashboard (`pollpower-ops-dashboard`)
 
@@ -225,6 +270,20 @@ This runbook implements (a). It does not re-litigate the path decision.
   - Relay mint/settlement flows succeed against updated settlement-api using v8 config.
 - **Rollback**
   - Revert relay service to previous release and/or point to prior settlement-api build until payload compatibility is restored.
+
+### 5.9 Owner-advance operational ceremony (new required procedure)
+
+- **What it is:** a keyholder ceremony where the contract owner (multisig quorum) calls `mirrorActionLogRoot` on the live v8 contract to advance `_registryActionLogRootMirror` to the current on-chain `registryActionLogRoot` value, and re-anchors the trust anchor.
+- **Why it exists:** because `mirrorActionLogRoot` is owner-gated per the trust model quoted in §5.3, and the mirror-write circuits verify proofs against the mirrored root (not the current on-chain registry root), the daemon cannot advance the trust anchor itself. Without a periodic owner-advance ceremony, `_registryActionLogRootMirror` stays frozen at the bootstrap value, the daemon's queue backs up past `CAL_MIRROR_STALE_TOLERANCE`, and settles start failing with `LANE_MIRROR_STALE`.
+- **Cadence:** weekly (confirmed by Garrett + supervising session 2026-07-18 17:48 JST); trigger-on-alert supersedes the calendar when daemon `queueLagEvents >= 50% * CAL_MIRROR_STALE_TOLERANCE`.
+- **Who runs it:** contract owner (multisig quorum) + observer. Mirror-write daemon operator provides the pre-flight witness bundle.
+- **Concrete procedure:** see `WI-14-CEREMONY-SKELETON.md` §12 (steady-state owner-advance ceremony). At a high level:
+  1. Daemon operator produces a candidate `(newRoot, sampleEntry, proof)` bundle from the current registry state (same bootstrap-witness tooling from §5 of the ceremony skeleton, re-run against the current registry tip).
+  2. Multisig quorum verifies the bundle out-of-band.
+  3. Owner submits `mirrorActionLogRoot(newRoot, sampleEntry, proof)`.
+  4. Daemon detects the advance and drains its queue.
+- **Post-execution verification:** daemon `queueLagEvents` drops to zero (or close to it, if events have landed during the ceremony); observer confirms `_registryActionLogRootMirror` equals the current on-chain `registryActionLogRoot`.
+- **Deferral path:** WI-14.1 targets option-(iii) public-witness root advance, which would remove the weekly-ceremony burden by allowing any honest actor to advance the root with a cryptographic (not authority-based) witness. Until WI-14.1 lands, weekly owner-advance is operational reality.
 
 ## 6. Sunset schedule — expand VNEXT-DESIGN section 9.2
 
@@ -383,6 +442,8 @@ All checks must pass before declaring T+0 complete.
 7. Confirm mirror-write daemon exists, tested, and deploy-ready.
 8. Execute T+0 deploy ceremony; record deployed v8 address.
 9. Bootstrap mirror root/head and start mirror-write daemon.
+9a. Confirm owner-advance ceremony script + runbook are staged and tested (§5.9 + `WI-14-CEREMONY-SKELETON.md` §12).
+9b. Confirm multisig keyholder availability commitment for the weekly cadence is signed off in writing.
 10. Repoint settlement-api and dependent services to v8; restart processes.
 11. Run first canary settle on v8; verify success.
 12. Verify checklist in section 9 completely.
@@ -398,6 +459,7 @@ All items below require explicit resolution before ceremony execution.
 1. **Sequencing lock:** exact merge order and timing between this migration doc and `WI-14-CEREMONY-SKELETON.md` on `main`. **[GARRETT + SUPERVISING SESSION]**
 2. **T+0 calendar date:** what exact date/time defines T+0 for this cutover. **[GARRETT + SUPERVISING SESSION]**
 3. **Ceremony keyholders:** proceed with pilot-mock keys or complete H-1 remediation first. **[GARRETT + SUPERVISING SESSION]**
-4. **Mirror-write daemon ownership:** if not already productionized, who delivers and operates it for ceremony day. **[GARRETT + SUPERVISING SESSION]**
-5. **CAL-vNext-M1:** final mirror-stale tolerance calibration for operational liveness margin. **[GARRETT + SUPERVISING SESSION]**
+4. **Mirror-write daemon ownership:** implementation branch `feat/wi14-mirror-daemon` in `PollPower/settlement-api` (per `MIRROR-DAEMON-BRIEF.md` in workspace scratch - not merged at time of this doc patch). Operator TBD. **[GARRETT + SUPERVISING SESSION]**
+5. **CAL-vNext-M1:** final mirror-stale tolerance calibration for operational liveness margin. Weekly owner-advance cadence confirmed 2026-07-18. Draft value from `VNEXT-DESIGN.md` §3.3 is 4 (events). For weekly cadence at pilot-scale event rate this is very tight; reconsider upward before mainnet Phase 2. **Cadence: RESOLVED (weekly + alert-on-50%-lag). Tolerance value: [GARRETT + SUPERVISING SESSION]**
 6. **CAL-13.2-D:** final Merkle depth calibration for action-log scaffold (currently noted as 24). **[GARRETT + SUPERVISING SESSION]**
+7. **Owner-advance ceremony operator + multisig availability commitment.** Weekly cadence confirmed; who signs off on the weekly availability commitment, and what is the escalation path if quorum is unreachable in a given week? **[GARRETT + SUPERVISING SESSION]**
