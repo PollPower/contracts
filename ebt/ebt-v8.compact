@@ -1,0 +1,1364 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PollPower EBT Token v8 (vNext) — unshielded, contract-minted ledger token
+//                                  with statutory-lane settlement sourced from
+//                                  a Registry-mirror, per-coin tariff-path
+//                                  metadata, escrow-aware redemption, and the
+//                                  EBT-H-1 mint-redirection fix.
+//
+// Author:  PollPower (WI-14 executing session)
+// Date:    2026-07-17
+// Design:  ebt/VNEXT-DESIGN.md (design of record — "spec how, not what").
+// Brief:   dispatch-briefs/WI-14-EBT-vNext-v2.md (spec of record — "what").
+// Base:    ebt/ebt-v7.4.2.compact (production baseline — HAT / attest /
+//          reissue / claimSplit / LD binding preserved by shape).
+// Registry: tariff-registry/tariff-registry-v1.compact @ c6f7c55 (WI-13.2:
+//          LaneRecord, laneKey, RegistryActionEntry.payloadHash,
+//          registryActionLogRoot, actionLogNode Merkle scheme).
+// Tooling: compactc 0.30.0, language 0.16..0.22 (WI-13 pin; 0.31.0 deferred).
+//
+// =============================================================================
+// WHAT CHANGES FROM V7.4.2  (WI-14 vNext — this is v8, a total break)
+// =============================================================================
+//
+// The four hard-coded protocol splits (_bpsProducer/_bpsOperations/
+// _bpsDividend/_bpsDao) are REMOVED. Settlement policy is now sourced from a
+// federation-approved TariffRegistry schedule, read in-circuit via a
+// SAME-CONTRACT MIRROR (Garrett 2026-07-17: read-pattern option (b)). No
+// contract-to-contract call to TariffRegistry exists (Compact forbids it).
+//
+//   A. Per-coin tariff-path metadata (WI-06 §2 / D-10): every settle records
+//      TariffPath { scheduleId, classPath, epoch, fiatValueAtMint }.  I-14-E.
+//   B. Multi-lane split resolution against the Registry-mirror.            I-14-B/C/K.
+//   C. Statutory-lane routing to remitAddress (mode==1 on-chain only).     I-14-D.
+//   D. Escrow-aware redemption (KES releases fiatValueAtMint; solvency
+//      guard re-checked in-circuit).                                       I-14-F.
+//   E. Mint-redirection fix (EBT-H-1): HAT signed payload includes
+//      producerAddr; domain-sep tag becomes "pollpower:ebt:v8:epoch1".     I-14-A.
+//
+// PRESERVED FROM V7.4.2 (do not reinvent):
+//   * Ownership + meter-authority rotation (execOwnerOp).
+//   * Multisig-gated LD binding (execMultisigOp) — bit-for-bit.
+//   * Producer attestation (attest/revoke).
+//   * LD binding: _dividendMintedLog + claimSplit pending-accrual model,
+//     BYTE-FOR-BYTE. I-14-H says any change to LD binding is OUT OF SCOPE, so
+//     vNext keeps the v7.4.2 shape: settle accrues ops/div/dao to pending;
+//     claimSplit mints them and writes the DividendMintedEntry the LD keeper's
+//     contract-scope filter (Session 9) reads. (This intentionally DIVERGES
+//     from VNEXT-DESIGN §5.2 step 14's inline LD mint, which would change LD
+//     binding and violate I-14-H — the brief invariant wins per §ESCALATION #10.)
+//   * manualReissue M-4 hardening (cap / cooldown / authority co-sign),
+//     extended only to carry TariffPath forward (I-14-E).
+//
+// =============================================================================
+// KEEPER MIRROR CONTRACT (v2 brief §KEEPER MIRROR CONTRACT; design §3 opt iii)
+// =============================================================================
+//
+// Mirror freshness mechanism = registry-side event commitment (design §3.2).
+// TariffRegistry (post-WI-13.2, merged c6f7c55) commits an append-only Merkle
+// tree over per-event `payloadHash` leaves and exports `registryActionLogRoot`.
+// Each EBT mirror-write circuit carries the registry event body + an EventProof
+// (inclusion proof) and verifies it against `_registryActionLogRootMirror`
+// before touching the mirror. A fabricated LaneRecord hashes to a different
+// leaf and the proof-verify assert fails (design §3.4(c)). LANE_MIRROR_STALE
+// fires at settle when a mirrored lane's writeActionSeq falls outside a bounded
+// window of `_registryActionLogHeadSeqMirror` (design §3.3).
+//
+// The mirror-write circuits are PUBLIC (design §7.7): any honest actor can
+// repair the mirror. Auth is entirely on the event proof. The two trust-anchor
+// scalars (_registryActionLogRootMirror, _registryActionLogHeadSeqMirror) are
+// also PUBLIC and witness-gated: any real registry event has a real Merkle
+// path under the real registry root, so a witness that reconstructs to the new
+// root (or proves inclusion of a real entry under the currently mirrored root
+// for the head advance) closes the trust-anchor gap without needing an owner
+// gate (review-pass-1 fix; VNEXT-DESIGN §3.2/§3.3/§7.1/§7.6 option iii).
+//
+// =============================================================================
+
+pragma language_version >= 0.16 && <= 0.22;
+
+import CompactStandardLibrary;
+
+// =============================================================================
+// Calibration placeholders — Garrett's call. DO NOT RESOLVE (v2 brief §CAL).
+// The literals below are NON-AUTHORITATIVE compilable scaffolds ONLY, mirrored
+// on the offline harness so tests can run; none of them resolves a CAL-n value.
+// =============================================================================
+
+// CAL-vNext-M1 — mirror stale tolerance (registry-event-count window) for the
+// LANE_MIRROR_STALE guard (design §3.3). Design DRAFT is 4; the literal below is
+// a NON-AUTHORITATIVE compilable scaffold (64) — like the registry's
+// CAL-13.2-D=24, this is NOT a resolution of CAL-vNext-M1.
+// TODO(calibration): CAL-vNext-M1 — Garrett + supervising session.
+pure circuit CAL_MIRROR_STALE_TOLERANCE(): Uint<64> { return 64 as Uint<64>; }
+
+// CAL-vNext-M2 — escrow-attestation stale tolerance (seconds) for the
+// ESCROW_ATTESTATION_STALE guard in redeem (design §6.2 step 5). Scaffold.
+// TODO(calibration): CAL-vNext-M2 — Garrett + supervising session.
+pure circuit CAL_ESCROW_STALE_TOLERANCE(): Uint<64> { return 3600 as Uint<64>; }
+
+// CAL-2 — fiatValueAtMint sanity band (WI-06 CAL-2). Scaffold floor/ceil.
+// TODO(calibration): CAL-2 — bounds fiatValueAtMint at settle and redeem.
+pure circuit CAL_2_FIAT_FLOOR(): Uint<64> { return 1 as Uint<64>; }
+pure circuit CAL_2_FIAT_CEIL():  Uint<64> { return 1000000000 as Uint<64>; }
+
+// Registry action-log Merkle depth. MUST equal WI-13.2 ACTION_LOG_DEPTH.
+// TODO(calibration): CAL-13.2-D — leave 24 in lockstep with the registry; this
+// is a compilable scaffold, NOT the resolved production depth. Do NOT resolve.
+pure circuit ACTION_LOG_DEPTH(): Uint<64> { return 24 as Uint<64>; }
+
+// Redemption kinds (design §6.1).
+pure circuit REDEMPTION_KES(): Uint<8> { return 0 as Uint<8>; }
+pure circuit REDEMPTION_KWH(): Uint<8> { return 1 as Uint<8>; }
+
+// =============================================================================
+// Witnesses (shared shape with EBT v7.4.2 / TariffRegistry / LD)
+// =============================================================================
+
+witness signature_valid(
+  pubkey: Bytes<32>,
+  messageHash: Bytes<32>,
+  signature: Bytes<64>,
+): Boolean;
+
+witness multisig_signature_valid(
+  payload:       Bytes<32>,
+  authorityHash: Bytes<32>,
+): Boolean;
+
+// =============================================================================
+// Structs
+// =============================================================================
+
+// --- preserved from v7.4.2 -------------------------------------------------
+
+struct AttestationStatus {
+  active: Boolean,
+  attestedAt: Uint<64>,
+  revokedAt: Uint<64>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+}
+
+// v8: ReissuanceEntry carries the source coin's TariffPath forward (I-14-E).
+struct ReissuanceEntry {
+  producer: Bytes<32>,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  reissuedAt: Uint<64>,
+  tpScheduleId:      Bytes<32>,
+  tpClassPath:       Bytes<32>,
+  tpEpoch:           Uint<64>,
+  tpFiatValueAtMint: Uint<64>,
+}
+
+// v8: RedemptionEntry carries per-coin TariffPath + redemptionKind (D-10).
+struct RedemptionEntry {
+  redeemer:   Bytes<32>,
+  amount:     Uint<128>,
+  payoutRef:  Bytes<32>,
+  redeemedAt: Uint<64>,
+  redemptionKind:    Uint<8>,
+  tpScheduleId:      Bytes<32>,
+  tpClassPath:       Bytes<32>,
+  tpEpoch:           Uint<64>,
+  tpFiatValueAtMint: Uint<64>,
+}
+
+// LD ledger-log entry — preserved byte-for-byte (I-14-H).
+struct DividendMintedEntry {
+  sourceTxSalt: Bytes<32>,
+  amount:       Uint<128>,
+  recipient:    ContractAddress,
+  blockTime:    Uint<64>,
+  epochColor:   Bytes<32>,
+}
+
+// --- net-new for vNext -----------------------------------------------------
+
+// Per-coin fiat metadata (WI-06 A2 → I-14-E). Event-side state (design §2.3).
+struct TariffPath {
+  scheduleId:      Bytes<32>,
+  classPath:       Bytes<32>,
+  epoch:           Uint<64>,
+  fiatValueAtMint: Uint<64>,
+}
+
+// settle audit row — carries the TariffPath into the keeper-observable log.
+struct SettleEntry {
+  sessionID:         Bytes<32>,
+  scheduleId:        Bytes<32>,
+  classPath:         Bytes<32>,
+  epoch:             Uint<64>,
+  fiatValueAtMint:   Uint<64>,
+  producerAddr:      Bytes<32>,
+  amount:            Uint<128>,
+}
+
+// WI-13.1 LaneRecord — 12 fields, DECLARATION ORDER identical to the registry
+// (tariff-registry-v1.compact L216) so payloadHash reconstruction matches.
+struct LaneRecord {
+  scheduleId:        Bytes<32>,
+  laneKindByte:      Uint<8>,
+  leviedBy:          Bytes<32>,
+  bpsShare:          Uint<16>,
+  remitAddress:      Bytes<32>,
+  basis:             Uint<8>,
+  applicabilityHash: Bytes<32>,
+  statuteRefHash:    Bytes<32>,
+  effectiveEpoch:    Uint<64>,
+  retiredEpoch:      Uint<64>,
+  remittanceMode:    Uint<8>,
+  registeredAt:      Uint<64>,
+}
+
+// Mirror value: the raw LaneRecord + the registry action-seq it was written
+// from (design §7.2 MirroredLaneRecord). writeActionSeq drives the §3.3
+// LANE_MIRROR_STALE freshness check.
+struct MirroredLaneRecord {
+  record:         LaneRecord,
+  writeActionSeq: Uint<64>,
+}
+
+// WI-13.1 ScheduleRecord — 8 fields, declaration order identical to the
+// registry (L179) so scheduleActionPayloadHash reconstruction matches.
+struct ScheduleRecord {
+  scheduleId:        Bytes<32>,
+  nodeId:            Bytes<32>,
+  scheduleHash:      Bytes<32>,
+  operatorPubkey:    Bytes<32>,
+  effectiveEpoch:    Uint<64>,
+  retiredEpoch:      Uint<64>,
+  refRateFiatPerKwh: Uint<64>,
+  registeredAt:      Uint<64>,
+}
+
+// WI-13.1 SplitShares — 6 fields, declaration order identical to the registry
+// (L159) so retuneActionPayloadHash reconstruction matches.
+struct SplitShares {
+  producerShareBps:  Uint<16>,
+  ldShareBps:        Uint<16>,
+  opsShareBps:       Uint<16>,
+  daoShareBps:       Uint<16>,
+  operatorMarginBps: Uint<16>,
+  statutoryTotalBps: Uint<16>,
+}
+
+// WI-13.2 RegistryActionEntry — 7 fields, declaration order identical to the
+// registry (L197). Consumed by the mirror-write circuits' EventProof check.
+struct RegistryActionEntry {
+  kind:        Uint<8>,
+  scheduleId:  Bytes<32>,
+  nodeId:      Bytes<32>,
+  epoch:       Uint<64>,
+  actionHash:  Bytes<32>,
+  emittedAt:   Uint<64>,
+  payloadHash: Bytes<32>,
+}
+
+// WI-14 EventProof (VNEXT-DESIGN §7.1). Inclusion proof of a registry event's
+// payloadHash leaf against registryActionLogRoot. Width = ACTION_LOG_DEPTH()
+// = 24 (CAL-13.2-D scaffold; keep in lockstep with the registry).
+struct EventProof {
+  actionSeq:      Uint<64>,
+  payloadHash:    Bytes<32>,
+  merkleProof:    Vector<24, Bytes<32>>,
+  merkleSiblings: Vector<24, Boolean>,
+}
+
+// =============================================================================
+// Ledger state
+// =============================================================================
+
+// --- preserved from v7.4.2 -------------------------------------------------
+export ledger _initialized: Boolean;
+export ledger _owner: Either<ZswapCoinPublicKey, ContractAddress>;
+export ledger _meterAuthorityPubkey: Bytes<32>;
+export ledger _multisigAuthority: Bytes<32>;
+export ledger _authorityRotationNonce: Counter;
+
+export ledger _totalSupply: Uint<128>;
+export ledger _totalRedeemed: Uint<128>;
+
+export ledger settlementCount: Counter;
+export ledger _settledSessions: Set<Bytes<32>>;
+
+// v8: the four hard-coded bps splits (_bpsProducer/_bpsOperations/_bpsDividend/
+// _bpsDao) are REMOVED — splits now come from the Registry-mirror at settle
+// time. The recipient fields remain: the non-statutory ops/ld/dao slices still
+// accrue to pending and are minted via claimSplit (LD binding preserved).
+export ledger _operationsRecipient: UserAddress;
+export ledger _dividendRecipient: UserAddress;
+export ledger _daoRecipient: UserAddress;
+
+export ledger producerAttestations: Map<Bytes<32>, AttestationStatus>;
+
+export ledger reissuanceCount: Counter;
+export ledger reissuanceLog: Map<Uint<64>, ReissuanceEntry>;
+export ledger _lastReissueTime: Uint<64>;
+
+export ledger _redemptionCount: Counter;
+export ledger _redemptionLog: Map<Uint<64>, RedemptionEntry>;
+
+export ledger _pendingOps: Uint<128>;
+export ledger _pendingDiv: Uint<128>;
+export ledger _pendingDao: Uint<128>;
+export ledger _splitClaimCount: Counter;
+
+export ledger _livingDividendAddress: Maybe<ContractAddress>;
+export ledger _dividendEventSeq: Counter;
+export ledger _dividendMintedLog: Map<Uint<64>, DividendMintedEntry>;
+
+// --- net-new for vNext -----------------------------------------------------
+
+// Registry-mirror maps (design §2.2). Key derivations are byte-identical to
+// TariffRegistry's own state.
+export ledger _registeredLanesMirror:        Map<Bytes<32>, MirroredLaneRecord>;
+export ledger _classStatutoryTotalBpsMirror: Map<Bytes<32>, Uint<16>>;
+export ledger _scheduleLiveMirror:           Map<Bytes<32>, Boolean>;
+
+// Trust anchors for the registry-side event commitment (design §3, §7.1).
+export ledger _registryActionLogRootMirror:  Bytes<32>;
+export ledger _registryActionLogHeadSeqMirror: Uint<64>;
+
+// Escrow solvency-attestation signer (design §6.4). Rotated via a multisig
+// setter (same shape as meter-authority rotation).
+export ledger _escrowAttestorPubkey: Bytes<32>;
+
+// settle audit log carrying per-coin TariffPath (design §2.3 / §5.2 step 15).
+export ledger _settleLog: Map<Uint<64>, SettleEntry>;
+
+// Transient Merkle-climb accumulator for EventProof reconstruction (locals are
+// immutable across for-loop iterations; matches the registry's _actionLogClimb
+// idiom). Holds no cross-call meaning; reset at the start of every reconstruct.
+export ledger _mirrorClimb: Bytes<32>;
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+circuit assertInitialized(): [] {
+  assert(_initialized, "Not initialized");
+}
+
+circuit assertOnlyOwner(): [] {
+  assertInitialized();
+  assert(_owner.is_left, "Owner is contract address; not supported");
+  const caller = ownPublicKey();
+  assert(caller == _owner.left, "Only owner");
+}
+
+// Token color — v8 domain (I-14-A / design §2.4). Distinct color from v7.4.2.
+circuit ebtColor(): Bytes<32> {
+  return tokenType(pad(32, "pollpower:ebt:v8:epoch1"), kernel.self());
+}
+
+circuit zero32(): Bytes<32> { return pad(32, ""); }
+
+circuit zeroLaneRecord(): LaneRecord {
+  return LaneRecord {
+    scheduleId:        pad(32, ""),
+    laneKindByte:      0 as Uint<8>,
+    leviedBy:          pad(32, ""),
+    bpsShare:          0 as Uint<16>,
+    remitAddress:      pad(32, ""),
+    basis:             0 as Uint<8>,
+    applicabilityHash: pad(32, ""),
+    statuteRefHash:    pad(32, ""),
+    effectiveEpoch:    0 as Uint<64>,
+    retiredEpoch:      0 as Uint<64>,
+    remittanceMode:    0 as Uint<8>,
+    registeredAt:      0 as Uint<64>,
+  };
+}
+
+// WI-13.1 laneKey — MUST be byte-identical to the registry (L406).
+circuit laneKey(
+  scheduleId:   Bytes<32>,
+  leviedBy:     Bytes<32>,
+  laneKindByte: Uint<8>,
+): Bytes<32> {
+  const kindBytes = (disclose(laneKindByte) as Field) as Bytes<32>;
+  return persistentHash<Vector<4, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:laneKey"),
+    disclose(scheduleId),
+    disclose(leviedBy),
+    kindBytes,
+  ]);
+}
+
+// EBT-side class key (design §2.2). Domain-sep is EBT-side; the registry keys
+// its own _classEntries differently (classSplitKey), so no cross-collision.
+circuit classKey(scheduleId: Bytes<32>, classPath: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:ebt:v8:classKey"),
+    disclose(scheduleId),
+    disclose(classPath),
+  ]);
+}
+
+// WI-13.2 §SCOPE B payload hashes — byte-identical to the registry so the
+// mirror-write cross-check (recHash == entry.payloadHash) matches.
+
+circuit laneActionPayloadHash(kind: Uint<8>, r: LaneRecord): Bytes<32> {
+  return persistentHash<Vector<14, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:actionPayload"),
+    (disclose(kind) as Field) as Bytes<32>,
+    r.scheduleId,
+    (r.laneKindByte as Field) as Bytes<32>,
+    r.leviedBy,
+    (r.bpsShare as Field) as Bytes<32>,
+    r.remitAddress,
+    (r.basis as Field) as Bytes<32>,
+    r.applicabilityHash,
+    r.statuteRefHash,
+    (r.effectiveEpoch as Field) as Bytes<32>,
+    (r.retiredEpoch as Field) as Bytes<32>,
+    (r.remittanceMode as Field) as Bytes<32>,
+    (r.registeredAt as Field) as Bytes<32>,
+  ]);
+}
+
+circuit scheduleActionPayloadHash(kind: Uint<8>, r: ScheduleRecord): Bytes<32> {
+  return persistentHash<Vector<10, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:actionPayload"),
+    (disclose(kind) as Field) as Bytes<32>,
+    r.scheduleId,
+    r.nodeId,
+    r.scheduleHash,
+    r.operatorPubkey,
+    (r.effectiveEpoch as Field) as Bytes<32>,
+    (r.retiredEpoch as Field) as Bytes<32>,
+    (r.refRateFiatPerKwh as Field) as Bytes<32>,
+    (r.registeredAt as Field) as Bytes<32>,
+  ]);
+}
+
+circuit retuneActionPayloadHash(
+  scheduleId:     Bytes<32>,
+  classPath:      Bytes<32>,
+  split:          SplitShares,
+  rateFiatPerKwh: Uint<64>,
+  lastUpdatedAt:  Uint<64>,
+): Bytes<32> {
+  const s = disclose(split);
+  return persistentHash<Vector<12, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:actionPayload"),
+    (2 as Field) as Bytes<32>,
+    disclose(scheduleId),
+    disclose(classPath),
+    (s.producerShareBps  as Field) as Bytes<32>,
+    (s.ldShareBps        as Field) as Bytes<32>,
+    (s.opsShareBps       as Field) as Bytes<32>,
+    (s.daoShareBps       as Field) as Bytes<32>,
+    (s.operatorMarginBps as Field) as Bytes<32>,
+    (s.statutoryTotalBps as Field) as Bytes<32>,
+    (disclose(rateFiatPerKwh) as Field) as Bytes<32>,
+    (disclose(lastUpdatedAt)  as Field) as Bytes<32>,
+  ]);
+}
+
+// Reconstruct the action-log Merkle root by climbing from the raw payloadHash
+// leaf, using node tag "pp:tariff:v1:actionLogNode" (design decision #4: leaf
+// is the raw payloadHash, not re-hashed). Pair-hash shape LOCKED to the
+// registry's appendActionLogLeaf / assertCharterMembership idiom. Depth D =
+// ACTION_LOG_DEPTH() = 24 (CAL-13.2-D scaffold).
+circuit reconstructActionLogRoot(
+  leaf:     Bytes<32>,
+  siblings: Vector<24, Bytes<32>>,
+  bits:     Vector<24, Boolean>,
+): Bytes<32> {
+  const nodeTag = pad(32, "pp:tariff:v1:actionLogNode");
+  const dSibs = disclose(siblings);
+  const dBits = disclose(bits);
+  _mirrorClimb = disclose(leaf);
+  for (const i of 0..24) {   // ACTION_LOG_DEPTH() levels (CAL-13.2-D)
+    const bit = dBits[i];
+    const sib = dSibs[i];
+    const cur = _mirrorClimb;
+    _mirrorClimb = bit
+      ? persistentHash<Vector<3, Bytes<32>>>([nodeTag, sib, cur])
+      : persistentHash<Vector<3, Bytes<32>>>([nodeTag, cur, sib]);
+  }
+  return _mirrorClimb;
+}
+
+// verifyEventProof (VNEXT-DESIGN §7.1). (1) the entry's committed payloadHash
+// must equal the proof leaf; (2) the reconstructed root must equal the mirrored
+// registryActionLogRoot. The per-kind recHash == entry.payloadHash cross-check
+// (design §7.2) is applied by each mirror-write circuit against its record.
+circuit verifyEventProof(entry: RegistryActionEntry, proof: EventProof): [] {
+  assert(disclose(entry.payloadHash) == disclose(proof.payloadHash),
+         "EVENT_PROOF_INVALID");
+  const reconstructedRoot = reconstructActionLogRoot(
+    proof.payloadHash, proof.merkleProof, proof.merkleSiblings);
+  assert(disclose(reconstructedRoot) == _registryActionLogRootMirror,
+         "EVENT_PROOF_INVALID");
+}
+
+// Slice policy: amt is within one base-unit of (amount * bps / 10000). Ported
+// from v7.4.2 settle (cross-multiplication; no integer / in-circuit).
+circuit assertSliceOnPolicy(amt: Uint<128>, amount: Uint<128>, bps: Uint<16>): [] {
+  const bpsTotal = 10000 as Field;
+  const cross  = ((disclose(amt) as Field) * bpsTotal) as Uint<160>;
+  const target = ((disclose(amount) as Field) * (disclose(bps) as Field)) as Uint<160>;
+  assert(
+    cross + (bpsTotal as Uint<160>) > target
+      && cross < target + (bpsTotal as Uint<160>),
+    "SLICE_OFF_POLICY"
+  );
+}
+
+// =============================================================================
+// Initialization (v7.4.2 pattern + vNext trust anchors)
+// =============================================================================
+
+export circuit initialize(
+  meterAuthorityPubkey:  Bytes<32>,
+  multisigAuthorityHash: Bytes<32>,
+  operationsRecipient:   UserAddress,
+  dividendRecipient:     UserAddress,
+  daoRecipient:          UserAddress,
+  escrowAttestorPubkey:  Bytes<32>,
+  registryActionLogRoot: Bytes<32>,   // bootstrap: registry post-WI-13.2 root
+): [] {
+  assert(!_initialized, "Already initialized");
+  const callerKey = ownPublicKey();
+  const callerAcc = Either<ZswapCoinPublicKey, ContractAddress> {
+    is_left: true,
+    left: callerKey,
+    right: default<ContractAddress>,
+  };
+
+  _initialized = disclose(true);
+  _owner = disclose(callerAcc);
+  _meterAuthorityPubkey = disclose(meterAuthorityPubkey);
+  _multisigAuthority = disclose(multisigAuthorityHash);
+
+  _operationsRecipient = disclose(operationsRecipient);
+  _dividendRecipient = disclose(dividendRecipient);
+  _daoRecipient = disclose(daoRecipient);
+
+  _lastReissueTime = 0 as Uint<64>;
+  _livingDividendAddress = none<ContractAddress>();
+
+  // vNext trust anchors. The head seq starts at 0; the keeper advances it via
+  // mirrorActionLogHead. The root mirror is bootstrapped from TariffRegistry's
+  // post-WI-13.2 state at deploy ceremony (design §7.1).
+  _escrowAttestorPubkey = disclose(escrowAttestorPubkey);
+  _registryActionLogRootMirror = disclose(registryActionLogRoot);
+  _registryActionLogHeadSeqMirror = 0 as Uint<64>;
+}
+
+// =============================================================================
+// Owner-only + multisig operations (preserved bit-for-bit from v7.4.2)
+// =============================================================================
+
+// op 0 = transferOwnership, op 1 = setMeterAuthority.
+// (Review-pass-1 fix: escrow-attestor rotation moved to execMultisigOp op 4;
+// per VNEXT-DESIGN §6.4 the escrow-attestor signer controls whether KES
+// redemptions can drain the escrow, so its rotation MUST be multisig-gated.)
+export circuit execOwnerOp(
+  op: Uint<8>,
+  newOwner: Either<ZswapCoinPublicKey, ContractAddress>,
+  newAuthorityPubkey: Bytes<32>,
+): [] {
+  assertOnlyOwner();
+  const k = disclose(op);
+  if (k == 0 as Uint<8>) {
+    assert(newOwner.is_left, "owner must be a public key, not contract address");
+    _owner = disclose(newOwner);
+  } else {
+    assert(k == 1 as Uint<8>, "execOwnerOp: bad op");
+    _meterAuthorityPubkey = disclose(newAuthorityPubkey);
+  }
+}
+
+// Multisig-gated LD binding — bit-for-bit from v7.4.2 for ops 0-3 (domains
+// unchanged so existing off-chain bundle builders are unaffected). Op 4 is
+// review-pass-1 net-new: escrow-attestor rotation lives here now (design §6.4).
+//   op 0 = setLivingDividendAddress   ("ebt:v7.3:setLD",           Vector<3>)
+//   op 1 = clearLivingDividendAddress ("ebt:v7.3:clearLD",         Vector<2>)
+//   op 2 = setDividendRecipient       ("ebt:v7.3:setDivRecip",     Vector<3>)
+//   op 3 = setMultisigAuthority       ("ebt:v7.4:rotateAuth",      Vector<5>)
+//   op 4 = setEscrowAttestor          ("ebt:v8:setEscrowAttestor", Vector<3>)
+export circuit execMultisigOp(
+  op:               Uint<8>,
+  ldAddr:           ContractAddress,
+  newRecipient:     UserAddress,
+  newAuthorityHash: Bytes<32>,
+  nonceIn:          Uint<64>,
+  currentTime:      Uint<64>,
+  newEscrowAttestor: Bytes<32>,
+): [] {
+  assertInitialized();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "execMultisigOp: timestamp cannot be in the future");
+
+  const k = disclose(op);
+  const timeBytes = (disclose(currentTime) as Field) as Bytes<32>;
+
+  if (k == 0 as Uint<8>) {
+    const payload = persistentHash<Vector<3, Bytes<32>>>([
+      pad(32, "ebt:v7.3:setLD"),
+      disclose(ldAddr).bytes,
+      timeBytes,
+    ]);
+    assert(
+      disclose(multisig_signature_valid(payload, _multisigAuthority)),
+      "setLivingDividendAddress: multisig signature invalid"
+    );
+    _livingDividendAddress = some<ContractAddress>(disclose(ldAddr));
+  } else {
+    if (k == 1 as Uint<8>) {
+      const payload = persistentHash<Vector<2, Bytes<32>>>([
+        pad(32, "ebt:v7.3:clearLD"),
+        timeBytes,
+      ]);
+      assert(
+        disclose(multisig_signature_valid(payload, _multisigAuthority)),
+        "clearLivingDividendAddress: multisig signature invalid"
+      );
+      _livingDividendAddress = none<ContractAddress>();
+    } else {
+      if (k == 2 as Uint<8>) {
+        const payload = persistentHash<Vector<3, Bytes<32>>>([
+          pad(32, "ebt:v7.3:setDivRecip"),
+          disclose(newRecipient).bytes,
+          timeBytes,
+        ]);
+        assert(
+          disclose(multisig_signature_valid(payload, _multisigAuthority)),
+          "setDividendRecipient: multisig signature invalid"
+        );
+        _dividendRecipient = disclose(newRecipient);
+      } else {
+        if (k == 3 as Uint<8>) {
+          const zeroAuth = pad(32, "");
+          const disclosedNew = disclose(newAuthorityHash);
+          assert(disclosedNew != zeroAuth,
+                 "setMultisigAuthority: zero hash rejected");
+          assert(disclosedNew != _multisigAuthority,
+                 "setMultisigAuthority: no-op rotation");
+          const expectedNonce = (_authorityRotationNonce.read() + 1 as Uint<64>) as Uint<64>;
+          assert(disclose(nonceIn) == expectedNonce,
+                 "setMultisigAuthority: invalid nonce");
+          const selfBytes = disclose(kernel.self()).bytes;
+          const nonceBytes = (disclose(nonceIn) as Field) as Bytes<32>;
+          const payload = persistentHash<Vector<5, Bytes<32>>>([
+            pad(32, "ebt:v7.4:rotateAuth"),
+            selfBytes,
+            disclosedNew,
+            nonceBytes,
+            timeBytes,
+          ]);
+          assert(
+            disclose(multisig_signature_valid(payload, _multisigAuthority)),
+            "setMultisigAuthority: multisig signature invalid"
+          );
+          _multisigAuthority = disclosedNew;
+          _authorityRotationNonce.increment(1);
+        } else {
+          assert(k == 4 as Uint<8>, "execMultisigOp: bad op");
+          // Review-pass-1 fix: escrow-attestor rotation is multisig-gated
+          // (design §6.4). Same shape as op 2 setDividendRecipient.
+          const disclosedAttestor = disclose(newEscrowAttestor);
+          const zeroAttestor = pad(32, "");
+          assert(disclosedAttestor != zeroAttestor,
+                 "setEscrowAttestor: zero pubkey rejected");
+          assert(disclosedAttestor != _escrowAttestorPubkey,
+                 "setEscrowAttestor: no-op rotation");
+          const payload = persistentHash<Vector<3, Bytes<32>>>([
+            pad(32, "ebt:v8:setEscrowAttestor"),
+            disclosedAttestor,
+            timeBytes,
+          ]);
+          assert(
+            disclose(multisig_signature_valid(payload, _multisigAuthority)),
+            "setEscrowAttestor: multisig signature invalid"
+          );
+          _escrowAttestorPubkey = disclosedAttestor;
+        }
+      }
+    }
+  }
+}
+
+// =============================================================================
+// Producer attestation (unchanged from v7.4.2)
+// =============================================================================
+
+export circuit attestProducerOwnership(
+  attestationKey: Bytes<32>,
+  producerBytes: Bytes<32>,
+  meterKeyHash: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+  const expectedKey = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(producerBytes),
+    disclose(meterKeyHash),
+  ]);
+  assert(disclose(attestationKey) == disclose(expectedKey), "attestation/producer mismatch");
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+  const status = AttestationStatus {
+    active: true,
+    attestedAt: currentTime,
+    revokedAt: 0 as Uint<64>,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(status));
+}
+
+export circuit revokeProducerOwnership(
+  attestationKey: Bytes<32>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  currentTime: Uint<64>,
+): [] {
+  assertOnlyOwner();
+  assert(producerAttestations.member(disclose(attestationKey)), "No such attestation");
+  const current = producerAttestations.lookup(disclose(attestationKey));
+  assert(current.active, "Already revoked");
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+  const revoked = AttestationStatus {
+    active: false,
+    attestedAt: current.attestedAt,
+    revokedAt: currentTime,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+  };
+  producerAttestations.insert(disclose(attestationKey), disclose(revoked));
+}
+
+// =============================================================================
+// Mirror-write circuits (VNEXT-DESIGN §7) — PUBLIC; auth is on the event proof
+// =============================================================================
+
+// TRUST MODEL: owner is the sole trust anchor for root advances (round 2
+// review-pass-2 fix). The witness (sampleEntry + proof) is
+// defense-in-depth against typo'd/malformed root installs by the owner
+// itself - it proves newRoot is internally consistent with a
+// well-formed Merkle path from a leaf, but does NOT anchor newRoot to
+// previously-trusted registry state. Full option-(iii) anchoring
+// requires TariffRegistry to expose per-transition commitments
+// (deferred to WI-14.1 pre-mainnet-Phase-2). In production the owner
+// is under multisig control so this is effectively multisig-gated.
+export circuit mirrorActionLogRoot(
+  newRoot:     Bytes<32>,
+  sampleEntry: RegistryActionEntry,
+  proof:       EventProof,
+): [] {
+  assertOnlyOwner();
+  // (1) The entry's committed payloadHash must equal the proof leaf.
+  assert(disclose(sampleEntry.payloadHash) == disclose(proof.payloadHash),
+         "EVENT_PROOF_INVALID");
+  // (2) The reconstructed root must equal the new root the caller is
+  // installing (NOT the currently-mirrored root — this is the advance
+  // itself; the witness must be internally consistent with the new root).
+  const reconstructedRoot = reconstructActionLogRoot(
+    proof.payloadHash, proof.merkleProof, proof.merkleSiblings);
+  assert(disclose(reconstructedRoot) == disclose(newRoot),
+         "EVENT_PROOF_INVALID");
+  _registryActionLogRootMirror = disclose(newRoot);
+}
+
+// mirrorActionLogHead (design §7.6) — monotone head advance for the §3.3
+// LANE_MIRROR_STALE window, witness-gated (review-pass-1 fix). PUBLIC.
+// The caller supplies the latest event they can cite; verifyEventProof proves
+// it is included under the CURRENTLY-mirrored root, then we assert the proof's
+// actionSeq == newHeadSeq so head updates are exact (no lookahead). Monotone
+// check preserved.
+export circuit mirrorActionLogHead(
+  newHeadSeq:  Uint<64>,
+  latestEntry: RegistryActionEntry,
+  proof:       EventProof,
+): [] {
+  assertInitialized();
+  verifyEventProof(latestEntry, proof);
+  // The cited event must be exactly the new head.
+  assert(disclose(proof.actionSeq) == disclose(newHeadSeq),
+         "HEAD_ADVANCE_BEYOND_WITNESS");
+  const _mono = (disclose(newHeadSeq) - _registryActionLogHeadSeqMirror) as Uint<64>;
+  // ^ checked-cast reverts unless newHeadSeq >= current head (monotone).
+  _registryActionLogHeadSeqMirror = disclose(newHeadSeq);
+}
+
+// mirrorRegisterLane (design §7.2) — copy a LANE_REGISTERED (kind 1) event.
+export circuit mirrorRegisterLane(
+  entry:      RegistryActionEntry,
+  laneRecord: LaneRecord,
+  proof:      EventProof,
+): [] {
+  assertInitialized();
+  assert(disclose(entry.kind) == 1 as Uint<8>, "MIRROR_KIND_MISMATCH");
+  verifyEventProof(entry, proof);
+  const recHash = laneActionPayloadHash(1 as Uint<8>, laneRecord);
+  assert(disclose(recHash) == disclose(entry.payloadHash), "EVENT_PROOF_INVALID");
+  const key = laneKey(disclose(laneRecord.scheduleId), disclose(laneRecord.leviedBy),
+                      disclose(laneRecord.laneKindByte));
+  const mirrored = MirroredLaneRecord {
+    record:         disclose(laneRecord),
+    writeActionSeq: disclose(proof.actionSeq),
+  };
+  _registeredLanesMirror.insert(disclose(key), disclose(mirrored));
+}
+
+// mirrorRetireLane (design §7.3) — copy a LANE_RETIRED (kind 7) event; the
+// record carries retiredEpoch != 0. Overwrites; does not delete.
+export circuit mirrorRetireLane(
+  entry:      RegistryActionEntry,
+  laneRecord: LaneRecord,
+  proof:      EventProof,
+): [] {
+  assertInitialized();
+  assert(disclose(entry.kind) == 7 as Uint<8>, "MIRROR_KIND_MISMATCH");
+  verifyEventProof(entry, proof);
+  const recHash = laneActionPayloadHash(7 as Uint<8>, laneRecord);
+  assert(disclose(recHash) == disclose(entry.payloadHash), "EVENT_PROOF_INVALID");
+  const key = laneKey(disclose(laneRecord.scheduleId), disclose(laneRecord.leviedBy),
+                      disclose(laneRecord.laneKindByte));
+  const mirrored = MirroredLaneRecord {
+    record:         disclose(laneRecord),
+    writeActionSeq: disclose(proof.actionSeq),
+  };
+  _registeredLanesMirror.insert(disclose(key), disclose(mirrored));
+}
+
+// mirrorScheduleLifecycle (design §7.4) — SCHEDULE_REGISTERED (kind 0) sets the
+// schedule live; SCHEDULE_RETIRED (kind 3) sets it retired.
+export circuit mirrorScheduleLifecycle(
+  entry:          RegistryActionEntry,
+  scheduleRecord: ScheduleRecord,
+  proof:          EventProof,
+): [] {
+  assertInitialized();
+  const k = disclose(entry.kind);
+  assert(k == 0 as Uint<8> || k == 3 as Uint<8>, "MIRROR_KIND_MISMATCH");
+  verifyEventProof(entry, proof);
+  const recHash = scheduleActionPayloadHash(k, scheduleRecord);
+  assert(disclose(recHash) == disclose(entry.payloadHash), "EVENT_PROOF_INVALID");
+  // Live iff retiredEpoch == 0 (four-part predicate, part 4).
+  const isLive = disclose(scheduleRecord.retiredEpoch) == 0 as Uint<64>;
+  _scheduleLiveMirror.insert(disclose(scheduleRecord.scheduleId), disclose(isLive));
+}
+
+// mirrorClassStatutoryTotal (design §7.5) — copy a retuneClass (kind 2) event's
+// statutoryTotalBps into the class-total mirror (backstop for I-14-K).
+export circuit mirrorClassStatutoryTotal(
+  entry:          RegistryActionEntry,
+  scheduleId:     Bytes<32>,
+  classPath:      Bytes<32>,
+  split:          SplitShares,
+  rateFiatPerKwh: Uint<64>,
+  lastUpdatedAt:  Uint<64>,
+  proof:          EventProof,
+): [] {
+  assertInitialized();
+  assert(disclose(entry.kind) == 2 as Uint<8>, "MIRROR_KIND_MISMATCH");
+  verifyEventProof(entry, proof);
+  const recHash = retuneActionPayloadHash(scheduleId, classPath, split,
+                                          rateFiatPerKwh, lastUpdatedAt);
+  assert(disclose(recHash) == disclose(entry.payloadHash), "EVENT_PROOF_INVALID");
+  const cKey = classKey(scheduleId, classPath);
+  _classStatutoryTotalBpsMirror.insert(disclose(cKey),
+                                       disclose(split.statutoryTotalBps));
+}
+
+// =============================================================================
+// Read-only helper circuits (VNEXT-DESIGN §8)
+// =============================================================================
+
+// resolveLanesMirror — byte-identical shape to WI-13.1 resolveLanes, reading
+// the EBT-side mirror; unwraps MirroredLaneRecord to the raw LaneRecord.
+export circuit resolveLanesMirror(
+  scheduleId:    Bytes<32>,
+  leviedBys:     Vector<4, Bytes<32>>,
+  laneKindBytes: Vector<4, Uint<8>>,
+): Vector<4, LaneRecord> {
+  assertInitialized();
+  const dLeviedBys = disclose(leviedBys);
+  const dKinds     = disclose(laneKindBytes);
+  const zero = zeroLaneRecord();
+  const k0 = laneKey(scheduleId, dLeviedBys[0], dKinds[0]);
+  const r0 = _registeredLanesMirror.member(disclose(k0))
+    ? _registeredLanesMirror.lookup(disclose(k0)).record : zero;
+  const k1 = laneKey(scheduleId, dLeviedBys[1], dKinds[1]);
+  const r1 = _registeredLanesMirror.member(disclose(k1))
+    ? _registeredLanesMirror.lookup(disclose(k1)).record : zero;
+  const k2 = laneKey(scheduleId, dLeviedBys[2], dKinds[2]);
+  const r2 = _registeredLanesMirror.member(disclose(k2))
+    ? _registeredLanesMirror.lookup(disclose(k2)).record : zero;
+  const k3 = laneKey(scheduleId, dLeviedBys[3], dKinds[3]);
+  const r3 = _registeredLanesMirror.member(disclose(k3))
+    ? _registeredLanesMirror.lookup(disclose(k3)).record : zero;
+  return [r0, r1, r2, r3];
+}
+
+// isLaneActiveMirror — byte-identical results to registry isLaneActive at the
+// same epoch (four-part liveness predicate against the mirror). Design §8.2.
+export circuit isLaneActiveMirror(
+  scheduleId:   Bytes<32>,
+  leviedBy:     Bytes<32>,
+  laneKindByte: Uint<8>,
+  epoch:        Uint<64>,
+): Boolean {
+  assertInitialized();
+  const key = laneKey(scheduleId, leviedBy, laneKindByte);
+  if (!_registeredLanesMirror.member(disclose(key))) { return false; }
+  const rec = _registeredLanesMirror.lookup(disclose(key)).record;
+  if (rec.retiredEpoch != 0 as Uint<64>) { return false; }
+  const dSid = disclose(scheduleId);
+  if (!_scheduleLiveMirror.member(dSid)) { return false; }
+  if (_scheduleLiveMirror.lookup(dSid) == false) { return false; }
+  return disclose(epoch) >= rec.effectiveEpoch;
+}
+
+export circuit getRegistryActionLogHeadSeq(): Uint<64> {
+  assertInitialized();
+  return _registryActionLogHeadSeqMirror;
+}
+
+// =============================================================================
+// settle — the money circuit (VNEXT-DESIGN §5)
+// =============================================================================
+
+export circuit settle(
+  // HAT bundle — 5-field signed payload including producerAddr (I-14-A).
+  sessionID:    Bytes<32>,
+  hatPubkey:    Bytes<32>,
+  amount:       Uint<128>,
+  producerKey:  Bytes<32>,
+  producerAddr: UserAddress,
+  meterKeyHash: Bytes<32>,
+  hatSig:       Bytes<64>,
+
+  // Tariff-path binding (per-coin metadata; I-14-E).
+  scheduleId:      Bytes<32>,
+  classPath:       Bytes<32>,
+  epoch:           Uint<64>,
+  fiatValueAtMint: Uint<64>,
+
+  // Lane request — the keeper's claimed live statutory lanes (width 4).
+  leviedBys:     Vector<4, Bytes<32>>,
+  laneKindBytes: Vector<4, Uint<8>>,
+  laneAmts:      Vector<4, Uint<128>>,
+
+  // Non-statutory bps (from the schedule's SplitShares; verified vs 10000).
+  operatorMarginBps: Uint<16>,   // producer share
+  opsBps:            Uint<16>,
+  ldBps:             Uint<16>,    // living-dividend share
+  daoBps:            Uint<16>,
+
+  // Non-statutory amounts (verified vs their bps by cross-multiplication).
+  producerAmt: Uint<128>,
+  opsAmt:      Uint<128>,
+  divAmt:      Uint<128>,
+  daoAmt:      Uint<128>,
+
+  currentTime: Uint<64>,
+): [] {
+  // 1. PRE-CONDITIONS
+  assertInitialized();
+  assert(amount > 0 as Uint<128>, "Amount must be positive");
+  assert(!_settledSessions.member(disclose(sessionID)), "Session already settled");
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "timestamp cannot be in the future");
+
+  // 2. HAT VERIFICATION — I-14-A (5-field payload includes producerAddr).
+  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
+  const payloadHash = persistentHash<Vector<6, Bytes<32>>>([
+    pad(32, "pollpower:ebt:v8:epoch1"),
+    disclose(sessionID),
+    disclose(hatPubkey),
+    amountBytes,
+    disclose(producerKey),
+    disclose(producerAddr).bytes,
+  ]);
+  assert(disclose(hatPubkey) == _meterAuthorityPubkey, "HAT signer is not the meter authority");
+  assert(disclose(signature_valid(disclose(hatPubkey), payloadHash, disclose(hatSig))),
+         "Bad HAT signature");
+
+  // 3. PRODUCER ATTESTATION — I-14-G (a de-federated producer cannot settle).
+  const attestationKey = persistentHash<Vector<2, Bytes<32>>>([
+    disclose(producerKey),
+    disclose(meterKeyHash),
+  ]);
+  assert(producerAttestations.member(disclose(attestationKey)), "PRODUCER_NOT_ATTESTED");
+  assert(producerAttestations.lookup(disclose(attestationKey)).active, "OPERATOR_DEFEDERATED");
+
+  // 4. MIRROR FRESHNESS PRECHECK — head tracker for §3.3.
+  const headSeq = _registryActionLogHeadSeqMirror;
+
+  // 5. SCHEDULE LIVENESS — I-14-B.
+  assert(_scheduleLiveMirror.member(disclose(scheduleId)), "SCHEDULE_NOT_LIVE");
+  assert(_scheduleLiveMirror.lookup(disclose(scheduleId)) == true, "SCHEDULE_NOT_LIVE");
+
+  // 6. CLASS STATUTORY TOTAL — mirror lookup for I-14-K.
+  const cKey = classKey(scheduleId, classPath);
+  assert(_classStatutoryTotalBpsMirror.member(disclose(cKey)), "CLASS_NOT_LIVE");
+  const statutoryTotalBps = _classStatutoryTotalBpsMirror.lookup(disclose(cKey));
+
+  // 7. FIAT SANITY BAND — CAL-2 (scaffold).
+  assert(disclose(fiatValueAtMint) >= CAL_2_FIAT_FLOOR(), "FIAT_VALUE_OUT_OF_BAND");
+  assert(disclose(fiatValueAtMint) <= CAL_2_FIAT_CEIL(), "FIAT_VALUE_OUT_OF_BAND");
+
+  // 8. LANE RESOLUTION (mirror read; per-slot bookkeeping).
+  const dLeviedBys = disclose(leviedBys);
+  const dKinds     = disclose(laneKindBytes);
+  const dLaneAmts  = disclose(laneAmts);
+
+  const key0 = laneKey(scheduleId, dLeviedBys[0], dKinds[0]);
+  const key1 = laneKey(scheduleId, dLeviedBys[1], dKinds[1]);
+  const key2 = laneKey(scheduleId, dLeviedBys[2], dKinds[2]);
+  const key3 = laneKey(scheduleId, dLeviedBys[3], dKinds[3]);
+
+  const zero = zeroLaneRecord();
+  const m0 = _registeredLanesMirror.member(disclose(key0))
+    ? _registeredLanesMirror.lookup(disclose(key0))
+    : MirroredLaneRecord { record: zero, writeActionSeq: 0 as Uint<64> };
+  const m1 = _registeredLanesMirror.member(disclose(key1))
+    ? _registeredLanesMirror.lookup(disclose(key1))
+    : MirroredLaneRecord { record: zero, writeActionSeq: 0 as Uint<64> };
+  const m2 = _registeredLanesMirror.member(disclose(key2))
+    ? _registeredLanesMirror.lookup(disclose(key2))
+    : MirroredLaneRecord { record: zero, writeActionSeq: 0 as Uint<64> };
+  const m3 = _registeredLanesMirror.member(disclose(key3))
+    ? _registeredLanesMirror.lookup(disclose(key3))
+    : MirroredLaneRecord { record: zero, writeActionSeq: 0 as Uint<64> };
+
+  // populated-slot predicate: scheduleId != zero (v2 brief §DISCRIMINATOR).
+  const zid = zero32();
+  const pop0 = m0.record.scheduleId != zid;
+  const pop1 = m1.record.scheduleId != zid;
+  const pop2 = m2.record.scheduleId != zid;
+  const pop3 = m3.record.scheduleId != zid;
+
+  // 9. DEDUP — I-14-J (LANE_DUP_KEY). Two populated slots sharing a laneKey are
+  // the same lane enumerated twice.
+  assert(!(pop0 && pop1 && disclose(key0) == disclose(key1)), "LANE_DUP_KEY");
+  assert(!(pop0 && pop2 && disclose(key0) == disclose(key2)), "LANE_DUP_KEY");
+  assert(!(pop0 && pop3 && disclose(key0) == disclose(key3)), "LANE_DUP_KEY");
+  assert(!(pop1 && pop2 && disclose(key1) == disclose(key2)), "LANE_DUP_KEY");
+  assert(!(pop1 && pop3 && disclose(key1) == disclose(key3)), "LANE_DUP_KEY");
+  assert(!(pop2 && pop3 && disclose(key2) == disclose(key3)), "LANE_DUP_KEY");
+
+  // 10. PER-SLOT FRESHNESS + LIVENESS + REMIT GUARD (I-14-D) — populated only.
+  if (pop0) { settleCheckSlot(m0, epoch, headSeq); }
+  if (pop1) { settleCheckSlot(m1, epoch, headSeq); }
+  if (pop2) { settleCheckSlot(m2, epoch, headSeq); }
+  if (pop3) { settleCheckSlot(m3, epoch, headSeq); }
+
+  // 11. STATUTORY SUM + OVERFLOW — I-14-K (LANE_SUM_MISMATCH) / I-14-I.
+  const s0 = pop0 ? (m0.record.bpsShare as Field) : 0 as Field;
+  const s1 = pop1 ? (m1.record.bpsShare as Field) : 0 as Field;
+  const s2 = pop2 ? (m2.record.bpsShare as Field) : 0 as Field;
+  const s3 = pop3 ? (m3.record.bpsShare as Field) : 0 as Field;
+  const statutorySum = (s0 + s1 + s2 + s3) as Uint<32>;
+
+  const c0 = pop0 ? 1 as Uint<8> : 0 as Uint<8>;
+  const c1 = pop1 ? 1 as Uint<8> : 0 as Uint<8>;
+  const c2 = pop2 ? 1 as Uint<8> : 0 as Uint<8>;
+  const c3 = pop3 ? 1 as Uint<8> : 0 as Uint<8>;
+  const populatedCount = (c0 + c1 + c2 + c3) as Uint<8>;
+
+  const statTotal32 = statutoryTotalBps as Uint<32>;
+  // Overflow (design §5.2 step 10): all 4 slots populated-live AND the enumerated
+  // sum is short of the declared total => there are > 4 live lanes.
+  // TODO(WI-14.1): pass-2 review noted label precision ambiguity: when >4 live
+  // lanes exist but keeper enumerates fewer than 4 slots, settle currently lands
+  // LANE_SUM_MISMATCH instead of SCHEDULE_LANE_OVERFLOW. This is non-security
+  // (settle still fails) and needs explicit keeper signaling in a wider change.
+  if (populatedCount == 4 as Uint<8>) {
+    assert(statutorySum >= statTotal32, "SCHEDULE_LANE_OVERFLOW");
+  }
+  assert(statutorySum == statTotal32, "LANE_SUM_MISMATCH");
+
+  // 12. WHOLE-CLASS 10000 bps — I-14-C.
+  const wholeF = (operatorMarginBps as Field) + (opsBps as Field)
+               + (ldBps as Field) + (daoBps as Field)
+               + (statutoryTotalBps as Field);
+  assert(wholeF == 10000 as Field, "WHOLE_CLASS_SUM_MISMATCH");
+
+  // 13. SLICE POLICY — each amount within one base-unit of its bps slice.
+  assertSliceOnPolicy(producerAmt, amount, operatorMarginBps);
+  assertSliceOnPolicy(opsAmt, amount, opsBps);
+  assertSliceOnPolicy(divAmt, amount, ldBps);
+  assertSliceOnPolicy(daoAmt, amount, daoBps);
+  if (pop0) { assertSliceOnPolicy(dLaneAmts[0], amount, m0.record.bpsShare); }
+    else { assert(dLaneAmts[0] == 0 as Uint<128>, "lane amount on empty slot"); }
+  if (pop1) { assertSliceOnPolicy(dLaneAmts[1], amount, m1.record.bpsShare); }
+    else { assert(dLaneAmts[1] == 0 as Uint<128>, "lane amount on empty slot"); }
+  if (pop2) { assertSliceOnPolicy(dLaneAmts[2], amount, m2.record.bpsShare); }
+    else { assert(dLaneAmts[2] == 0 as Uint<128>, "lane amount on empty slot"); }
+  if (pop3) { assertSliceOnPolicy(dLaneAmts[3], amount, m3.record.bpsShare); }
+    else { assert(dLaneAmts[3] == 0 as Uint<128>, "lane amount on empty slot"); }
+
+  // 14. AMOUNT SUM — all slices sum to the settled amount (I-1).
+  const sumAll = (producerAmt + opsAmt + divAmt + daoAmt
+                  + dLaneAmts[0] + dLaneAmts[1] + dLaneAmts[2] + dLaneAmts[3]) as Uint<128>;
+  assert(sumAll == amount, "slice sum mismatch");
+
+  // 15. MINT — producer direct; statutory on-chain-remit lanes direct; ops/ld/
+  // dao accrue to pending (claimSplit mints them; LD binding preserved, I-14-H).
+  const domainSep = pad(32, "pollpower:ebt:v8:epoch1");
+  mintUnshieldedToken(disclose(domainSep), disclose(producerAmt) as Uint<64>,
+                      right<ContractAddress, UserAddress>(disclose(producerAddr)));
+
+  if (pop0 && m0.record.remittanceMode == 1 as Uint<8>) {
+    mintUnshieldedToken(disclose(domainSep), disclose(dLaneAmts[0]) as Uint<64>,
+      right<ContractAddress, UserAddress>(UserAddress { bytes: disclose(m0.record.remitAddress) }));
+  }
+  if (pop1 && m1.record.remittanceMode == 1 as Uint<8>) {
+    mintUnshieldedToken(disclose(domainSep), disclose(dLaneAmts[1]) as Uint<64>,
+      right<ContractAddress, UserAddress>(UserAddress { bytes: disclose(m1.record.remitAddress) }));
+  }
+  if (pop2 && m2.record.remittanceMode == 1 as Uint<8>) {
+    mintUnshieldedToken(disclose(domainSep), disclose(dLaneAmts[2]) as Uint<64>,
+      right<ContractAddress, UserAddress>(UserAddress { bytes: disclose(m2.record.remitAddress) }));
+  }
+  if (pop3 && m3.record.remittanceMode == 1 as Uint<8>) {
+    mintUnshieldedToken(disclose(domainSep), disclose(dLaneAmts[3]) as Uint<64>,
+      right<ContractAddress, UserAddress>(UserAddress { bytes: disclose(m3.record.remitAddress) }));
+  }
+
+  _pendingOps = disclose((_pendingOps + opsAmt) as Uint<128>);
+  _pendingDiv = disclose((_pendingDiv + divAmt) as Uint<128>);
+  _pendingDao = disclose((_pendingDao + daoAmt) as Uint<128>);
+
+  // 16. STATE UPDATES + per-coin tariff-path event (I-14-E).
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+  _settledSessions.insert(disclose(sessionID));
+  const seq = settlementCount.read();
+  const settleEntry = SettleEntry {
+    sessionID:       disclose(sessionID),
+    scheduleId:      disclose(scheduleId),
+    classPath:       disclose(classPath),
+    epoch:           disclose(epoch),
+    fiatValueAtMint: disclose(fiatValueAtMint),
+    producerAddr:    disclose(producerAddr).bytes,
+    amount:          disclose(amount),
+  };
+  _settleLog.insert(disclose(seq) as Uint<64>, disclose(settleEntry));
+  settlementCount.increment(1);
+}
+
+// Per-slot settle checks: freshness (§3.3), liveness (four-part parts 2/3),
+// on-chain-remit address guard (I-14-D). Parent-schedule liveness (part 4) is
+// checked once at settle step 5; populated-slot (part 1) is the caller's guard.
+circuit settleCheckSlot(m: MirroredLaneRecord, epoch: Uint<64>, headSeq: Uint<64>): [] {
+  // §3.3 freshness: writeActionSeq + tolerance >= headSeq.
+  assert((disclose(m.writeActionSeq) + CAL_MIRROR_STALE_TOLERANCE()) as Uint<64>
+           >= disclose(headSeq),
+         "LANE_MIRROR_STALE");
+  // liveness part 2: not retired at (or before) this epoch.
+  assert(m.record.retiredEpoch == 0 as Uint<64>
+           || m.record.retiredEpoch > disclose(epoch),
+         "LANE_RETIRED_AT_EPOCH");
+  // liveness part 3: effective now.
+  assert(m.record.effectiveEpoch <= disclose(epoch), "LANE_NOT_EFFECTIVE");
+  // I-14-D: on-chain-remit (mode==1) lane MUST have a non-zero remitAddress.
+  if (m.record.remittanceMode == 1 as Uint<8>) {
+    assert(m.record.remitAddress != pad(32, ""), "LANE_REMIT_ADDR_ZERO_ON_CHAIN");
+  }
+}
+
+// =============================================================================
+// claimSplit — mint one pending protocol slice (preserved bit-for-bit; only the
+// domain tags bump to v8). LD binding shape UNCHANGED (I-14-H).
+// =============================================================================
+
+export circuit claimSplit(kind: Uint<8>, currentTime: Uint<64>): [] {
+  assertOnlyOwner();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "timestamp cannot be in the future");
+
+  const domainSep = pad(32, "pollpower:ebt:v8:epoch1");
+  const k = disclose(kind);
+
+  if (k == 0 as Uint<8>) {
+    assert(_pendingOps > 0 as Uint<128>, "No pending ops split");
+    mintUnshieldedToken(disclose(domainSep), disclose(_pendingOps) as Uint<64>,
+                        right<ContractAddress, UserAddress>(_operationsRecipient));
+    _pendingOps = disclose(0 as Uint<128>);
+  } else {
+    if (k == 1 as Uint<8>) {
+      assert(_pendingDiv > 0 as Uint<128>, "No pending dividend split");
+      const divAmount = _pendingDiv;
+      mintUnshieldedToken(disclose(domainSep), disclose(divAmount) as Uint<64>,
+                          right<ContractAddress, UserAddress>(_dividendRecipient));
+      _pendingDiv = disclose(0 as Uint<128>);
+
+      if (disclose(_livingDividendAddress.is_some)) {
+        const seq = _dividendEventSeq.read();
+        const seqBytes = (seq as Field) as Bytes<32>;
+        const selfBytes = disclose(kernel.self()).bytes;
+        const salt = persistentHash<Vector<3, Bytes<32>>>([
+          pad(32, "pollpower:dividend:v8"),
+          selfBytes,
+          seqBytes,
+        ]);
+        const entry = DividendMintedEntry {
+          sourceTxSalt: disclose(salt),
+          amount: disclose(divAmount),
+          recipient: disclose(_livingDividendAddress.value),
+          blockTime: disclose(currentTime),
+          epochColor: disclose(ebtColor()),
+        };
+        _dividendMintedLog.insert(disclose(seq) as Uint<64>, disclose(entry));
+        _dividendEventSeq.increment(1);
+      }
+    } else {
+      assert(k == 2 as Uint<8>, "Bad split kind");
+      assert(_pendingDao > 0 as Uint<128>, "No pending dao split");
+      mintUnshieldedToken(disclose(domainSep), disclose(_pendingDao) as Uint<64>,
+                          right<ContractAddress, UserAddress>(_daoRecipient));
+      _pendingDao = disclose(0 as Uint<128>);
+    }
+  }
+  _splitClaimCount.increment(1);
+}
+
+// =============================================================================
+// redeem — escrow-aware dual redemption (VNEXT-DESIGN §6)
+// =============================================================================
+
+export circuit redeem(
+  amount:         Uint<128>,
+  redeemer:       Bytes<32>,
+  payoutRef:      Bytes<32>,
+  redemptionKind: Uint<8>,               // 0 = KES, 1 = KWH
+  tariffPath:     TariffPath,            // coin's own metadata (I-14-E)
+  // Escrow solvency attestation (design §6.2 step 5; KES branch).
+  attestedTrustFloat:     Uint<128>,
+  attestedOutstandingEbt: Uint<128>,
+  attestationEpoch:       Uint<64>,
+  attestationSig:         Bytes<64>,
+  currentTime:    Uint<64>,
+): [] {
+  // 1. PRE-CONDITIONS
+  assertInitialized();
+  assert(amount > 0 as Uint<128>, "Must redeem > 0");
+  const rk = disclose(redemptionKind);
+  assert(rk == REDEMPTION_KES() || rk == REDEMPTION_KWH(), "bad redemption kind");
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "timestamp cannot be in the future");
+
+  // 2. BALANCE CHECK
+  const color = ebtColor();
+  assert(unshieldedBalanceGte(color, disclose(amount)), "INSUFFICIENT_BALANCE");
+
+  // 4. FIAT SANITY BAND — CAL-2 (redemption side).
+  assert(disclose(tariffPath.fiatValueAtMint) >= CAL_2_FIAT_FLOOR(), "FIAT_VALUE_OUT_OF_BAND");
+  assert(disclose(tariffPath.fiatValueAtMint) <= CAL_2_FIAT_CEIL(), "FIAT_VALUE_OUT_OF_BAND");
+
+  // 5. SOLVENCY GUARD — I-14-F (KES only).
+  if (rk == REDEMPTION_KES()) {
+    // Escrow attestor signs (trustFloat, outstandingEbt, attestationEpoch).
+    const attHash = persistentHash<Vector<4, Bytes<32>>>([
+      pad(32, "pollpower:ebt:v8:escrow"),
+      (disclose(attestedTrustFloat) as Field) as Bytes<32>,
+      (disclose(attestedOutstandingEbt) as Field) as Bytes<32>,
+      (disclose(attestationEpoch) as Field) as Bytes<32>,
+    ]);
+    assert(disclose(signature_valid(_escrowAttestorPubkey, attHash, disclose(attestationSig))),
+           "ESCROW_ATTESTATION_SIG_INVALID");
+    // freshness: attestationEpoch + tolerance >= currentTime.
+    assert((disclose(attestationEpoch) + CAL_ESCROW_STALE_TOLERANCE()) as Uint<64>
+             >= disclose(currentTime),
+           "ESCROW_ATTESTATION_STALE");
+    // solvency: attestedTrustFloat >= attestedOutstandingEbt + kesObligation.
+    const kesObligation = ((disclose(amount) as Field)
+                           * (disclose(tariffPath.fiatValueAtMint) as Field)) as Uint<128>;
+    const required = (disclose(attestedOutstandingEbt) + kesObligation) as Uint<128>;
+    assert(disclose(attestedTrustFloat) >= required, "SOLVENCY_GUARD_FAILED");
+  }
+
+  // 6. BURN
+  sendUnshielded(disclose(color), disclose(amount),
+                 left<ContractAddress, UserAddress>(kernel.self()));
+  _totalSupply = disclose((_totalSupply - amount) as Uint<128>);
+  _totalRedeemed = disclose((_totalRedeemed + amount) as Uint<128>);
+
+  // 7. AUDIT LOG — persists the TariffPath (I-14-E: entry is the record).
+  const dTp = disclose(tariffPath);
+  const entry = RedemptionEntry {
+    redeemer: disclose(redeemer),
+    amount: disclose(amount),
+    payoutRef: disclose(payoutRef),
+    redeemedAt: disclose(currentTime),
+    redemptionKind: rk,
+    tpScheduleId:      dTp.scheduleId,
+    tpClassPath:       dTp.classPath,
+    tpEpoch:           dTp.epoch,
+    tpFiatValueAtMint: dTp.fiatValueAtMint,
+  };
+  _redemptionLog.insert(_redemptionCount.read() as Uint<64>, disclose(entry));
+  _redemptionCount.increment(1);
+}
+
+// =============================================================================
+// manualReissue — M-4-hardened (cap / cooldown / co-sign); carries TariffPath
+// forward on the reissued output (I-14-E). Otherwise ported from v7.4.2.
+// =============================================================================
+
+export circuit manualReissue(
+  producerKey: Bytes<32>,
+  producerAddr: UserAddress,
+  amount: Uint<128>,
+  reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>,
+  sourceTariffPath: TariffPath,
+  currentTime: Uint<64>,
+  authoritySig: Bytes<64>,
+): [] {
+  assertOnlyOwner();
+  assert(amount > 0 as Uint<128>, "Must reissue > 0");
+  assert(amount <= 1000000 as Uint<128>, "Exceeds max reissue per call");
+
+  assert(disclose(blockTimeGte(disclose(currentTime))), "timestamp cannot be in the future");
+  const cooldown = 3600 as Uint<64>;
+  const earliest = (_lastReissueTime + cooldown) as Uint<64>;
+  assert(currentTime >= earliest, "Reissue cooldown not elapsed");
+
+  const producerBytes = disclose(producerKey);
+  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
+  const seqBytes = (reissuanceCount.read() as Field) as Bytes<32>;
+  const reissueMessageHash = persistentHash<Vector<3, Bytes<32>>>([
+    producerBytes,
+    amountBytes,
+    seqBytes,
+  ]);
+  const authOk = signature_valid(
+    _meterAuthorityPubkey,
+    reissueMessageHash,
+    authoritySig,
+  );
+  assert(disclose(authOk), "Reissue requires authority co-signature");
+
+  const domainSep = pad(32, "pollpower:ebt:v8:epoch1");
+  mintUnshieldedToken(disclose(domainSep), disclose(amount) as Uint<64>,
+                      right<ContractAddress, UserAddress>(disclose(producerAddr)));
+  _totalSupply = disclose((_totalSupply + amount) as Uint<128>);
+
+  const seq = reissuanceCount.read();
+  const dTp = disclose(sourceTariffPath);
+  const entry = ReissuanceEntry {
+    producer: producerKey,
+    amount: amount,
+    reasonCode: reasonCode,
+    evidenceHash: evidenceHash,
+    reissuedAt: currentTime,
+    tpScheduleId:      dTp.scheduleId,
+    tpClassPath:       dTp.classPath,
+    tpEpoch:           dTp.epoch,
+    tpFiatValueAtMint: dTp.fiatValueAtMint,
+  };
+  reissuanceLog.insert(disclose(seq), disclose(entry));
+  reissuanceCount.increment(1);
+  _lastReissueTime = disclose(currentTime);
+}
