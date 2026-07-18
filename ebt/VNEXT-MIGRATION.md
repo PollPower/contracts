@@ -137,15 +137,15 @@ This runbook implements (a). It does not re-litigate the path decision.
   - No existing `mirrorRegisterLane`, `mirrorRetireLane`, `mirrorClassStatutoryTotal`, `mirrorActionLogRoot`, or `mirrorActionLogHead` caller found in `settlement-api` source tree at author-time.
 - **Design finding (2026-07-18 discovery, confirmed by Garrett 17:48 JST):** the mirror-write circuits verify inclusion against `_registryActionLogRootMirror`, NOT against the current on-chain `registryActionLogRoot`. See `ebt/ebt-v8.compact` L491-500 (`verifyEventProof` reconstructs a root from leaf+proof and asserts equality with the mirrored root scalar). `_registryActionLogRootMirror` is updated only by `mirrorActionLogRoot`, which is `assertOnlyOwner()`-gated (round-2 review-pass-2 fix, commit `9308a40`). The trust-model comment at `ebt-v8.compact` L742-750 states verbatim:
 
-  > "TRUST MODEL: owner is the sole trust anchor for root advances (round 2
-  > review-pass-2 fix). The witness (sampleEntry + proof) is defense-in-depth
-  > against typo'd/malformed root installs by the owner itself - it proves
-  > newRoot is internally consistent with a well-formed Merkle path from a
-  > leaf, but does NOT anchor newRoot to previously-trusted registry state.
-  > Full option-(iii) anchoring requires TariffRegistry to expose
-  > per-transition commitments (deferred to WI-14.1 pre-mainnet-Phase-2).
-  > In production the owner is under multisig control so this is effectively
-  > multisig-gated."
+  > TRUST MODEL: owner is the sole trust anchor for root advances (round 2
+  > review-pass-2 fix). The witness (sampleEntry + proof) is
+  > defense-in-depth against typo'd/malformed root installs by the owner
+  > itself - it proves newRoot is internally consistent with a
+  > well-formed Merkle path from a leaf, but does NOT anchor newRoot to
+  > previously-trusted registry state. Full option-(iii) anchoring
+  > requires TariffRegistry to expose per-transition commitments
+  > (deferred to WI-14.1 pre-mainnet-Phase-2). In production the owner
+  > is under multisig control so this is effectively multisig-gated.
 
   The registry rewrites `registryActionLogRoot` on every `emitAction` call (`tariff-registry/tariff-registry-v1.compact` L620: `registryActionLogRoot = _actionLogClimb;`), so registry root and mirrored root diverge after the first post-bootstrap event.
 
