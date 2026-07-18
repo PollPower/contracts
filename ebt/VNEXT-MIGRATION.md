@@ -271,6 +271,20 @@ This runbook implements (a). It does not re-litigate the path decision.
 - **Rollback**
   - Revert relay service to previous release and/or point to prior settlement-api build until payload compatibility is restored.
 
+### 5.9 Owner-advance operational ceremony (new required procedure)
+
+- **What it is:** a keyholder ceremony where the contract owner (multisig quorum) calls `mirrorActionLogRoot` on the live v8 contract to advance `_registryActionLogRootMirror` to the current on-chain `registryActionLogRoot` value, and re-anchors the trust anchor.
+- **Why it exists:** because `mirrorActionLogRoot` is owner-gated per the trust model quoted in §5.3, and the mirror-write circuits verify proofs against the mirrored root (not the current on-chain registry root), the daemon cannot advance the trust anchor itself. Without a periodic owner-advance ceremony, `_registryActionLogRootMirror` stays frozen at the bootstrap value, the daemon's queue backs up past `CAL_MIRROR_STALE_TOLERANCE`, and settles start failing with `LANE_MIRROR_STALE`.
+- **Cadence:** weekly (confirmed by Garrett + supervising session 2026-07-18 17:48 JST); trigger-on-alert supersedes the calendar when daemon `queueLagEvents >= 50% * CAL_MIRROR_STALE_TOLERANCE`.
+- **Who runs it:** contract owner (multisig quorum) + observer. Mirror-write daemon operator provides the pre-flight witness bundle.
+- **Concrete procedure:** see `WI-14-CEREMONY-SKELETON.md` §12 (steady-state owner-advance ceremony). At a high level:
+  1. Daemon operator produces a candidate `(newRoot, sampleEntry, proof)` bundle from the current registry state (same bootstrap-witness tooling from §5 of the ceremony skeleton, re-run against the current registry tip).
+  2. Multisig quorum verifies the bundle out-of-band.
+  3. Owner submits `mirrorActionLogRoot(newRoot, sampleEntry, proof)`.
+  4. Daemon detects the advance and drains its queue.
+- **Post-execution verification:** daemon `queueLagEvents` drops to zero (or close to it, if events have landed during the ceremony); observer confirms `_registryActionLogRootMirror` equals the current on-chain `registryActionLogRoot`.
+- **Deferral path:** WI-14.1 targets option-(iii) public-witness root advance, which would remove the weekly-ceremony burden by allowing any honest actor to advance the root with a cryptographic (not authority-based) witness. Until WI-14.1 lands, weekly owner-advance is operational reality.
+
 ## 6. Sunset schedule — expand VNEXT-DESIGN section 9.2
 
 Verbatim schedule from `VNEXT-DESIGN`:
