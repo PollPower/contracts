@@ -27,15 +27,37 @@ The corresponding Ed25519 keys are publicly derivable and are Preview-only.
 
 ```bash
 ssh kenya
+# Clone contracts repo if not already present (deployment.json is gitignored).
+if [ ! -d "$HOME/contracts" ]; then
+  cd "$HOME"
+  git clone git@github.com:PollPower/contracts.git contracts
+fi
 cd "$HOME/contracts"
 git fetch origin
 git checkout feat/wi14-tariff-registry-preview-deploy
 git pull --ff-only
+
+# Copy deployer wallet seed into place (reuses the same wallet that deployed
+# EBT v5 and everything since; do NOT commit).
+cp "$HOME/mn-dev/settlement-work/deployment.json" \
+   "$HOME/contracts/tariff-registry/deployment.json"
+
 cd tariff-registry
 npm install
 chmod +x deploy-preview.sh
+
+# compactc needs zkir on PATH; deploy script needs the settlement-api utils.ts
+# for wallet + provider setup.
+export PATH="$HOME/.compact/versions/0.30.0/x86_64-unknown-linux-musl:$HOME/.compact/bin:$PATH"
+export TARIFF_DEPLOY_UTILS="/opt/pollpower/settlement-api/src/utils.ts"
+
 ./deploy-preview.sh --repo "$HOME/contracts"
 ```
+
+The compile step takes ~30 minutes on kenya-class hardware (17 circuits with
+full ZK setup keys). Subsequent runs skip compile when `build/keys/` is
+populated and the source SHA matches `build/.source-sha256`; pass
+`--force-rebuild` to force recompile.
 
 ## Output artifact
 

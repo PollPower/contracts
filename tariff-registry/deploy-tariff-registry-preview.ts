@@ -7,8 +7,15 @@ import * as Rx from 'rxjs';
 
 import { deployContract } from '@midnight-ntwrk/midnight-js-contracts';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
+import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
+
+// Preview network — required by midnight-js-contracts.deployContract.
+// midnight-js-network-id demands an explicit setNetworkId() call before any
+// wallet or contract op; settlement-api handles this in config.ts's side
+// effects but this deploy tool loads utils.ts directly.
+setNetworkId('preview');
 
 // Keep sync verify behavior aligned with existing deploy tooling.
 (ed as any).hashes.sha512 = sha512;
