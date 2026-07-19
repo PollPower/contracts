@@ -234,6 +234,9 @@ struct LaneRecord {
 
 // Initialization guard.
 export sealed ledger _initialized: Boolean;
+// Constructor-run marker stays sealed (LD v2.2.1 pattern). Runtime readiness
+// (post-deploy action-log bootstrap complete) is tracked separately.
+export ledger _bootstrapComplete: Boolean;
 
 // Federation multisig authority hash (SHA-256 of sorted seat pubkeys of the
 // tier whose approval gates branch ops). Rotatable via setFederationAuthority
@@ -331,12 +334,18 @@ export ledger _actionLogBaseSeq: Uint<64>;
 // WI-14-facing surface.
 export ledger _actionLogClimb: Bytes<32>;
 
+// WI-13.3 bootstrap cursor for sharded action-log initialization.
+// Semantics: levels in [cursor, shardEnd) are processed each call; cursor then
+// becomes shardEnd. Terminal shardEnd == 24 finishes bootstrap readiness.
+export ledger _actionLogBootstrapCursor: Uint<64>;
+
 // =============================================================================
 // Helpers
 // =============================================================================
 
 circuit assertInitialized(): [] {
   assert(_initialized, "TariffRegistry: not initialized");
+  assert(_bootstrapComplete, "TariffRegistry: bootstrap incomplete");
 }
 
 circuit selfBytes(): Bytes<32> {
@@ -683,26 +692,47 @@ constructor(
   _SANITY_BAND_PCT = 20 as Uint<16>;
 
   _hasPendingContext = false;
+  _bootstrapComplete = false;
 
-  // WI-13.2 (§SCOPE C/F): initialize the append-only action-log Merkle tree.
-  // Compute per-level empty-subtree hashes, seed the frontier to those empties
-  // (so appends never miss a lookup), and set the committed root to the
-  // depth-D empty-tree root. Forward-only migration (design decision #2):
-  // _actionLogBaseSeq = the head at construction (0 on a fresh deploy). This
-  // constructor is additive over WI-13.1 state — pre-amendment _actionLog
-  // entries (if any) keep payloadHash == pad(32,"") and are NOT retro-committed.
+  // WI-13.3: constructor now seeds only the bootstrap start state. The full
+  // WI-13.2 empty-tree loop runs post-deploy via bootstrapActionLog shards.
   _actionLogClimb = pad(32, "pp:tariff:v1:actionLogEmpty");
+  _actionLogBootstrapCursor = 0 as Uint<64>;
+
+  // LD v2.2.1 pattern: sealed constructor marker means "constructor ran."
+  _initialized = true;
+}
+
+// WI-13.3 post-deploy bootstrap: sharded initialization of the WI-13.2
+// action-log empty tree to avoid constructor block-limit pressure.
+export circuit bootstrapActionLog(shardEnd: Uint<64>): [] {
+  assert(!_bootstrapComplete, "TariffRegistry: already initialized");
+
+  const end = disclose(shardEnd);
+  const cursor = _actionLogBootstrapCursor;
+  assert(end > cursor, "ACTION_LOG_BOOTSTRAP_NON_MONOTONIC");
+  assert(end <= 24 as Uint<64>, "ACTION_LOG_BOOTSTRAP_BOUND");
+
   const nodeTag = pad(32, "pp:tariff:v1:actionLogNode");
   for (const i of 0..24) {   // ACTION_LOG_DEPTH levels (CAL-13.2-D)
-    const z = _actionLogClimb;
-    _actionLogZeros.insert(i as Uint<64>, z);
-    _actionLogFrontier.insert(i as Uint<64>, z);
-    _actionLogClimb = persistentHash<Vector<3, Bytes<32>>>([nodeTag, z, z]);
+    const iU64 = i as Uint<64>;
+    if (iU64 >= cursor && iU64 < end) {
+      const z = _actionLogClimb;
+      _actionLogZeros.insert(iU64, z);
+      _actionLogFrontier.insert(iU64, z);
+      _actionLogClimb = persistentHash<Vector<3, Bytes<32>>>([nodeTag, z, z]);
+    }
   }
-  registryActionLogRoot = _actionLogClimb;   // depth-D empty-tree root
-  _actionLogBaseSeq = _actionSeq.read();      // 0 on fresh deploy
 
-  _initialized = true;
+  _actionLogBootstrapCursor = end;
+
+  if (end == 24 as Uint<64>) {
+    // Preserve WI-13.2 completion semantics: commit depth-D empty root then
+    // anchor the forward-only migration boundary at the current action-log head.
+    registryActionLogRoot = _actionLogClimb;
+    _actionLogBaseSeq = _actionSeq.read();
+    _bootstrapComplete = true;
+  }
 }
 
 // =============================================================================
