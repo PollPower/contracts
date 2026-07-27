@@ -454,11 +454,15 @@ export function zeroLaneRecord() {
 
 // The registry state. Mirror of the ledger fields.
 export class TariffRegistry {
-  constructor({ federationAuthority, governanceRoot, refRateFiatPerKwh, self, actionLogDepth }) {
+  constructor({ federationAuthority, governanceRoot, refRateFiatPerKwh, self, actionLogDepth, autoBootstrap = true }) {
     // Self-address (32 bytes) — mirrors kernel.self().bytes.
     this.self = Buffer.isBuffer(self) ? self : randomBytes(32);
     // Ledger fields (constructor-set).
+    // LD v2.2.1 two-flag pattern:
+    //   _initialized = constructor ran (sealed in Compact, constructor-only write)
+    //   _bootstrapComplete = post-deploy bootstrap readiness gate
     this._initialized = true;
+    this._bootstrapComplete = false;
     this._federationAuthority = Buffer.from(federationAuthority);
     this._governanceRoot = Buffer.from(governanceRoot);
     this._refRateFiatPerKwh = BigInt(refRateFiatPerKwh);
@@ -478,6 +482,8 @@ export class TariffRegistry {
     this._retuneNonces = new Map();          // nonceKeyHex -> Uint64
     this._retuneLastTime = new Map();        // cdKeyHex -> Uint64
     this._consumedFederationApprovals = new Set(); // hex actionHashes
+    this._actionLogFrontier = new Map();     // level -> hash
+    this._actionLogZeros = new Map();        // level -> hash
     // WI-13.1: lane records.
     this._registeredLanes = new Map();       // laneKeyHex -> LaneRecord
     // Event log.
@@ -486,8 +492,10 @@ export class TariffRegistry {
     // WI-13.2 action-log commitment. Fresh init: empty tree + baseSeq 0.
     this.actionLogDepth = actionLogDepth ?? ACTION_LOG_DEPTH_DEFAULT;
     this._actionLogTree = new ActionLogTree(this.actionLogDepth);
-    this.registryActionLogRoot = Buffer.from(this._actionLogTree.root);
+    this.registryActionLogRoot = Buffer.alloc(32);
     this._actionLogBaseSeq = 0n;
+    this._actionLogClimb = pad32(DOMAIN.ACTION_LOG_EMPTY);
+    this._actionLogBootstrapCursor = 0n;
     // Witness surface.
     this._witnesses = {
       // Default multisig witness: returns true iff the approval bundle was
@@ -507,6 +515,10 @@ export class TariffRegistry {
     // federation authority. Maps hex actionHash → the authorityHash the
     // bundle was signed against (Buffer).
     this._multisigApprovals = new Map();
+
+    if (autoBootstrap) {
+      this.bootstrapActionLog(24n);
+    }
   }
 
   // Record an off-chain msfed bundle for `actionHash`, bound to the CURRENT
@@ -521,6 +533,36 @@ export class TariffRegistry {
   }
 
   currentEpochBytes() { return u64ToBytes32(this._currentEpoch); }
+
+  assertInitialized() {
+    if (!this._initialized) revert('TariffRegistry: not initialized');
+    if (!this._bootstrapComplete) revert('TariffRegistry: bootstrap incomplete');
+  }
+
+  // WI-13.3 post-deploy bootstrap flow.
+  bootstrapActionLog(shardEnd) {
+    if (this._bootstrapComplete) revert('TariffRegistry: already initialized');
+    const end = BigInt(shardEnd);
+    const cursor = this._actionLogBootstrapCursor;
+    if (end <= cursor) revert('ACTION_LOG_BOOTSTRAP_NON_MONOTONIC');
+    if (end > 24n) revert('ACTION_LOG_BOOTSTRAP_BOUND');
+
+    let z = Buffer.from(this._actionLogClimb);
+    for (let i = cursor; i < end; i++) {
+      this._actionLogZeros.set(i, Buffer.from(z));
+      this._actionLogFrontier.set(i, Buffer.from(z));
+      z = actionLogNodeHash(z, z);
+    }
+
+    this._actionLogClimb = Buffer.from(z);
+    this._actionLogBootstrapCursor = end;
+
+    if (end === 24n) {
+      this.registryActionLogRoot = Buffer.from(this._actionLogClimb);
+      this._actionLogBaseSeq = this._actionSeq;
+      this._bootstrapComplete = true;
+    }
+  }
 
   // ---- helper: retune nonce key --------------------------------------------
   retuneNonceKey(operatorId, scheduleId) {
@@ -565,6 +607,7 @@ export class TariffRegistry {
   }
 
   emitAction(kind, scheduleId, nodeId, actionHash, payloadHash, currentTime) {
+    this.assertInitialized();
     const entry = {
       kind,
       scheduleId: Buffer.from(scheduleId),
@@ -583,11 +626,13 @@ export class TariffRegistry {
 
   // WI-13.2 §SCOPE D read circuits.
   getActionEntry(seq) {
+    this.assertInitialized();
     const s = BigInt(seq);
     if (!this._actionLog.has(s)) revert('ACTION_LOG_SEQ_MISSING');
     return this._actionLog.get(s);
   }
   getActionPayloadHash(seq) {
+    this.assertInitialized();
     const s = BigInt(seq);
     if (!this._actionLog.has(s)) revert('ACTION_LOG_SEQ_MISSING');
     return this._actionLog.get(s).payloadHash;
@@ -627,6 +672,7 @@ export class TariffRegistry {
     charterProof,
     now,       // simulate blockTime; must be >= currentTime for L-3.
   }) {
+    this.assertInitialized();
     // L-3: blockTimeGte(currentTime).
     if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('registerSchedule: timestamp cannot be in the future');
     // R-A charter proof.
@@ -677,6 +723,7 @@ export class TariffRegistry {
 
   // -------------------------- retireSchedule --------------------------------
   retireSchedule({ scheduleId, currentTime, now }) {
+    this.assertInitialized();
     if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('retireSchedule: timestamp cannot be in the future');
     const key = toHex(scheduleId);
     if (!this._registeredSchedules.has(key)) revert('SCHEDULE_NOT_FOUND');
@@ -704,6 +751,7 @@ export class TariffRegistry {
 
   // -------------------------- advanceEpoch ---------------------------------
   advanceEpoch({ newEpoch, newRefRateFiatPerKwh, newGovernanceRoot, currentTime, now }) {
+    this.assertInitialized();
     if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('advanceEpoch: timestamp cannot be in the future');
     const currentE = this._currentEpoch;
     const dNew = BigInt(newEpoch);
@@ -739,6 +787,7 @@ export class TariffRegistry {
 
   // -------------------------- setNationalContext ---------------------------
   setNationalContext({ newLDFloorBps, newOpsFloorBps, newSanityBandPct, currentTime, now }) {
+    this.assertInitialized();
     if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('setNationalContext: timestamp cannot be in the future');
     if (BigInt(newLDFloorBps) > 10000n) revert('LD floor exceeds 10000 bps');
     if (BigInt(newOpsFloorBps) > 10000n) revert('Ops floor exceeds 10000 bps');
@@ -762,6 +811,7 @@ export class TariffRegistry {
 
   // -------------------------- setFederationAuthority ------------------------
   setFederationAuthority({ newAuthorityHash, currentTime, now }) {
+    this.assertInitialized();
     if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('setFederationAuthority: timestamp cannot be in the future');
     if (bufEq(newAuthorityHash, Buffer.alloc(32))) revert('setFederationAuthority: zero hash rejected');
     if (bufEq(newAuthorityHash, this._federationAuthority)) revert('setFederationAuthority: no-op rotation');
@@ -783,6 +833,7 @@ export class TariffRegistry {
     operatorId, operatorSignature,
     nonceIn, currentTime, now,
   }) {
+    this.assertInitialized();
     if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('retuneClass: timestamp cannot be in the future');
     const key = toHex(scheduleId);
     if (!this._registeredSchedules.has(key)) revert('SCHEDULE_NOT_FOUND');
@@ -858,6 +909,7 @@ export class TariffRegistry {
 
   // -------------------------- resolvePath ----------------------------------
   resolvePath({ scheduleId, classPath, epoch }) {
+    this.assertInitialized();
     const key = toHex(scheduleId);
     if (!this._registeredSchedules.has(key)) revert('SCHEDULE_NOT_FOUND');
     const rec = this._registeredSchedules.get(key);
@@ -872,13 +924,16 @@ export class TariffRegistry {
     return this._classEntries.get(toHex(splitKey));
   }
   resolveCurrent({ scheduleId, classPath }) {
+    this.assertInitialized();
     return this.resolvePath({ scheduleId, classPath, epoch: this._currentEpoch });
   }
 
   isChartered(nodeId, proof) {
+    this.assertInitialized();
     return bufEq(reconstructCharterRoot(nodeId, proof), this._governanceRoot);
   }
   isScheduleActive(scheduleId) {
+    this.assertInitialized();
     const rec = this._registeredSchedules.get(toHex(scheduleId));
     if (!rec) return false;
     if (rec.retiredEpoch !== 0n) return false;
@@ -891,6 +946,7 @@ export class TariffRegistry {
     applicabilityHash, statuteRefHash, effectiveEpoch, remittanceMode,
     charterProof, currentTime, now,
   }) {
+    this.assertInitialized();
     if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('registerLane: timestamp cannot be in the future');
     // (a) Schedule must exist and be live.
     const key = toHex(scheduleId);
@@ -976,6 +1032,7 @@ export class TariffRegistry {
 
   // -------------------------- WI-13.1 retireLane -------------------------------
   retireLane({ scheduleId, leviedBy, laneKindByte, currentTime, now }) {
+    this.assertInitialized();
     if (BigInt(now ?? currentTime) < BigInt(currentTime)) revert('retireLane: timestamp cannot be in the future');
     // (a) Look up the lane.
     const lKey = laneKey(scheduleId, leviedBy, laneKindByte);
@@ -1017,6 +1074,7 @@ export class TariffRegistry {
 
   // -------------------------- WI-13.1 resolveLane ------------------------------
   resolveLane({ scheduleId, leviedBy, laneKindByte }) {
+    this.assertInitialized();
     const lKey = laneKey(scheduleId, leviedBy, laneKindByte);
     const key = toHex(lKey);
     if (!this._registeredLanes.has(key)) revert('LANE_NOT_FOUND');
@@ -1025,6 +1083,7 @@ export class TariffRegistry {
 
   // -------------------------- WI-13.1 resolveLanes -----------------------------
   resolveLanes({ scheduleId, leviedBys, laneKindBytes }) {
+    this.assertInitialized();
     const zero = zeroLaneRecord();
     const results = [];
     for (let i = 0; i < RESOLVE_LANES_WIDTH; i++) {
@@ -1039,6 +1098,7 @@ export class TariffRegistry {
 
   // -------------------------- WI-13.1 isLaneActive -----------------------------
   isLaneActive({ scheduleId, leviedBy, laneKindByte }) {
+    this.assertInitialized();
     const lKey = laneKey(scheduleId, leviedBy, laneKindByte);
     const key = toHex(lKey);
     if (!this._registeredLanes.has(key)) return false;
@@ -1059,7 +1119,7 @@ export class TariffRegistry {
 // A "well-known" registry fixture used by multiple tests. Charter has 4 nodes
 // (a, b, c, unchartered-but-known-by-name), governanceRoot matches the tree
 // built over the first three.
-export function makeFixture() {
+export function makeFixture(opts = {}) {
   const opKey = newEd25519();
   const validatorKey = newEd25519();
   const nodeA = Buffer.from('a'.repeat(64), 'hex');           // 32 bytes of 0xAA
@@ -1074,6 +1134,7 @@ export function makeFixture() {
     governanceRoot: tree.root,
     refRateFiatPerKwh: 100n, // arbitrary anchor
     self: randomBytes(32),
+    autoBootstrap: opts.autoBootstrap ?? true,
   });
 
   return {
@@ -1084,6 +1145,10 @@ export function makeFixture() {
     nodeUnchartered: nodeD_unchartered,
     charterTree: tree,
   };
+}
+
+export function makeUninitializedFixture() {
+  return makeFixture({ autoBootstrap: false });
 }
 
 // Build a valid SplitShares that sums to 10000 and passes floors.
