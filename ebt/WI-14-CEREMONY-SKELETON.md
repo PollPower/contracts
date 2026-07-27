@@ -8,16 +8,16 @@ This document is the T+0 deploy ceremony plan for EBT v8 on Midnight Preview mai
 
 | Role | Key material | Custody today | Custody at ceremony |
 |---|---|---|---|
-| Contract owner (for `execOwnerOp` / owner-gated circuits such as `initialize` and `mirrorActionLogRoot`) | Owner signing key (production control path is under multisig governance per WI-14 review notes) | `[GARRETT-DECIDED]` | Present, identity-checked, signs owner operations live at T+0 AND signs weekly owner-advance ceremonies (see §12) throughout the v8 lifetime until WI-14.1 lands |
+| Contract owner (for `execOwnerOp` / owner-gated circuits such as `initialize` and `mirrorActionLogRoot`) | Owner signing key (production control path is under multisig governance per WI-14 review notes) | Garrett (via Multisig v6 PROD `f7192a50...c3fa` co-sign, current admin set = 1 real ring + 4 pilot-mocks; see H-1 note below and §9 CAL-1) | Present, identity-checked, signs owner operations live at T+0 AND signs weekly owner-advance ceremonies (see §12) throughout the v8 lifetime until WI-14.1 lands |
 | Multisig quorum members (for `execMultisigOp`) | Multisig admin Ed25519 keys (3-of-5) | Pilot ring set currently active (see H-1 note below) | 3-of-5 online and able to co-sign required governance actions at T+0 AND for the weekly owner-advance ceremony (§12) throughout v8 lifetime |
 | Meter authority | Meter Authority signer pubkey for `_meterAuthorityPubkey` | Live relay meter-authority service key (`GET /metadata`) | Same key installed at `initialize()` unless rotated in a prior approved ceremony |
-| Escrow attestor | Escrow attestor pubkey for `_escrowAttestorPubkey` (redeem solvency guard) | `[GARRETT-DECIDED]` | Pubkey supplied at `initialize()` and attestor reachable for post-cutover checks |
-| Deploy operator | Deployer key + deployment workstation/session on Kenya | `[GARRETT-DECIDED]` | Runs deploy transaction and records tx hash/address |
-| Mirror-write daemon operator | Daemon runtime key(s) and service credentials for mirror transactions | No productionized v8 mirror daemon path found in this repo; PR #40 flags this as a prerequisite gap | Must own a tested deployable daemon before ceremony starts AND own the pre-flight witness-bundle-generation procedure for each weekly owner-advance ceremony (§12 step 1) |
+| Escrow attestor | Escrow attestor pubkey for `_escrowAttestorPubkey` (redeem solvency guard) | `[GARRETT-DECIDED]` (specific escrow attestor pubkey to be locked in the T+0 pre-flight signed input manifest — see §4 step 4 and §3 prerequisite 10) | Pubkey supplied at `initialize()` and attestor reachable for post-cutover checks |
+| Deploy operator | Deployer key + deployment workstation/session on Kenya | Garrett's existing PollPower deployer wallet on Kenya (same wallet used for EBT v5+ deploys per `~/mn-dev/settlement-work/deployment.json`) | Runs deploy transaction and records tx hash/address |
+| Mirror-write daemon operator | Daemon runtime key(s) and service credentials for mirror transactions | Daemon implementation landed at `PollPower/settlement-api:feat/wi14-mirror-daemon` (four commits, 14 source files + 3 test files); operator = Garrett with Joi/BIG supervising session; PR pending TariffRegistry Preview deploy for C.1/C.2/C.5/C.8 hash-vector verification | Must own a tested deployable daemon before ceremony starts AND own the pre-flight witness-bundle-generation procedure for each weekly owner-advance ceremony (§12 step 1) |
 | Settlement-api operator | Kenya service access (pm2 + config secrets) | Existing operator for `settlement-api` | Flips contract target to v8 and validates first settle |
-| Ceremony observer / recorder | No signing key (audit witness role) | `[GARRETT-DECIDED]` | Maintains minute-by-minute record and captures attestation artifacts |
+| Ceremony observer / recorder | No signing key (audit witness role) | Joi/BIG supervising session (workspace webchat, session-key `agent:solar-scout:main`) — records minute-by-minute in daily memory + mempalace | Maintains minute-by-minute record and captures attestation artifacts |
 
-**H-1 key posture flag (mandatory):** `C:\Users\Garrett\.openclaw\workspace\MEMORY.md` still marks H-1 open (pilot-mock keys publicly derivable; Tangem ring swap ceremony pending). This ceremony plan does not decide whether v8 cutover runs with pilot-mock keys or only after H-1 remediation; this remains **[GARRETT + SUPERVISING SESSION]**.
+**H-1 key posture flag (mandatory) — RESOLVED 2026-07-27 by Garrett (CAL-1, §9):** the ceremony proceeds with the current pilot-posture admin set (1 real Tangem ring + 4 pilot-mock keys) on Multisig v6 PROD. Tangem ring activations continue in parallel; mock-key access is retained during transition to exercise rotate-seat functions with a known-good quorum. H-1 fully closes only when all 5 admins are real rings; H-1 remains a hard-gate blocker for mainnet Phase 2 (tracked as WI-14.2). See §9 CAL-1 for the full decision + rationale.
 
 ## 3. Prerequisites (checkable at ceremony start)
 
@@ -31,12 +31,15 @@ This document is the T+0 deploy ceremony plan for EBT v8 on Midnight Preview mai
    **Critical:** current `contracts` repo tree contains no v8 mirror-writer implementation; PR #40 section 5.3 also flags this gap.
 6. Contract owner + multisig quorum are physically/logically available for the ceremony window (no asynchronous "sign later" assumption).
 7. Deploy operator has Kenya environment ready (network sync, DUST, build artifacts, exact commit checkout).
-8. Bootstrap value for `_registryActionLogRootMirror` is precomputed from live TariffRegistry state using the section 5 method, with witness package prepared (`sampleEntry + proof`).
-9. **Weekly owner-advance ceremony procedure signed off and tested end-to-end** (see §12). Weekly cadence + alert-triggered supersession confirmed by Garrett + supervising session 2026-07-18. Multisig keyholder availability commitment for the weekly cadence is signed off in writing.
+8. Bootstrap value for `_registryActionLogRootMirror` is precomputed from live TariffRegistry state using the section 5 method, with witness package prepared (`sampleEntry + proof`). Witness-generation script provenance: `settlement-api/scripts/generate-owner-advance-bundle.ts` reusing daemon's own `merkle.ts` + `hashing.ts` (per §9 CAL-6).
+9. **Weekly owner-advance ceremony procedure signed off and tested end-to-end** (see §12). Weekly cadence + alert-triggered supersession confirmed by Garrett + supervising session 2026-07-18. Operator = Garrett (sole); escalation path locked per §9 CAL-7. Multisig keyholder availability commitment for the weekly cadence is signed off in writing under the current pilot-posture admin set (1 real ring + 4 pilot-mocks, all held by Garrett; see §9 CAL-1).
 10. `initialize()` input set is signed off in writing: meter authority pubkey, escrow attestor pubkey, multisig authority hash, recipient addresses, and any other constructor/init inputs.  
-   Recipient addresses remain `[GARRETT-DECIDED]`.
+   **Recipient addresses (RESOLVED 2026-07-27, §9 CAL-4):** reuse the existing v7.4.2 pilot producer wallet set — `con-000`, `con-001`, `con-002`, `prod-000`, `prod-001`. Exact bech32m addresses to be captured in the T+0 pre-flight signed input manifest from the current v7.4.2 producer registry on relay.
+11. **WI-13.3 shard bootstrap sequence** (added post-#44 merge, 2026-07-27): TariffRegistry deploys with `_bootstrapComplete = false`. Between deploy and the `initialize()` step, the deploy operator MUST call `bootstrapActionLog(8n)`, then `bootstrapActionLog(16n)`, then `bootstrapActionLog(24n)` in three sequential transactions. The terminal shard commits the depth-24 empty root, sets `_actionLogBaseSeq = _actionSeq`, and sets `_bootstrapComplete = true`. Any branch op (register/retire/retune) called before the terminal shard reverts with `TariffRegistry: bootstrap incomplete`. See `tariff-registry/V1.3-DESIGN.md` §5 for keeper sequence detail.
 
 ## 4. Ceremony steps (ordered list)
+
+**Note (added 2026-07-27):** step 2 below deploys TariffRegistry. Under WI-13.3 (merged 2026-07-27 as PR #44 commit `feaeccc`), TariffRegistry deploys with `_bootstrapComplete = false` and requires three post-deploy `bootstrapActionLog(shardEnd)` calls (8 → 16 → 24) BEFORE any branch op or before the v8 ceremony proceeds past step 4. These three shard calls are treated as extension of step 2 (deploy operator role) and MUST complete before step 3's contract-address broadcast is treated as ceremony-ready. See prerequisite 11 and `tariff-registry/V1.3-DESIGN.md` for detail.
 
 1. **Step 1: Pre-flight identity + custody confirmation**
    - **Who:** Ceremony observer + all roles from section 2.
@@ -61,7 +64,7 @@ This document is the T+0 deploy ceremony plan for EBT v8 on Midnight Preview mai
 
 4. **Step 4: Owner initializes v8 with signed input set**
    - **Who:** Contract owner (+ multisig quorum where owner-control policy requires co-sign).
-   - **Command / action:** Submit `initialize(...)` using signed input manifest: `_meterAuthorityPubkey`, multisig authority hash, recipient addresses `[GARRETT-DECIDED]`, `_escrowAttestorPubkey`.
+   - **Command / action:** Submit `initialize(...)` using signed input manifest: `_meterAuthorityPubkey`, multisig authority hash, recipient addresses (per §9 CAL-4: v7.4.2 pilot producer wallets `con-000`, `con-001`, `con-002`, `prod-000`, `prod-001`, bech32m captured pre-flight), `_escrowAttestorPubkey`.
    - **Expected output:** `initialize()` succeeds once; `_initialized == true`.
    - **Verify:** Observer reads back `_initialized` and each configured field.
    - **If failed:** Treat as one-shot initialization failure and redeploy (section 6).
@@ -159,18 +162,46 @@ Use this checklist plus `VNEXT-MIGRATION.md` section 9.
 
 ## 8. Timeline estimate
 
-Assuming no failures, expect roughly: deploy about 5 minutes, initialize about 5 minutes including co-sign wait, bootstrap-root derivation/install about 5 minutes, mirror backfill variable at N minutes per currently-registered lane/schedule workload, settlement-api restart about 2 minutes, and first canary settle about 10 minutes. This is an order-of-magnitude planning estimate, not an SLA; keyholders should reserve a 2-3 hour ceremony window.
+Assuming no failures, expect roughly: deploy about 5 minutes, WI-13.3 shard sequence (three `bootstrapActionLog` calls) about 5-10 minutes total, initialize about 5 minutes including co-sign wait, bootstrap-root derivation/install about 5 minutes, mirror backfill variable at N minutes per currently-registered lane/schedule workload, settlement-api restart about 2 minutes, and first canary settle about 10 minutes. This is an order-of-magnitude planning estimate, not an SLA; keyholders should reserve a 2-3 hour ceremony window. T+0 target per §9 CAL-5: Sunday 2026-08-02, ~14:00 JST.
 
-## 9. Open questions
+## 9. Open questions — RESOLVED 2026-07-27 (Garrett)
 
-1. **Pilot-mock keys vs H-1 remediation sequencing** — Does v8 cutover run before Tangem ring swap, or is H-1 remediation a hard gate first? **[GARRETT + SUPERVISING SESSION]**
-2. **CAL-vNext-M1 final lock** — Final mirror-stale tolerance for production freshness checks. Weekly owner-advance cadence confirmed 2026-07-18. Draft tolerance value from `VNEXT-DESIGN.md` §3.3 is 4 events; for weekly cadence at pilot-scale event rate this is very tight and should be reconsidered upward before mainnet Phase 2. **Cadence: RESOLVED (weekly + alert-on-50%-lag). Tolerance value: [GARRETT + SUPERVISING SESSION]**
-3. **CAL-13.2-D final lock** — Action-log Merkle depth is scaffolded as 24 in current registry source; production value unresolved. **[GARRETT + SUPERVISING SESSION]**
-4. **Mirror-write daemon delivery owner + readiness** — No concrete v8 mirror-daemon implementation path is present in this repo; assign owner and readiness criteria before T+0. Daemon implementation brief authored on 2026-07-18 in workspace scratch (`MIRROR-DAEMON-BRIEF.md`) reflecting operational model (A) confirmed by Garrett at 17:48 JST; implementation branch expected at `PollPower/settlement-api:feat/wi14-mirror-daemon`. **Operator: [GARRETT + SUPERVISING SESSION]**
-5. **`initialize()` recipient addresses** — Exact recipient address set is not specified in-repo and must be supplied explicitly. **[GARRETT-DECIDED]**
-6. **Ceremony date/time (T+0)** — Calendar lock for keyholder availability and change window. **[GARRETT + SUPERVISING SESSION]**
-7. **Bootstrap witness tooling provenance** — Which specific tool/script produces `sampleEntry + proof` from live TariffRegistry at ceremony time, and who signs off its output. **[GARRETT + SUPERVISING SESSION]**
-8. **Weekly owner-advance ceremony operator + escalation path** — Who owns the weekly ceremony execution and what happens if multisig quorum is unreachable in a given week? See §12 for the ceremony procedure. **[GARRETT + SUPERVISING SESSION]**
+All pre-ceremony CAL sign-offs closed by Garrett + supervising session (Joi) on 2026-07-27 17:05 JST. The original open-question numbering is preserved below for audit continuity; each item now records its locked decision.
+
+1. **CAL-1 — Pilot-mock keys vs H-1 remediation sequencing.**
+   **RESOLVED:** Proceed with v8 Preview cutover using the CURRENT Multisig v6 PROD admin set (1 real Tangem ring `295be1f5...466f` + 4 pilot-mock keys derived from `sha256("pollpower-pilot-mock-ring-{0..3}")`). Continue Tangem ring activations in parallel with the pilot. Maintain mock-key access during transition so rotate-seat / add-remove-admin functions can be exercised with a known-good quorum. H-1 fully closes when all 5 admins are real rings. This ceremony plan therefore treats the admin set as pilot-posture; H-1 remains a hard-gate blocker for mainnet Phase 2, tracked as WI-14.2.
+   **Rationale:** All signing sources (Garrett's ring + all 4 mock seeds) are held by Garrett. Threshold-3 is met multiple ways from a single custodian. The external-attacker risk (public mock seeds) is the H-1 gap that mainnet blocks on, not Preview.
+
+2. **CAL-vNext-M1 — Mirror-stale tolerance.**
+   **RESOLVED:** `32 events`. Alert threshold at 16 events (50% lag). Raise to `64` before mainnet Phase 2 once real event rate is observed. This is a config value, not on-chain — bumpable post-deploy without re-ceremony. Cadence remains weekly + alert-on-50%-lag as previously RESOLVED 2026-07-18.
+
+3. **CAL-13.2-D — Action-log Merkle depth.**
+   **RESOLVED:** `24`. 16.7M event lifetime capacity, negligible circuit cost, set-and-forget for v8 lifetime. Baked in at TariffRegistry deploy (WI-13.3 shard sequence terminates at depth 24).
+
+4. **Mirror-write daemon delivery owner + readiness.**
+   **RESOLVED:** Daemon implementation landed at `PollPower/settlement-api:feat/wi14-mirror-daemon` (14 source files + 3 test files across four commits `7be3980` → `80222f8` → `b95b145` → `cca56ba`). Operator: Garrett (with Joi/BIG supervising session support). Pre-T+0 readiness item: TariffRegistry Preview deploy must be executed so daemon's C.1/C.2/C.5/C.8 hash-vector verification tests can materialize their vectors against a live chain; daemon PR opens after that step.
+
+5. **CAL-4 — `initialize()` recipient addresses.**
+   **RESOLVED:** Reuse the existing v7.4.2 producer address set — 5 pilot producer wallets (`con-000`, `con-001`, `con-002`, `prod-000`, `prod-001`). Zero net change to app-side wallet routing.
+
+6. **CAL-5 — Ceremony date/time (T+0).**
+   **RESOLVED:** Sunday 2026-08-02, ~14:00 JST. Weekly owner-advance ceremony (§12) runs every Sunday at the same slot going forward, until superseded by trigger-on-alert (see §12.2).
+
+7. **CAL-6 — Bootstrap witness tooling provenance.**
+   **RESOLVED:** Reuse the mirror-daemon's own `src/mirror-daemon/merkle.ts` + `src/mirror-daemon/hashing.ts`. Add a standalone one-shot script `settlement-api/scripts/generate-owner-advance-bundle.ts` that imports the daemon's tree code and dumps `(newRoot, sampleEntry, proof)` at the current TariffRegistry tip. Same codepath as the daemon's own mirror-write witnesses = no cross-implementation drift. Sign-off flow: Garrett (owner, verifies `newRoot` against direct chain read of `registryActionLogRoot`) → daemon operator (produces the bundle) → observer (records checksum). Script to be added in a follow-up PR against `settlement-api`.
+
+8. **CAL-7 — Weekly owner-advance ceremony operator + escalation.**
+   **RESOLVED:** Garrett is the sole ceremony operator. Escalation path:
+   - **Miss 1 week:** notification only; daemon continues serving reads on already-mirrored seqs; queue grows.
+   - **Miss 2 weeks (queue at ~50% of CAL-vNext-M1 tolerance = 16 events):** urgent async multisig co-sign via Signal keyholder channel, 24-hour window. Ceremony is not deferred to the next weekly slot — it is treated as urgent.
+   - **Miss 3 weeks (queue past tolerance, settles begin failing with `LANE_MIRROR_STALE`):** declare degraded service (pilot users notified via PollPower status surface or equivalent); run ceremony as soon as any 3 multisig members reachable, even outside normal cadence.
+   - **Pilot-mock posture note:** while CAL-1 keeps the mock admins in the admin set, Garrett can co-sign as all 3 required seats himself in an emergency. This is the pilot-mock trade-off and is fine while H-1 remains open. Backup operator handoff is deferred to WI-14.2.
+
+### Follow-up items unlocked by these decisions
+
+- **Follow-up F-1:** Add `settlement-api/scripts/generate-owner-advance-bundle.ts` (per CAL-6). Not blocking T+0 but must exist before the first weekly owner-advance ceremony after T+0.
+- **Follow-up F-2:** Add explicit README banner on `PollPower/contracts` marking v8 Preview as pilot-posture / not-for-mainnet-use pending H-1 (per CAL-1 + WI-14.2).
+- **Follow-up F-3:** Update `ebt/VNEXT-DESIGN.md` §3.3 tolerance draft (4 events) to reflect CAL-vNext-M1 resolved value (32 events) once CAL-2 lands in prod.
 
 ## 12. Steady-state owner-advance ceremony (post-T+0, weekly)
 
@@ -198,9 +229,14 @@ Behaviour confirmed by `ebt/tests/vnext/T19-mirror-root-witness.test.mjs`.
 
 ### 12.2 Cadence
 
-- **Baseline: weekly** (confirmed by Garrett + supervising session 2026-07-18 17:50 JST).
-- **Trigger-on-alert supersedes calendar:** when the daemon's `queueLagEvents` metric reaches `>= 50% * CAL_MIRROR_STALE_TOLERANCE`, the ceremony must be triggered immediately, not deferred to the weekly slot.
-- **Escalation if quorum unreachable in a given week:** owner-advance is deferred; the daemon continues serving reads on already-mirrored seqs; new-lane / retire / retune events queue; settles for events past the mirrored-root-seq fail with `LANE_MIRROR_STALE` once tolerance closes. Recovery is completing the ceremony as soon as quorum is available. Operator responsibility to declare degraded service in the interim.
+- **Baseline: weekly** (confirmed by Garrett + supervising session 2026-07-18 17:50 JST; T+0 = Sunday 2026-08-02 ~14:00 JST per §9 CAL-5; weekly cadence runs every Sunday at the same slot going forward).
+- **Trigger-on-alert supersedes calendar:** when the daemon's `queueLagEvents` metric reaches `>= 50% * CAL_MIRROR_STALE_TOLERANCE`, the ceremony must be triggered immediately, not deferred to the weekly slot. `CAL_MIRROR_STALE_TOLERANCE = 32 events` per §9 CAL-2 (alert threshold = 16 events = 50%).
+- **Escalation if quorum unreachable in a given week (locked per §9 CAL-7):**
+  - **Miss 1 week:** notification only; daemon continues serving reads on already-mirrored seqs; new-lane / retire / retune events queue.
+  - **Miss 2 weeks (queue at ~50% tolerance = 16 events):** urgent async multisig co-sign via Signal keyholder channel, 24-hour window. Not deferred to next weekly slot — treated as urgent.
+  - **Miss 3 weeks (queue past tolerance, settles begin failing with `LANE_MIRROR_STALE`):** declare degraded service; run ceremony as soon as any 3 multisig members reachable, even outside normal cadence.
+  - **Pilot-mock posture note:** while CAL-1 keeps mock admins in the admin set, Garrett can co-sign as all 3 required seats himself in an emergency. Pilot-mock trade-off; fine while H-1 remains open. Backup operator handoff deferred to WI-14.2.
+  - Operator responsibility to declare degraded service in the interim.
 
 ### 12.3 Keyholders required
 
