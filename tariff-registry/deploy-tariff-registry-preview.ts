@@ -667,6 +667,21 @@ async function main() {
     throw new Error(`Unexpected contractAddress byte length ${selfBytes.length}`);
   }
 
+  // WI-13.3 post-deploy bootstrap (three sequential shards; see contract
+  // circuit `bootstrapActionLog` and `tariff-registry/V1.3-DESIGN.md` §5).
+  // The constructor now leaves the action-log empty tree uninitialized to
+  // fit under Midnight block limits; keeper (this deploy script) advances
+  // the shard cursor 0 → 8 → 16 → 24. Only the terminal shard commits
+  // `registryActionLogRoot`, sets `_actionLogBaseSeq`, and flips
+  // `_bootstrapComplete = true`. Without these three calls every branch
+  // op below reverts with "TariffRegistry: bootstrap incomplete".
+  console.log('[deploy] bootstrap shard 1/3: bootstrapActionLog(8n)');
+  await deployed.callTx.bootstrapActionLog(8n);
+  console.log('[deploy] bootstrap shard 2/3: bootstrapActionLog(16n)');
+  await deployed.callTx.bootstrapActionLog(16n);
+  console.log('[deploy] bootstrap shard 3/3 (terminal): bootstrapActionLog(24n)');
+  await deployed.callTx.bootstrapActionLog(24n);
+
   const currentEpoch = 0n;
   const currentTime = 0n;
   const effectiveEpoch = currentEpoch + 1n;
