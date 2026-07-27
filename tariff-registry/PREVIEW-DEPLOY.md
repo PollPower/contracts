@@ -59,6 +59,39 @@ full ZK setup keys). Subsequent runs skip compile when `build/keys/` is
 populated and the source SHA matches `build/.source-sha256`; pass
 `--force-rebuild` to force recompile.
 
+## Bootstrap shard sequence (WI-13.3, post-2026-07-27)
+
+Under PR #44 (WI-13.3, merged 2026-07-27), the TariffRegistry
+constructor no longer initializes the action-log empty tree. The
+deploy script runs three sequential `bootstrapActionLog` calls after
+`deployContract` and before the first `registerSchedule`:
+
+1. `bootstrapActionLog(8n)`  — initializes empty-tree levels 0-7
+2. `bootstrapActionLog(16n)` — initializes empty-tree levels 8-15
+3. `bootstrapActionLog(24n)` — initializes empty-tree levels 16-23,
+   commits `registryActionLogRoot` to the depth-24 empty root, sets
+   `_actionLogBaseSeq = 0`, and sets `_bootstrapComplete = true`.
+
+Only after all three calls succeed can `registerSchedule`,
+`registerLane`, `retuneClass`, and any other branch op run.
+
+**Expected timing:** each shard call is a single Midnight transaction;
+~1-3 minutes each depending on block time. Total shard sequence
+overhead: ~5-10 minutes.
+
+**Recovery if a shard fails mid-sequence:** the deploy script does not
+resume mid-deploy. If shard 1 succeeds but shard 2 fails, the deployed
+contract is in a stuck state with `_actionLogBootstrapCursor = 8` and
+`_bootstrapComplete = false`. The correct recovery is:
+
+- Abandon the partially-initialized contract (no rollback exists for a
+  deployed Midnight address; orphan is acceptable).
+- Delete or rename `tariff-registry-preview-deployment.public.json` so
+  the top-of-`main` idempotent-exit check does not re-detect the dead
+  address.
+- Re-run `./deploy-preview.sh` from scratch. A fresh deploy allocates a
+  new contract address and starts the shard sequence over.
+
 ## Output artifact
 
 After successful deploy, public output lands at:
