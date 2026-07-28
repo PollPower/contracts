@@ -26,11 +26,11 @@ pure circuit RETUNE_MIN_INTERVAL_S(): Uint<64> {
 }
 
 pure circuit LANE_TREE_DEPTH(): Uint<64> {
-  return 20 as Uint<64>;
+  return 18 as Uint<64>;
 }
 
 pure circuit CLASS_TREE_DEPTH(): Uint<64> {
-  return 20 as Uint<64>;
+  return 18 as Uint<64>;
 }
 
 // =============================================================================
@@ -69,8 +69,8 @@ witness witness_divmod(numerator: Field, divisor: Field): DivResult;
 // from the returned bits (two-sided checked cast) and reverts on any mismatch,
 // so a lying prover cannot misplace a leaf. Width = ACTION_LOG_DEPTH (24).
 witness action_log_path_bits(seq: Uint<64>): Vector<24, Boolean>;
-witness lane_path_bits(seq: Uint<64>): Vector<20, Boolean>;
-witness class_entry_path_bits(seq: Uint<64>): Vector<20, Boolean>;
+witness lane_path_bits(seq: Uint<64>): Vector<18, Boolean>;
+witness class_entry_path_bits(seq: Uint<64>): Vector<18, Boolean>;
 
 // =============================================================================
 // Structs
@@ -476,23 +476,23 @@ pure circuit actionLogBitAccum(acc: Field, bit: Boolean, pow: Field): Field {
   return acc + (bit ? pow : (0 as Field));
 }
 
-pure circuit LANE_TREE_POWERS(): Vector<20, Field> {
+pure circuit LANE_TREE_POWERS(): Vector<18, Field> {
   return [
     1 as Field,        2 as Field,        4 as Field,        8 as Field,
     16 as Field,       32 as Field,       64 as Field,       128 as Field,
     256 as Field,      512 as Field,      1024 as Field,     2048 as Field,
     4096 as Field,     8192 as Field,     16384 as Field,    32768 as Field,
-    65536 as Field,    131072 as Field,   262144 as Field,   524288 as Field,
+    65536 as Field,    131072 as Field,
   ];
 }
 
-pure circuit CLASS_TREE_POWERS(): Vector<20, Field> {
+pure circuit CLASS_TREE_POWERS(): Vector<18, Field> {
   return [
     1 as Field,        2 as Field,        4 as Field,        8 as Field,
     16 as Field,       32 as Field,       64 as Field,       128 as Field,
     256 as Field,      512 as Field,      1024 as Field,     2048 as Field,
     4096 as Field,     8192 as Field,     16384 as Field,    32768 as Field,
-    65536 as Field,    131072 as Field,   262144 as Field,   524288 as Field,
+    65536 as Field,    131072 as Field,
   ];
 }
 
@@ -605,7 +605,7 @@ circuit appendLaneLeaf(seq: Uint<64>, leaf: Bytes<32>): [] {
   // Chosen domain separator for the lane tree's internal pair hashes.
   const nodeTag = pad(32, "pp:tariff:v1:lanesNode");
   _lanesMerkleClimb = leaf;
-  for (const i of 0..20) {
+  for (const i of 0..18) {
     const bit = bits[i];
     const cur = _lanesMerkleClimb;
     const sib = bit
@@ -631,7 +631,7 @@ circuit appendClassEntryLeaf(seq: Uint<64>, leaf: Bytes<32>): [] {
   // Chosen domain separator for the class-entry tree's internal pair hashes.
   const nodeTag = pad(32, "pp:tariff:v1:classEntriesNode");
   _classEntriesMerkleClimb = leaf;
-  for (const i of 0..20) {
+  for (const i of 0..18) {
     const bit = bits[i];
     const cur = _classEntriesMerkleClimb;
     const sib = bit
@@ -713,7 +713,7 @@ constructor(
   _hasPendingContext = false;
   _lanesMerkleClimb = pad(32, "pp:tariff:v1:lanesEmpty");
   const lanesNodeTag = pad(32, "pp:tariff:v1:lanesNode");
-  for (const i of 0..20) {
+  for (const i of 0..18) {
     const z = _lanesMerkleClimb;
     _lanesMerkleZeros.insert(i as Uint<64>, z);
     _lanesMerkleFrontier.insert(i as Uint<64>, z);
@@ -722,7 +722,7 @@ constructor(
   _lanesMerkleRoot = _lanesMerkleClimb;
   _classEntriesMerkleClimb = pad(32, "pp:tariff:v1:classEntriesEmpty");
   const classEntriesNodeTag = pad(32, "pp:tariff:v1:classEntriesNode");
-  for (const i of 0..20) {
+  for (const i of 0..18) {
     const z = _classEntriesMerkleClimb;
     _classEntriesMerkleZeros.insert(i as Uint<64>, z);
     _classEntriesMerkleFrontier.insert(i as Uint<64>, z);

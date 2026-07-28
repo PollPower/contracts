@@ -10,7 +10,7 @@ import {
   bufEq,
 } from '../lib.mjs';
 
-const TREE_DEPTH = 20;
+const TREE_DEPTH = 18;
 
 function bitsFromSeq(seq, depth = TREE_DEPTH) {
   const out = [];
