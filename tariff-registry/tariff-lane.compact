@@ -593,7 +593,21 @@ circuit consumeFederationApproval(actionHash: Bytes<32>, opLabel: Bytes<32>): []
   );
   _consumedFederationApprovals.insert(dHash);
 }
-constructor(auditContractAddress: ContractAddress, governanceContractAddress: ContractAddress, scheduleContractAddress: ContractAddress) {
+// WI-15.1 Fix A (PR #49 review):
+//   `initialFederationAuthority` and `initialAuditWriterAuthority` are sealed
+//   init parameters — the trust anchors for every mirror-write on this sibling
+//   are fixed at deploy time. Modeled on V2-SPLIT-ADDENDUM.md §A2's AuditLog
+//   constructor shape (`initialAuditWriterAuthority: Bytes<32>`).
+//   Closes the genesis front-run window where empty `_mirroredFederationAuthority`
+//   and `_auditWriterAuthorityTarget` cells let the first mirror-writer seed
+//   any authority they chose.
+constructor(
+  auditContractAddress: ContractAddress,
+  governanceContractAddress: ContractAddress,
+  scheduleContractAddress: ContractAddress,
+  initialFederationAuthority: Bytes<32>,
+  initialAuditWriterAuthority: Bytes<32>,
+) {
   _auditContractAddress = disclose(auditContractAddress);
   _governanceContractAddress = disclose(governanceContractAddress);
   _scheduleContractAddress = disclose(scheduleContractAddress);
@@ -605,6 +619,10 @@ constructor(auditContractAddress: ContractAddress, governanceContractAddress: Co
   _OPS_FLOOR_BPS = 2000 as Uint<16>;
   _SANITY_BAND_PCT = 20 as Uint<16>;
   _hasPendingContext = false;
+
+  // WI-15.1 Fix A: seal the mirror-authority trust anchors at genesis.
+  _mirroredFederationAuthority = disclose(initialFederationAuthority);
+  _auditWriterAuthorityTarget = disclose(initialAuditWriterAuthority);
 
   _bootstrapComplete = true;
   _initialized = true;
@@ -1024,4 +1042,325 @@ export circuit isLaneActive(
     return false;
   }
   return _currentEpoch.read() >= rec.effectiveEpoch;
+}
+
+// =============================================================================
+// WI-15.1 mirror-write endpoints (V2-SPLIT-DESIGN.md §4.1, §4.2, §4.3, §4.6, §4.9)
+// =============================================================================
+//
+// Body pattern from V2-SPLIT-DESIGN.md §4.1 (verbatim block quote):
+//
+//   1. `assert(signature_valid(govAuthorityHash, newRoot || epochAtMirror, govAuthoritySig))` — same witness function as `tariff-registry-v1.compact:116-124`.
+//   2. `assert(epochAtMirror > _mirroredEpoch, "MIRROR_EPOCH_STALE")` — monotone.
+//   3. Write `_mirroredGovernanceRoot = disclose(newRoot)`, `_mirroredEpoch = disclose(epochAtMirror)`.
+//   4. Emit `MIRROR_GOV_ROOT` action to local outbox with `payloadHash = persistentHash([tag, newRoot, epochAtMirror])`.
+//
+// I-15-B (verbatim from V2-SPLIT-DESIGN.md §8.4):
+//
+//   Every mirror-write circuit MUST verify a signature under the source contract's federation authority (or a designated mirror-writer authority) over the tuple `(newRootValue, sourceEpochAtMirror)`, AND MUST enforce monotone `sourceEpochAtMirror` progression against a locally stored `_lastMirroredEpoch`.
+
+export ledger _mirroredGovernanceRoot:          Bytes<32>;
+export ledger _mirroredEpoch:                   Uint<64>;
+export ledger _mirroredLDFloorBps:              Uint<16>;
+export ledger _mirroredOpsFloorBps:             Uint<16>;
+export ledger _mirroredSanityBandPct:           Uint<16>;
+export ledger _mirroredRefRateFiatPerKwh:       Uint<64>;
+export ledger _mirroredFederationAuthority:     Bytes<32>;
+export ledger _mirroredSchedulesRoot:           Bytes<32>;
+export ledger _mirroredSchedulesEpoch:          Uint<64>;
+export ledger _mirroredAuditRoot:               Bytes<32>;
+export ledger _mirroredAuditGlobalSeq:          Uint<64>;
+
+// -----------------------------------------------------------------------------
+// mirrorGovernanceRoot — Lane (§4.1)
+// -----------------------------------------------------------------------------
+export circuit mirrorGovernanceRoot(
+  newRoot:         Bytes<32>,
+  epochAtMirror:   Uint<64>,
+  govAuthoritySig: Bytes<64>,
+  govAuthorityHash: Bytes<32>,
+  currentTime:     Uint<64>,
+): [] {
+  assertInitialized();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "mirrorGovernanceRoot: timestamp cannot be in the future");
+
+  const dRoot  = disclose(newRoot);
+  const dEpoch = disclose(epochAtMirror);
+  const dAuth  = disclose(govAuthorityHash);
+  const epochBytes = (dEpoch as Field) as Bytes<32>;
+
+  const msg = persistentHash<Vector<5, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorGovRoot"),
+    selfBytes(),
+    dRoot,
+    epochBytes,
+    dAuth,
+  ]);
+
+  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
+  const cur = _mirroredFederationAuthority;
+  assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
+  assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
+         "MIRROR_GOV_ROOT_SIG_INVALID");
+
+  const upGap = ((dEpoch - _mirroredEpoch - 1) as Uint<64>);
+
+  _mirroredGovernanceRoot = dRoot;
+  _mirroredEpoch = dEpoch;
+
+  const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorGovRoot"),
+    dRoot,
+    epochBytes,
+  ]);
+  emitAction(
+    16 as Uint<8>,
+    pad(32, ""),
+    pad(32, ""),
+    msg,
+    payloadHash,
+    currentTime,
+  );
+}
+
+// -----------------------------------------------------------------------------
+// mirrorEpochAndFloors — Lane (§4.2)
+// -----------------------------------------------------------------------------
+export circuit mirrorEpochAndFloors(
+  newEpoch:         Uint<64>,
+  newLDFloorBps:    Uint<16>,
+  newOpsFloorBps:   Uint<16>,
+  newSanityBandPct: Uint<16>,
+  newRefRateFiatPerKwh: Uint<64>,
+  govAuthoritySig:  Bytes<64>,
+  govAuthorityHash: Bytes<32>,
+  currentTime:      Uint<64>,
+): [] {
+  assertInitialized();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "mirrorEpochAndFloors: timestamp cannot be in the future");
+
+  const dEpoch = disclose(newEpoch);
+  const dLD    = disclose(newLDFloorBps);
+  const dOps   = disclose(newOpsFloorBps);
+  const dBand  = disclose(newSanityBandPct);
+  const dRate  = disclose(newRefRateFiatPerKwh);
+  const dAuth  = disclose(govAuthorityHash);
+
+  const epochBytes = (dEpoch as Field) as Bytes<32>;
+  const ldBytes    = (dLD    as Field) as Bytes<32>;
+  const opsBytes   = (dOps   as Field) as Bytes<32>;
+  const bandBytes  = (dBand  as Field) as Bytes<32>;
+  const rateBytes  = (dRate  as Field) as Bytes<32>;
+
+  const msg = persistentHash<Vector<8, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorEpochFloors"),
+    selfBytes(),
+    epochBytes,
+    ldBytes,
+    opsBytes,
+    bandBytes,
+    rateBytes,
+    dAuth,
+  ]);
+
+  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
+  const cur = _mirroredFederationAuthority;
+  assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
+  assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
+         "MIRROR_EPOCH_FLOORS_SIG_INVALID");
+
+  const upGap = ((dEpoch - _mirroredEpoch - 1) as Uint<64>);
+
+  _mirroredEpoch = dEpoch;
+  _mirroredLDFloorBps = dLD;
+  _mirroredOpsFloorBps = dOps;
+  _mirroredSanityBandPct = dBand;
+  _mirroredRefRateFiatPerKwh = dRate;
+
+  const payloadHash = persistentHash<Vector<6, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorEpochFloors"),
+    epochBytes,
+    ldBytes,
+    opsBytes,
+    bandBytes,
+    rateBytes,
+  ]);
+  emitAction(
+    17 as Uint<8>,
+    pad(32, ""),
+    pad(32, ""),
+    msg,
+    payloadHash,
+    currentTime,
+  );
+}
+
+// -----------------------------------------------------------------------------
+// mirrorFederationAuthority — Lane (§4.3)
+// -----------------------------------------------------------------------------
+export circuit mirrorFederationAuthority(
+  newAuth:         Bytes<32>,
+  epochAtMirror:   Uint<64>,
+  currentAuthSig:  Bytes<64>,
+  currentAuthHash: Bytes<32>,
+  currentTime:     Uint<64>,
+): [] {
+  assertInitialized();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "mirrorFederationAuthority: timestamp cannot be in the future");
+
+  const dNew   = disclose(newAuth);
+  const dEpoch = disclose(epochAtMirror);
+  const dCur   = disclose(currentAuthHash);
+  const epochBytes = (dEpoch as Field) as Bytes<32>;
+
+  assert(dNew != pad(32, ""), "MIRROR_FED_AUTH_ZERO");
+
+  const msg = persistentHash<Vector<5, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorFedAuth"),
+    selfBytes(),
+    dNew,
+    epochBytes,
+    dCur,
+  ]);
+
+  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
+  const cur = _mirroredFederationAuthority;
+  assert(disclose(dCur == cur), "MIRROR_FED_AUTH_MISMATCH");
+  assert(disclose(signature_valid(dCur, msg, disclose(currentAuthSig))),
+         "MIRROR_FED_AUTH_SIG_INVALID");
+
+  const upGap = ((dEpoch - _mirroredEpoch - 1) as Uint<64>);
+
+  _mirroredFederationAuthority = dNew;
+  _mirroredEpoch = dEpoch;
+
+  const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorFedAuth"),
+    dNew,
+    epochBytes,
+  ]);
+  emitAction(
+    18 as Uint<8>,
+    pad(32, ""),
+    pad(32, ""),
+    msg,
+    payloadHash,
+    currentTime,
+  );
+}
+
+// -----------------------------------------------------------------------------
+// mirrorSchedulesRoot — Lane (§4.6)
+// -----------------------------------------------------------------------------
+// Per §4.6: Lane needs `_registeredSchedules.member(scheduleId)` and
+// `retiredEpoch == 0` (I-13.1-C) via witness Merkle proof against
+// `_mirroredSchedulesRoot`. Signer is the federation authority per the
+// mirror-write pattern table (§4 opening rows).
+export circuit mirrorSchedulesRoot(
+  newRoot:         Bytes<32>,
+  schedulesEpoch:  Uint<64>,
+  govAuthoritySig: Bytes<64>,
+  govAuthorityHash: Bytes<32>,
+  currentTime:     Uint<64>,
+): [] {
+  assertInitialized();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "mirrorSchedulesRoot: timestamp cannot be in the future");
+
+  const dRoot  = disclose(newRoot);
+  const dEpoch = disclose(schedulesEpoch);
+  const dAuth  = disclose(govAuthorityHash);
+  const epochBytes = (dEpoch as Field) as Bytes<32>;
+
+  const msg = persistentHash<Vector<5, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorSchedulesRoot"),
+    selfBytes(),
+    dRoot,
+    epochBytes,
+    dAuth,
+  ]);
+
+  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
+  const cur = _mirroredFederationAuthority;
+  assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
+  assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
+         "MIRROR_SCHEDULES_ROOT_SIG_INVALID");
+
+  // I-15-B monotone against `_mirroredSchedulesEpoch` (per §4.6: Lane
+  // holds `_mirroredSchedulesEpoch` as the local sibling epoch).
+  const upGap = ((dEpoch - _mirroredSchedulesEpoch - 1) as Uint<64>);
+
+  _mirroredSchedulesRoot = dRoot;
+  _mirroredSchedulesEpoch = dEpoch;
+
+  const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorSchedulesRoot"),
+    dRoot,
+    epochBytes,
+  ]);
+  emitAction(
+    19 as Uint<8>,
+    pad(32, ""),
+    pad(32, ""),
+    msg,
+    payloadHash,
+    currentTime,
+  );
+}
+
+// -----------------------------------------------------------------------------
+// mirrorAuditRoot — Lane (§4.9)
+// -----------------------------------------------------------------------------
+export circuit mirrorAuditRoot(
+  newRoot:              Bytes<32>,
+  globalSeqAtMirror:    Uint<64>,
+  writerSig:            Bytes<64>,
+  writerAuthHash:       Bytes<32>,
+  currentTime:          Uint<64>,
+): [] {
+  assertInitialized();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "mirrorAuditRoot: timestamp cannot be in the future");
+
+  const dRoot  = disclose(newRoot);
+  const dSeq   = disclose(globalSeqAtMirror);
+  const dAuth  = disclose(writerAuthHash);
+  const seqBytes = (dSeq as Field) as Bytes<32>;
+
+  const msg = persistentHash<Vector<5, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorAuditRoot"),
+    selfBytes(),
+    dRoot,
+    seqBytes,
+    dAuth,
+  ]);
+
+  // WI-15.1 Fix A: `_auditWriterAuthorityTarget` sealed at genesis by Lane's
+  // constructor from `initialAuditWriterAuthority`. No bootstrap short-circuit.
+  const target = _auditWriterAuthorityTarget;
+  assert(disclose(dAuth == target), "MIRROR_AUDIT_AUTH_MISMATCH");
+  assert(disclose(signature_valid(dAuth, msg, disclose(writerSig))),
+         "MIRROR_AUDIT_ROOT_SIG_INVALID");
+
+  const upGap = ((dSeq - _mirroredAuditGlobalSeq - 1) as Uint<64>);
+
+  _mirroredAuditRoot = dRoot;
+  _mirroredAuditGlobalSeq = dSeq;
+
+  const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorAuditRoot"),
+    dRoot,
+    seqBytes,
+  ]);
+  emitAction(
+    22 as Uint<8>,
+    pad(32, ""),
+    pad(32, ""),
+    msg,
+    payloadHash,
+    currentTime,
+  );
 }
