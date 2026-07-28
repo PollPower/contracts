@@ -1,6 +1,8 @@
 # Empty Charter Root Verification
-generatedAt=2026-07-28T13:02:04.581Z
+generatedAt=2026-07-28T15:17:47.530Z
 CHARTER_DEPTH=12
+leafDomain=pp:fed:charter:leaf
+nodeDomain=pp:fed:charter:node
 
 level[0]=87a34ea29907ced5d4c17fa469ec02c8d4fb98ee1610a9ab9edae0807cfd29b3
 level[1]=3102825b1242d33dd3b530bbb26c33bf49a0e74cdd89c9ae442a0aeeb75344fc
