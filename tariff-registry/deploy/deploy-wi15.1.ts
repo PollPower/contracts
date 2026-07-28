@@ -28,13 +28,21 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { createHash, generateKeyPairSync, sign as edSign, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  persistentHash as runtimePersistentHash,
+  CompactTypeBytes,
+  CompactTypeVector,
+} from '@midnight-ntwrk/compact-runtime';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const BUILD_ROOT = path.join(REPO_ROOT, 'build');
 const ARTIFACTS_DIR = path.join(__dirname, 'artifacts');
+const CHARTER_DEPTH = 12;
+const CHARTER_LEAF_TAG = 'pp:fed:charter:leaf';
+const CHARTER_NODE_TAG = 'pp:fed:charter:node';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const ROTATE_AUDIT_WRITER = process.argv.includes('--rotate-audit-writer');
@@ -165,6 +173,90 @@ async function deployOrDryRun(
   };
 }
 
+function pad32(tag: string): Uint8Array {
+  const bytes = Buffer.from(tag, 'utf8');
+  if (bytes.length > 32) {
+    throw new Error(`[wi15.1] tag too long for pad32: ${tag}`);
+  }
+  const out = new Uint8Array(32);
+  out.set(bytes);
+  return out;
+}
+
+function persistentHashParts(parts: Uint8Array[]): Uint8Array {
+  for (const p of parts) {
+    if (p.length !== 32) {
+      throw new Error(`[wi15.1] persistentHash part must be 32 bytes, got ${p.length}`);
+    }
+  }
+  return runtimePersistentHash(
+    new CompactTypeVector(parts.length, new CompactTypeBytes(32)),
+    parts,
+  );
+}
+
+function computeEmptyCharterTreeLevels(): Uint8Array[] {
+  // tariff-governance.compact:
+  //   leaf = persistentHash([pad(32, "pp:fed:charter:leaf"), disclose(nodeId)])
+  //   pair = persistentHash([pad(32, "pp:fed:charter:node"), left, right])
+  // Empty charter tree convention here uses nodeId=0x00..00 as the empty leaf payload.
+  const levels: Uint8Array[] = [];
+  let current = persistentHashParts([
+    pad32(CHARTER_LEAF_TAG),
+    new Uint8Array(32),
+  ]);
+  levels.push(current);
+  const pairDomain = pad32(CHARTER_NODE_TAG);
+  for (let i = 0; i < CHARTER_DEPTH; i++) {
+    current = persistentHashParts([pairDomain, current, current]);
+    levels.push(current);
+  }
+  return levels;
+}
+
+function computeEmptyCharterTreeRoot(): Uint8Array {
+  const levels = computeEmptyCharterTreeLevels();
+  const root = levels[CHARTER_DEPTH];
+  if (root.length !== 32) {
+    throw new Error(`[wi15.1] empty charter root length mismatch: ${root.length}`);
+  }
+  return root;
+}
+
+function writeEmptyCharterRootVerificationArtifact(): void {
+  const levels1 = computeEmptyCharterTreeLevels();
+  const levels2 = computeEmptyCharterTreeLevels();
+  const root1 = levels1[CHARTER_DEPTH];
+  const root2 = levels2[CHARTER_DEPTH];
+  const deterministic = Buffer.from(root1).equals(Buffer.from(root2));
+  const nonZero = !Buffer.from(root1).equals(Buffer.alloc(32));
+  const lines: string[] = [
+    '# Empty Charter Root Verification',
+    `generatedAt=${new Date().toISOString()}`,
+    `CHARTER_DEPTH=${CHARTER_DEPTH}`,
+    `leafDomain=${CHARTER_LEAF_TAG}`,
+    `nodeDomain=${CHARTER_NODE_TAG}`,
+    '',
+  ];
+  for (let i = 0; i < levels1.length; i++) {
+    lines.push(`level[${i}]=${bytesToHex(levels1[i])}`);
+  }
+  lines.push('');
+  lines.push(`root=${bytesToHex(root1)}`);
+  lines.push(`deterministic=${deterministic}`);
+  lines.push(`nonZero=${nonZero}`);
+  if (!deterministic) {
+    throw new Error('[wi15.1] empty charter root determinism check failed');
+  }
+  if (!nonZero) {
+    throw new Error('[wi15.1] empty charter root must not be all zeros');
+  }
+  fs.writeFileSync(
+    path.join(ARTIFACTS_DIR, 'empty-charter-root-verification.txt'),
+    lines.join('\n') + '\n',
+  );
+}
+
 async function callCircuitOrDryRun(
   siblingName: string,
   address: string,
@@ -195,6 +287,7 @@ async function main(): Promise<void> {
   if (!fs.existsSync(ARTIFACTS_DIR)) {
     fs.mkdirSync(ARTIFACTS_DIR, { recursive: true });
   }
+  writeEmptyCharterRootVerificationArtifact();
 
   const results: DeployStepResult[] = [];
   const stamp = timestamp();
@@ -238,7 +331,9 @@ async function main(): Promise<void> {
     }
     fatalCli('missing required --federation-authority-pubkey <hex> in live mode');
   })();
-  const initialGovernanceRoot = randomBytes(32);
+  // Governance root must be deterministic at genesis: the empty charter Merkle
+  // tree root (depth 12, fixed domains) for identical dry-run/live behavior.
+  const initialGovernanceRoot = computeEmptyCharterTreeRoot();
   const initialRefRateFiatPerKwh = (() => {
     if (REF_RATE_FIAT_PER_KWH_ARG !== undefined) {
       return parseRefRateFiatPerKwh(REF_RATE_FIAT_PER_KWH_ARG);
