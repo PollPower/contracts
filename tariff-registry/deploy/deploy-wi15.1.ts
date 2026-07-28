@@ -38,6 +38,7 @@ const ARTIFACTS_DIR = path.join(__dirname, 'artifacts');
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const ROTATE_AUDIT_WRITER = process.argv.includes('--rotate-audit-writer');
+const FEDERATION_AUTHORITY_PUBKEY_ARG = readFlagValue('--federation-authority-pubkey');
 
 // ---------- helpers ----------------------------------------------------------
 function timestamp(): string {
@@ -46,6 +47,30 @@ function timestamp(): string {
 
 function bytesToHex(b: Uint8Array | Buffer): string {
   return Buffer.from(b).toString('hex');
+}
+
+function readFlagValue(flag: string): string | undefined {
+  const i = process.argv.indexOf(flag);
+  if (i === -1) return undefined;
+  return process.argv[i + 1];
+}
+
+function fatalCli(message: string): never {
+  throw new Error(`[wi15.1] ${message}`);
+}
+
+function parseFederationAuthorityPubkeyHex(value: string): Buffer {
+  if (!/^[0-9a-fA-F]{64}$/.test(value)) {
+    fatalCli(`--federation-authority-pubkey must be exactly 64 hex chars; got: ${value}`);
+  }
+  const decoded = Buffer.from(value, 'hex');
+  if (decoded.length !== 32) {
+    fatalCli(`--federation-authority-pubkey must decode to 32 bytes; got ${decoded.length}`);
+  }
+  if (decoded.equals(Buffer.alloc(32))) {
+    fatalCli('--federation-authority-pubkey must not be all zeros');
+  }
+  return decoded;
 }
 
 function rawEd25519Pubkey(publicKey: any): Buffer {
@@ -192,7 +217,15 @@ async function main(): Promise<void> {
   // Governance constructor per V2-SPLIT-ADDENDUM.md §A2:
   //   auditContractAddress, initialFederationAuthority, initialGovernanceRoot,
   //   initialRefRateFiatPerKwh, initialAuditWriterAuthority.
-  const initialFederationAuthority = randomBytes(32);
+  const initialFederationAuthority = (() => {
+    if (FEDERATION_AUTHORITY_PUBKEY_ARG !== undefined) {
+      return parseFederationAuthorityPubkeyHex(FEDERATION_AUTHORITY_PUBKEY_ARG);
+    }
+    if (DRY_RUN) {
+      return randomBytes(32);
+    }
+    fatalCli('missing required --federation-authority-pubkey <hex> in live mode');
+  })();
   const initialGovernanceRoot = randomBytes(32);
   const initialRefRateFiatPerKwh = 100n;
 
