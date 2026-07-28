@@ -39,6 +39,7 @@ const ARTIFACTS_DIR = path.join(__dirname, 'artifacts');
 const DRY_RUN = process.argv.includes('--dry-run');
 const ROTATE_AUDIT_WRITER = process.argv.includes('--rotate-audit-writer');
 const FEDERATION_AUTHORITY_PUBKEY_ARG = readFlagValue('--federation-authority-pubkey');
+const REF_RATE_FIAT_PER_KWH_ARG = readFlagValue('--ref-rate-fiat-per-kwh');
 
 // ---------- helpers ----------------------------------------------------------
 function timestamp(): string {
@@ -71,6 +72,17 @@ function parseFederationAuthorityPubkeyHex(value: string): Buffer {
     fatalCli('--federation-authority-pubkey must not be all zeros');
   }
   return decoded;
+}
+
+function parseRefRateFiatPerKwh(value: string): bigint {
+  if (!/^[0-9]+$/.test(value)) {
+    fatalCli(`--ref-rate-fiat-per-kwh must be a positive integer; got: ${value}`);
+  }
+  const parsed = BigInt(value);
+  if (parsed < 1n || parsed > 1_000_000n) {
+    fatalCli(`--ref-rate-fiat-per-kwh out of range (1..1000000); got: ${value}`);
+  }
+  return parsed;
 }
 
 function rawEd25519Pubkey(publicKey: any): Buffer {
@@ -227,7 +239,15 @@ async function main(): Promise<void> {
     fatalCli('missing required --federation-authority-pubkey <hex> in live mode');
   })();
   const initialGovernanceRoot = randomBytes(32);
-  const initialRefRateFiatPerKwh = 100n;
+  const initialRefRateFiatPerKwh = (() => {
+    if (REF_RATE_FIAT_PER_KWH_ARG !== undefined) {
+      return parseRefRateFiatPerKwh(REF_RATE_FIAT_PER_KWH_ARG);
+    }
+    if (DRY_RUN) {
+      return 100n;
+    }
+    fatalCli('missing required --ref-rate-fiat-per-kwh <int> in live mode');
+  })();
 
   const governanceContractAddress = await runStep(3, 'Deploy Governance', async () => {
     const compiled = DRY_RUN ? null : await import(path.join(BUILD_ROOT, 'governance', 'contract', 'index.js'));
