@@ -29,6 +29,10 @@ pure circuit LANE_TREE_DEPTH(): Uint<64> {
   return 20 as Uint<64>;
 }
 
+pure circuit CLASS_TREE_DEPTH(): Uint<64> {
+  return 20 as Uint<64>;
+}
+
 // =============================================================================
 // Witnesses
 // =============================================================================
@@ -66,6 +70,7 @@ witness witness_divmod(numerator: Field, divisor: Field): DivResult;
 // so a lying prover cannot misplace a leaf. Width = ACTION_LOG_DEPTH (24).
 witness action_log_path_bits(seq: Uint<64>): Vector<24, Boolean>;
 witness lane_path_bits(seq: Uint<64>): Vector<20, Boolean>;
+witness class_entry_path_bits(seq: Uint<64>): Vector<20, Boolean>;
 
 // =============================================================================
 // Structs
@@ -200,6 +205,11 @@ export ledger _activeScheduleByNode: Map<Bytes<32>, Bytes<32>>;
 
 // scheduleId + classPathHash → current ClassEntry.
 export ledger _classEntries: Map<Bytes<32>, ClassEntry>;
+export ledger _classEntriesMerkleRoot: Bytes<32>;
+export ledger _classEntriesMerkleFrontier: Map<Uint<64>, Bytes<32>>;
+export ledger _classEntriesMerkleZeros: Map<Uint<64>, Bytes<32>>;
+export ledger _classEntriesMerkleClimb: Bytes<32>;
+export ledger _classEntriesMerkleSeq: Counter;
 
 // WI-13.1: (scheduleId, laneKindByte) composite key → LaneRecord.
 // Keeper-observable via _actionLog kind ∈ {1 LANE_REGISTERED, 7 LANE_RETIRED}.
@@ -476,6 +486,16 @@ pure circuit LANE_TREE_POWERS(): Vector<20, Field> {
   ];
 }
 
+pure circuit CLASS_TREE_POWERS(): Vector<20, Field> {
+  return [
+    1 as Field,        2 as Field,        4 as Field,        8 as Field,
+    16 as Field,       32 as Field,       64 as Field,       128 as Field,
+    256 as Field,      512 as Field,      1024 as Field,     2048 as Field,
+    4096 as Field,     8192 as Field,     16384 as Field,    32768 as Field,
+    65536 as Field,    131072 as Field,   262144 as Field,   524288 as Field,
+  ];
+}
+
 // §SCOPE B — canonical payload hash for a LaneRecord event (kinds 1 & 7).
 // N = 14 = tag + kindByte + 12 LaneRecord fields, declaration order.
 circuit laneActionPayloadHash(kind: Uint<8>, r: LaneRecord): Bytes<32> {
@@ -601,6 +621,32 @@ circuit appendLaneLeaf(seq: Uint<64>, leaf: Bytes<32>): [] {
   _lanesMerkleRoot = _lanesMerkleClimb;
 }
 
+circuit appendClassEntryLeaf(seq: Uint<64>, leaf: Bytes<32>): [] {
+  const bits = disclose(class_entry_path_bits(disclose(seq) as Uint<64>));
+  const reconF = fold(actionLogBitAccum, 0 as Field, bits, CLASS_TREE_POWERS());
+  const seqF = disclose(seq) as Field;
+  const _r1 = (reconF - seqF) as Uint<64>;
+  const _r2 = (seqF - reconF) as Uint<64>;
+
+  // Chosen domain separator for the class-entry tree's internal pair hashes.
+  const nodeTag = pad(32, "pp:tariff:v1:classEntriesNode");
+  _classEntriesMerkleClimb = leaf;
+  for (const i of 0..20) {
+    const bit = bits[i];
+    const cur = _classEntriesMerkleClimb;
+    const sib = bit
+      ? _classEntriesMerkleFrontier.lookup(i as Uint<64>)
+      : _classEntriesMerkleZeros.lookup(i as Uint<64>);
+    if (!bit) {
+      _classEntriesMerkleFrontier.insert(i as Uint<64>, cur);
+    }
+    _classEntriesMerkleClimb = bit
+      ? persistentHash<Vector<3, Bytes<32>>>([nodeTag, sib, cur])
+      : persistentHash<Vector<3, Bytes<32>>>([nodeTag, cur, sib]);
+  }
+  _classEntriesMerkleRoot = _classEntriesMerkleClimb;
+}
+
 // Insert a RegistryActionEntry into _actionLog AND append its payloadHash to
 // the action-log Merkle tree (WI-13.2). `payloadHash` is computed per-kind by
 // the caller (§SCOPE B helpers) or is the pad(32,"") sentinel for non-mirrored
@@ -674,6 +720,15 @@ constructor(
     _lanesMerkleClimb = persistentHash<Vector<3, Bytes<32>>>([lanesNodeTag, z, z]);
   }
   _lanesMerkleRoot = _lanesMerkleClimb;
+  _classEntriesMerkleClimb = pad(32, "pp:tariff:v1:classEntriesEmpty");
+  const classEntriesNodeTag = pad(32, "pp:tariff:v1:classEntriesNode");
+  for (const i of 0..20) {
+    const z = _classEntriesMerkleClimb;
+    _classEntriesMerkleZeros.insert(i as Uint<64>, z);
+    _classEntriesMerkleFrontier.insert(i as Uint<64>, z);
+    _classEntriesMerkleClimb = persistentHash<Vector<3, Bytes<32>>>([classEntriesNodeTag, z, z]);
+  }
+  _classEntriesMerkleRoot = _classEntriesMerkleClimb;
 
   // WI-15.1 Fix A: seal the mirror-authority trust anchors at genesis.
   _mirroredFederationAuthority = disclose(initialFederationAuthority);
@@ -1059,6 +1114,27 @@ export circuit retuneClass(
     lastUpdatedAt:  disclose(currentTime),
   };
   _classEntries.insert(disclose(splitKey), disclose(classEntry));
+  const classEntryHash = persistentHash<Vector<9, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:classEntry"),
+    (classEntry.bps.producerShareBps as Field) as Bytes<32>,
+    (classEntry.bps.ldShareBps as Field) as Bytes<32>,
+    (classEntry.bps.opsShareBps as Field) as Bytes<32>,
+    (classEntry.bps.daoShareBps as Field) as Bytes<32>,
+    (classEntry.bps.operatorMarginBps as Field) as Bytes<32>,
+    (classEntry.bps.statutoryTotalBps as Field) as Bytes<32>,
+    (classEntry.rateFiatPerKwh as Field) as Bytes<32>,
+    (classEntry.lastUpdatedAt as Field) as Bytes<32>,
+  ]);
+  // V2-SPLIT-DESIGN.md §4.7 maps class-entry root updates to `retuneClass`.
+  // chose (A) append-only per §4.6-implementation-note; sparse-tree deferred.
+  const classEntryLeaf = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:classEntriesLeaf"),
+    disclose(splitKey),
+    classEntryHash,
+  ]);
+  const classEntrySeq = _classEntriesMerkleSeq.read();
+  appendClassEntryLeaf(disclose(classEntrySeq) as Uint<64>, disclose(classEntryLeaf));
+  _classEntriesMerkleSeq.increment(1);
 
   // Advance nonce and cooldown.
   _retuneNonces.insert(disclose(nonceKey), disclose(nonceIn));
