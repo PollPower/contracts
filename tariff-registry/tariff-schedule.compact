@@ -25,6 +25,10 @@ pure circuit RETUNE_MIN_INTERVAL_S(): Uint<64> {
   return 60 as Uint<64>;
 }
 
+pure circuit SCHEDULE_TREE_DEPTH(): Uint<64> {
+  return 20 as Uint<64>;
+}
+
 // =============================================================================
 // Witnesses
 // =============================================================================
@@ -61,6 +65,7 @@ witness witness_divmod(numerator: Field, divisor: Field): DivResult;
 // from the returned bits (two-sided checked cast) and reverts on any mismatch,
 // so a lying prover cannot misplace a leaf. Width = ACTION_LOG_DEPTH (24).
 witness action_log_path_bits(seq: Uint<64>): Vector<24, Boolean>;
+witness schedule_path_bits(seq: Uint<64>): Vector<20, Boolean>;
 
 // =============================================================================
 // Structs
@@ -189,6 +194,11 @@ export ledger _governanceRoot: Bytes<32>;
 
 // scheduleId → ScheduleRecord.
 export ledger _registeredSchedules: Map<Bytes<32>, ScheduleRecord>;
+export ledger _schedulesMerkleRoot: Bytes<32>;
+export ledger _schedulesMerkleFrontier: Map<Uint<64>, Bytes<32>>;
+export ledger _schedulesMerkleZeros: Map<Uint<64>, Bytes<32>>;
+export ledger _schedulesMerkleClimb: Bytes<32>;
+export ledger _schedulesMerkleSeq: Counter;
 
 // nodeId → active scheduleId at CURRENT epoch.
 export ledger _activeScheduleByNode: Map<Bytes<32>, Bytes<32>>;
@@ -456,6 +466,16 @@ pure circuit actionLogBitAccum(acc: Field, bit: Boolean, pow: Field): Field {
   return acc + (bit ? pow : (0 as Field));
 }
 
+pure circuit SCHEDULE_TREE_POWERS(): Vector<20, Field> {
+  return [
+    1 as Field,        2 as Field,        4 as Field,        8 as Field,
+    16 as Field,       32 as Field,       64 as Field,       128 as Field,
+    256 as Field,      512 as Field,      1024 as Field,     2048 as Field,
+    4096 as Field,     8192 as Field,     16384 as Field,    32768 as Field,
+    65536 as Field,    131072 as Field,   262144 as Field,   524288 as Field,
+  ];
+}
+
 // §SCOPE B — canonical payload hash for a LaneRecord event (kinds 1 & 7).
 // N = 14 = tag + kindByte + 12 LaneRecord fields, declaration order.
 circuit laneActionPayloadHash(kind: Uint<8>, r: LaneRecord): Bytes<32> {
@@ -555,6 +575,32 @@ circuit appendActionLogLeaf(seq: Uint<64>, leaf: Bytes<32>): [] {
   registryActionLogRoot = _actionLogClimb;
 }
 
+circuit appendScheduleLeaf(seq: Uint<64>, leaf: Bytes<32>): [] {
+  const bits = disclose(schedule_path_bits(disclose(seq) as Uint<64>));
+  const reconF = fold(actionLogBitAccum, 0 as Field, bits, SCHEDULE_TREE_POWERS());
+  const seqF = disclose(seq) as Field;
+  const _r1 = (reconF - seqF) as Uint<64>;
+  const _r2 = (seqF - reconF) as Uint<64>;
+
+  // Chosen domain separator for the schedule tree's internal pair hashes.
+  const nodeTag = pad(32, "pp:tariff:v1:schedulesNode");
+  _schedulesMerkleClimb = leaf;
+  for (const i of 0..20) {
+    const bit = bits[i];
+    const cur = _schedulesMerkleClimb;
+    const sib = bit
+      ? _schedulesMerkleFrontier.lookup(i as Uint<64>)
+      : _schedulesMerkleZeros.lookup(i as Uint<64>);
+    if (!bit) {
+      _schedulesMerkleFrontier.insert(i as Uint<64>, cur);
+    }
+    _schedulesMerkleClimb = bit
+      ? persistentHash<Vector<3, Bytes<32>>>([nodeTag, sib, cur])
+      : persistentHash<Vector<3, Bytes<32>>>([nodeTag, cur, sib]);
+  }
+  _schedulesMerkleRoot = _schedulesMerkleClimb;
+}
+
 // Insert a RegistryActionEntry into _actionLog AND append its payloadHash to
 // the action-log Merkle tree (WI-13.2). `payloadHash` is computed per-kind by
 // the caller (§SCOPE B helpers) or is the pad(32,"") sentinel for non-mirrored
@@ -617,6 +663,15 @@ constructor(
   _OPS_FLOOR_BPS = 2000 as Uint<16>;
   _SANITY_BAND_PCT = 20 as Uint<16>;
   _hasPendingContext = false;
+  _schedulesMerkleClimb = pad(32, "pp:tariff:v1:schedulesEmpty");
+  const schedulesNodeTag = pad(32, "pp:tariff:v1:schedulesNode");
+  for (const i of 0..20) {
+    const z = _schedulesMerkleClimb;
+    _schedulesMerkleZeros.insert(i as Uint<64>, z);
+    _schedulesMerkleFrontier.insert(i as Uint<64>, z);
+    _schedulesMerkleClimb = persistentHash<Vector<3, Bytes<32>>>([schedulesNodeTag, z, z]);
+  }
+  _schedulesMerkleRoot = _schedulesMerkleClimb;
 
   // WI-15.1 Fix A: seal the mirror-authority trust anchors at genesis.
   _mirroredFederationAuthority = disclose(initialFederationAuthority);
@@ -702,6 +757,30 @@ export circuit registerSchedule(
     registeredAt:    disclose(currentTime),
   };
   _registeredSchedules.insert(disclose(scheduleId), disclose(record));
+  // V2-SPLIT-DESIGN.md §4.6: "Derived root: Schedule maintains
+  // `_schedulesMerkleRoot: Bytes<32>` (a Merkle tree over `(scheduleId,
+  // hash(ScheduleRecord))` pairs, updated inside `registerSchedule` and
+  // `retireSchedule`)."
+  const scheduleRecordHash = persistentHash<Vector<9, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:scheduleRecord"),
+    record.scheduleId,
+    record.nodeId,
+    record.scheduleHash,
+    record.operatorPubkey,
+    (record.effectiveEpoch as Field) as Bytes<32>,
+    (record.retiredEpoch as Field) as Bytes<32>,
+    (record.refRateFiatPerKwh as Field) as Bytes<32>,
+    (record.registeredAt as Field) as Bytes<32>,
+  ]);
+  const scheduleLeaf = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:schedulesLeaf"),
+    disclose(scheduleId),
+    scheduleRecordHash,
+  ]);
+  // chose (A) append-only per §4.6-implementation-note; sparse-tree deferred.
+  const scheduleSeq = _schedulesMerkleSeq.read();
+  appendScheduleLeaf(disclose(scheduleSeq) as Uint<64>, disclose(scheduleLeaf));
+  _schedulesMerkleSeq.increment(1);
   _activeScheduleByNode.insert(disclose(nodeId), disclose(scheduleId));
 
   // WI-13.2: canonical payload over the exact ScheduleRecord just inserted.
@@ -753,6 +832,26 @@ export circuit retireSchedule(
     registeredAt:    rec.registeredAt,
   };
   _registeredSchedules.insert(dSid, disclose(retired));
+  const retiredRecordHash = persistentHash<Vector<9, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:scheduleRecord"),
+    retired.scheduleId,
+    retired.nodeId,
+    retired.scheduleHash,
+    retired.operatorPubkey,
+    (retired.effectiveEpoch as Field) as Bytes<32>,
+    (retired.retiredEpoch as Field) as Bytes<32>,
+    (retired.refRateFiatPerKwh as Field) as Bytes<32>,
+    (retired.registeredAt as Field) as Bytes<32>,
+  ]);
+  const retiredScheduleLeaf = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:schedulesLeaf"),
+    dSid,
+    retiredRecordHash,
+  ]);
+  // chose (A) append-only per §4.6-implementation-note; sparse-tree deferred.
+  const retireSeq = _schedulesMerkleSeq.read();
+  appendScheduleLeaf(disclose(retireSeq) as Uint<64>, disclose(retiredScheduleLeaf));
+  _schedulesMerkleSeq.increment(1);
 
   // Clear active-schedule mapping IFF this schedule is still the active one
   // for its node.
