@@ -814,3 +814,82 @@ export circuit isChartered(nodeId: Bytes<32>, proof: CharterProof): Boolean {
 
   return root == _governanceRoot;
 }
+
+// =============================================================================
+// WI-15.1 mirror-write endpoints — Governance (V2-SPLIT-DESIGN.md §4.9)
+// =============================================================================
+//
+// Body pattern from V2-SPLIT-DESIGN.md §4.1 (verbatim block quote):
+//
+//   1. `assert(signature_valid(govAuthorityHash, newRoot || epochAtMirror, govAuthoritySig))` — same witness function as `tariff-registry-v1.compact:116-124`.
+//   2. `assert(epochAtMirror > _mirroredEpoch, "MIRROR_EPOCH_STALE")` — monotone.
+//   3. Write `_mirroredGovernanceRoot = disclose(newRoot)`, `_mirroredEpoch = disclose(epochAtMirror)`.
+//   4. Emit `MIRROR_GOV_ROOT` action to local outbox with `payloadHash = persistentHash([tag, newRoot, epochAtMirror])`.
+//
+// I-15-B (verbatim from V2-SPLIT-DESIGN.md §8.4):
+//
+//   Every mirror-write circuit MUST verify a signature under the source contract's federation authority (or a designated mirror-writer authority) over the tuple `(newRootValue, sourceEpochAtMirror)`, AND MUST enforce monotone `sourceEpochAtMirror` progression against a locally stored `_lastMirroredEpoch`.
+
+// Governance holds only the audit-root mirror per §3.4 (own gov cells are the
+// source-of-truth, not mirrors).
+export ledger _mirroredAuditRoot:               Bytes<32>;
+export ledger _mirroredAuditGlobalSeq:          Uint<64>;
+
+// -----------------------------------------------------------------------------
+// mirrorAuditRoot — Governance (§4.9)
+// -----------------------------------------------------------------------------
+// Signer is the audit-writer authority (§A1/§A6 addendum). Trust anchor is
+// `_auditWriterAuthorityTarget` which Governance's constructor seeded with
+// `initialAuditWriterAuthority`.
+export circuit mirrorAuditRoot(
+  newRoot:              Bytes<32>,
+  globalSeqAtMirror:    Uint<64>,
+  writerSig:            Bytes<64>,
+  writerAuthHash:       Bytes<32>,
+  currentTime:          Uint<64>,
+): [] {
+  assertInitialized();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "mirrorAuditRoot: timestamp cannot be in the future");
+
+  const dRoot  = disclose(newRoot);
+  const dSeq   = disclose(globalSeqAtMirror);
+  const dAuth  = disclose(writerAuthHash);
+  const seqBytes = (dSeq as Field) as Bytes<32>;
+
+  const msg = persistentHash<Vector<5, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorAuditRoot"),
+    selfBytes(),
+    dRoot,
+    seqBytes,
+    dAuth,
+  ]);
+
+  // Trust anchor: `_auditWriterAuthorityTarget` (§A2 addendum: Governance
+  // constructor writes this from `initialAuditWriterAuthority`).
+  const target = _auditWriterAuthorityTarget;
+  const bootstrap = target == pad(32, "");
+  assert(disclose(bootstrap || (dAuth == target)), "MIRROR_AUDIT_AUTH_MISMATCH");
+  assert(disclose(signature_valid(dAuth, msg, disclose(writerSig))),
+         "MIRROR_AUDIT_ROOT_SIG_INVALID");
+
+  // I-15-B monotone progression via globalSeq.
+  const upGap = ((dSeq - _mirroredAuditGlobalSeq - 1) as Uint<64>);
+
+  _mirroredAuditRoot = dRoot;
+  _mirroredAuditGlobalSeq = dSeq;
+
+  const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:mirrorAuditRoot"),
+    dRoot,
+    seqBytes,
+  ]);
+  emitAction(
+    22 as Uint<8>,
+    pad(32, ""),
+    pad(32, ""),
+    msg,
+    payloadHash,
+    currentTime,
+  );
+}
