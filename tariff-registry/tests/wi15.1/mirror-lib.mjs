@@ -47,8 +47,13 @@ export const MIRROR_TAG = Object.freeze({
 export class MirrorSibling {
   constructor({
     self,
-    // audit-writer trust anchor (Governance-constructor-seeded per §A2)
-    auditWriterAuthorityTarget = pad32(''),
+    // WI-15.1 Fix A: sealed federation-authority trust anchor. Set at deploy
+    // time by the constructor; every mirror-write must match this value.
+    initialFederationAuthority = pad32(''),
+    // WI-15.1 Fix A: sealed audit-writer trust anchor. Same shape as §A2.
+    initialAuditWriterAuthority = pad32(''),
+    // Legacy alias kept for tests that predate the sealed-init shape.
+    auditWriterAuthorityTarget,
     role = 'schedule',  // 'schedule' | 'lane' | 'views' | 'governance'
   } = {}) {
     this.self = Buffer.isBuffer(self) ? self : randomBytes(32);
@@ -63,14 +68,13 @@ export class MirrorSibling {
     this._actionSeq = 0n;
     this._currentEpoch = 0n;
 
-    // Mirror cells (all zero at deploy, per constructor).
+    // Mirror cells (zero at deploy for values that do not need genesis seals).
     this._mirroredGovernanceRoot        = Buffer.alloc(32);
     this._mirroredEpoch                 = 0n;
     this._mirroredLDFloorBps            = 0;
     this._mirroredOpsFloorBps           = 0;
     this._mirroredSanityBandPct         = 0;
     this._mirroredRefRateFiatPerKwh     = 0n;
-    this._mirroredFederationAuthority   = Buffer.alloc(32);
     this._mirroredSchedulesRoot         = Buffer.alloc(32);
     this._mirroredSchedulesEpoch        = 0n;
     this._mirroredClassEntriesRoot      = Buffer.alloc(32);
@@ -80,8 +84,12 @@ export class MirrorSibling {
     this._mirroredAuditRoot             = Buffer.alloc(32);
     this._mirroredAuditGlobalSeq        = 0n;
 
-    // Trust anchor for audit-writer authority (§A2 addendum).
-    this._auditWriterAuthorityTarget = Buffer.from(auditWriterAuthorityTarget);
+    // WI-15.1 Fix A: sealed at genesis by constructor. See the .compact
+    // constructor bodies for Schedule/Lane/Views/Governance.
+    this._mirroredFederationAuthority = Buffer.from(initialFederationAuthority);
+    this._auditWriterAuthorityTarget  = Buffer.from(
+      auditWriterAuthorityTarget ?? initialAuditWriterAuthority,
+    );
   }
 
   assertInitialized() {
@@ -152,10 +160,9 @@ export class MirrorSibling {
 
     const msg = this._msgGovRoot(newRoot, epochAtMirror, authHash);
 
-    // Bootstrap-friendly binding: first write seeds trust anchor.
+    // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
     const cur = this._mirroredFederationAuthority;
-    const isBootstrap = bufEq(cur, pad32(''));
-    if (!isBootstrap && !bufEq(authHash, cur)) revert('MIRROR_GOV_AUTH_MISMATCH');
+    if (!bufEq(authHash, cur)) revert('MIRROR_GOV_AUTH_MISMATCH');
     if (!signatureValid(authHash, msg, sig)) revert('MIRROR_GOV_ROOT_SIG_INVALID');
 
     // I-15-B monotone: (dEpoch - _mirroredEpoch - 1) as Uint<64>
@@ -186,9 +193,9 @@ export class MirrorSibling {
       newEpoch, newLDFloorBps, newOpsFloorBps, newSanityBandPct, newRefRateFiatPerKwh, authHash,
     );
 
+    // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
     const cur = this._mirroredFederationAuthority;
-    const isBootstrap = bufEq(cur, pad32(''));
-    if (!isBootstrap && !bufEq(authHash, cur)) revert('MIRROR_GOV_AUTH_MISMATCH');
+    if (!bufEq(authHash, cur)) revert('MIRROR_GOV_AUTH_MISMATCH');
     if (!signatureValid(authHash, msg, sig)) revert('MIRROR_EPOCH_FLOORS_SIG_INVALID');
 
     if (BigInt(newEpoch) <= this._mirroredEpoch) revert('MIRROR_EPOCH_STALE');
@@ -218,9 +225,9 @@ export class MirrorSibling {
     if (bufEq(newAuth, pad32(''))) revert('MIRROR_FED_AUTH_ZERO');
 
     const msg = this._msgFedAuth(newAuth, epochAtMirror, currentAuthHash);
+    // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
     const cur = this._mirroredFederationAuthority;
-    const isBootstrap = bufEq(cur, pad32(''));
-    if (!isBootstrap && !bufEq(currentAuthHash, cur)) revert('MIRROR_FED_AUTH_MISMATCH');
+    if (!bufEq(currentAuthHash, cur)) revert('MIRROR_FED_AUTH_MISMATCH');
     if (!signatureValid(currentAuthHash, msg, sig)) revert('MIRROR_FED_AUTH_SIG_INVALID');
 
     if (BigInt(epochAtMirror) <= this._mirroredEpoch) revert('MIRROR_EPOCH_STALE');
@@ -242,9 +249,9 @@ export class MirrorSibling {
   mirrorSchedulesRoot({ newRoot, schedulesEpoch, sig, authHash, currentTime }) {
     this.assertInitialized();
     const msg = this._msgRoot(MIRROR_TAG.SCHEDULES_ROOT, newRoot, schedulesEpoch, authHash);
+    // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
     const cur = this._mirroredFederationAuthority;
-    const isBootstrap = bufEq(cur, pad32(''));
-    if (!isBootstrap && !bufEq(authHash, cur)) revert('MIRROR_GOV_AUTH_MISMATCH');
+    if (!bufEq(authHash, cur)) revert('MIRROR_GOV_AUTH_MISMATCH');
     if (!signatureValid(authHash, msg, sig)) revert('MIRROR_SCHEDULES_ROOT_SIG_INVALID');
 
     if (BigInt(schedulesEpoch) <= this._mirroredSchedulesEpoch) revert('MIRROR_EPOCH_STALE');
@@ -266,9 +273,9 @@ export class MirrorSibling {
   mirrorClassEntriesRoot({ newRoot, classEntriesEpoch, sig, authHash, currentTime }) {
     this.assertInitialized();
     const msg = this._msgRoot(MIRROR_TAG.CLASS_ROOT, newRoot, classEntriesEpoch, authHash);
+    // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
     const cur = this._mirroredFederationAuthority;
-    const isBootstrap = bufEq(cur, pad32(''));
-    if (!isBootstrap && !bufEq(authHash, cur)) revert('MIRROR_GOV_AUTH_MISMATCH');
+    if (!bufEq(authHash, cur)) revert('MIRROR_GOV_AUTH_MISMATCH');
     if (!signatureValid(authHash, msg, sig)) revert('MIRROR_CLASS_ROOT_SIG_INVALID');
 
     if (BigInt(classEntriesEpoch) <= this._mirroredClassEntriesEpoch) revert('MIRROR_EPOCH_STALE');
@@ -290,9 +297,9 @@ export class MirrorSibling {
   mirrorLanesRoot({ newRoot, lanesEpoch, sig, authHash, currentTime }) {
     this.assertInitialized();
     const msg = this._msgRoot(MIRROR_TAG.LANES_ROOT, newRoot, lanesEpoch, authHash);
+    // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
     const cur = this._mirroredFederationAuthority;
-    const isBootstrap = bufEq(cur, pad32(''));
-    if (!isBootstrap && !bufEq(authHash, cur)) revert('MIRROR_GOV_AUTH_MISMATCH');
+    if (!bufEq(authHash, cur)) revert('MIRROR_GOV_AUTH_MISMATCH');
     if (!signatureValid(authHash, msg, sig)) revert('MIRROR_LANES_ROOT_SIG_INVALID');
 
     if (BigInt(lanesEpoch) <= this._mirroredLanesEpoch) revert('MIRROR_EPOCH_STALE');
@@ -321,9 +328,9 @@ export class MirrorSibling {
       u64ToBytes32(globalSeqAtMirror),
       Buffer.from(writerAuthHash),
     ]);
+    // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
     const target = this._auditWriterAuthorityTarget;
-    const isBootstrap = bufEq(target, pad32(''));
-    if (!isBootstrap && !bufEq(writerAuthHash, target)) revert('MIRROR_AUDIT_AUTH_MISMATCH');
+    if (!bufEq(writerAuthHash, target)) revert('MIRROR_AUDIT_AUTH_MISMATCH');
     if (!signatureValid(writerAuthHash, msg, sig)) revert('MIRROR_AUDIT_ROOT_SIG_INVALID');
 
     if (BigInt(globalSeqAtMirror) <= this._mirroredAuditGlobalSeq) revert('MIRROR_EPOCH_STALE');
