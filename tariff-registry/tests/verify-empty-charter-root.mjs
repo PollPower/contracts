@@ -12,6 +12,8 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const ARTIFACTS_DIR = path.join(REPO_ROOT, 'deploy', 'artifacts');
 const OUT_PATH = path.join(ARTIFACTS_DIR, 'empty-charter-root-verification.txt');
 const CHARTER_DEPTH = 12;
+const CHARTER_LEAF_TAG = 'pp:fed:charter:leaf';
+const CHARTER_NODE_TAG = 'pp:fed:charter:node';
 
 function pad32(tag) {
   const out = new Uint8Array(32);
@@ -34,9 +36,9 @@ function persistentHash(parts) {
 
 function computeLevels() {
   const levels = [];
-  let current = persistentHash([pad32('pp:fed:charter:leaf'), new Uint8Array(32)]);
+  let current = persistentHash([pad32(CHARTER_LEAF_TAG), new Uint8Array(32)]);
   levels.push(current);
-  const nodeDomain = pad32('pp:fed:charter:node');
+  const nodeDomain = pad32(CHARTER_NODE_TAG);
   for (let i = 0; i < CHARTER_DEPTH; i++) {
     current = persistentHash([nodeDomain, current, current]);
     levels.push(current);
@@ -56,6 +58,8 @@ function main() {
     '# Empty Charter Root Verification',
     `generatedAt=${new Date().toISOString()}`,
     `CHARTER_DEPTH=${CHARTER_DEPTH}`,
+    `leafDomain=${CHARTER_LEAF_TAG}`,
+    `nodeDomain=${CHARTER_NODE_TAG}`,
     '',
   ];
   for (let i = 0; i < levelsA.length; i++) {
