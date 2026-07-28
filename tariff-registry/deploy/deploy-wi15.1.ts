@@ -29,7 +29,7 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   persistentHash as runtimePersistentHash,
   CompactTypeBytes,
@@ -40,6 +40,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const BUILD_ROOT = path.join(REPO_ROOT, 'build');
 const ARTIFACTS_DIR = path.join(__dirname, 'artifacts');
+const DEPLOYMENT_JSON_PATH = path.join(REPO_ROOT, 'deployment.json');
 const CHARTER_DEPTH = 12;
 const CHARTER_LEAF_TAG = 'pp:fed:charter:leaf';
 const CHARTER_NODE_TAG = 'pp:fed:charter:node';
@@ -108,6 +109,12 @@ interface DeployStepResult {
   extra?: Record<string, unknown>;
 }
 
+interface LiveRuntimeContext {
+  providers: unknown;
+}
+
+let liveRuntimeContextPromise: Promise<LiveRuntimeContext> | null = null;
+
 // A recoverable step wrapper that logs the failing step and returns non-zero
 // on any failure (per DoD: "On failure, log the failing step and exit non-zero").
 async function runStep<T>(
@@ -160,7 +167,7 @@ async function deployOrDryRun(
   // Wait for tx confirmation between steps (per DoD).
   // deployContract returns a deployed-contract handle whose finalizedDeployTxData
   // resolves once the tx is finalized in the block.
-  const deployedContract = await deployContract({
+  const deployedContract = await deployContract(privateStateProvider as any, {
     contract: compiledContract as any,
     initialPrivateState: {} as any,
     privateStateProvider: privateStateProvider as any,
@@ -257,6 +264,51 @@ function writeEmptyCharterRootVerificationArtifact(): void {
   );
 }
 
+async function loadSettlementDeployUtils(): Promise<any> {
+  const candidates = [
+    process.env.TARIFF_DEPLOY_UTILS,
+    path.resolve(REPO_ROOT, '..', 'settlement-api', 'src', 'utils.js'),
+    path.resolve(REPO_ROOT, 'src', 'utils.js'),
+  ].filter((x): x is string => Boolean(x));
+  let lastErr: unknown = undefined;
+  for (const candidate of candidates) {
+    try {
+      const mod = await import(pathToFileURL(candidate).href);
+      if (mod?.createWallet && mod?.createProviders) {
+        return mod;
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  fatalCli(
+    `unable to locate settlement deploy utils (set TARIFF_DEPLOY_UTILS). Last error: ${String(lastErr)}`,
+  );
+}
+
+async function getLiveRuntimeContext(): Promise<LiveRuntimeContext> {
+  if (DRY_RUN) {
+    fatalCli('internal: getLiveRuntimeContext called in dry-run mode');
+  }
+  if (liveRuntimeContextPromise !== null) {
+    return liveRuntimeContextPromise;
+  }
+  liveRuntimeContextPromise = (async () => {
+    if (!fs.existsSync(DEPLOYMENT_JSON_PATH)) {
+      fatalCli(`missing deployment seed file in live mode: ${DEPLOYMENT_JSON_PATH}`);
+    }
+    const parsed = JSON.parse(fs.readFileSync(DEPLOYMENT_JSON_PATH, 'utf8')) as { seed?: string };
+    if (!parsed.seed) {
+      fatalCli(`deployment seed file is missing "seed": ${DEPLOYMENT_JSON_PATH}`);
+    }
+    const deployUtils = await loadSettlementDeployUtils();
+    const walletCtx = await deployUtils.createWallet(parsed.seed);
+    const providers = await deployUtils.createProviders(walletCtx, BUILD_ROOT);
+    return { providers };
+  })();
+  return liveRuntimeContextPromise;
+}
+
 async function callCircuitOrDryRun(
   siblingName: string,
   address: string,
@@ -268,14 +320,23 @@ async function callCircuitOrDryRun(
     for (const a of args) h.update(Buffer.from(JSON.stringify(a)));
     return { txHash: '0x' + h.digest().toString('hex') };
   }
-  // Live path — needs a bound contract-instance handle to call. For simplicity
-  // we shell out to a helper we import lazily. If the helper is missing,
-  // fail with a clear message so the operator knows what's blocking.
-  throw new Error(
-    `[wi15.1] live circuit-call not implemented in this script; ` +
-    `pair with the settlement-api runtime that has the bound contract handles ` +
-    `(see PREVIEW-DEPLOY.md for the runtime wiring), or use --dry-run.`,
-  );
+  const { setNetworkId } = await import('@midnight-ntwrk/midnight-js-network-id');
+  const { findDeployedContract } = await import('@midnight-ntwrk/midnight-js-contracts');
+  setNetworkId('preview');
+
+  const runtime = await getLiveRuntimeContext();
+  const compiled = await import(path.join(BUILD_ROOT, siblingName, 'contract', 'index.js'));
+  const deployed = await findDeployedContract(runtime.providers as any, {
+    compiledContract: (compiled as any).Contract,
+    contractAddress: address as any,
+  } as any);
+  const callFn = (deployed.callTx as Record<string, (...circuitArgs: unknown[]) => Promise<any>>)[circuitName];
+  if (typeof callFn !== 'function') {
+    throw new Error(`[wi15.1] circuit not found on ${siblingName}: ${circuitName}`);
+  }
+  const finalized = await callFn(...args);
+  const txHash = String(finalized?.public?.txId ?? finalized?.txId ?? finalized?.public?.txHash ?? 'unknown');
+  return { txHash };
 }
 
 // ---------- main -------------------------------------------------------------
