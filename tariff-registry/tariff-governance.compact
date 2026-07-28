@@ -867,9 +867,11 @@ export circuit mirrorAuditRoot(
 
   // Trust anchor: `_auditWriterAuthorityTarget` (§A2 addendum: Governance
   // constructor writes this from `initialAuditWriterAuthority`).
+  // WI-15.1 Fix A (PR #49 review): the target is sealed at genesis by
+  // Governance's constructor, so no bootstrap short-circuit is needed —
+  // every mirror-write must match the sealed audit-writer authority.
   const target = _auditWriterAuthorityTarget;
-  const bootstrap = target == pad(32, "");
-  assert(disclose(bootstrap || (dAuth == target)), "MIRROR_AUDIT_AUTH_MISMATCH");
+  assert(disclose(dAuth == target), "MIRROR_AUDIT_AUTH_MISMATCH");
   assert(disclose(signature_valid(dAuth, msg, disclose(writerSig))),
          "MIRROR_AUDIT_ROOT_SIG_INVALID");
 
