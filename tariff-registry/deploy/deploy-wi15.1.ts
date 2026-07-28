@@ -215,13 +215,23 @@ async function main(): Promise<void> {
   });
 
   // ------------------- STEP 4: Deploy Schedule, Lane, Views -------------------
+  // WI-15.1 Fix A: Schedule/Lane/Views constructors now accept two sealed
+  // init params to close the PR #49 genesis front-run window:
+  //   initialFederationAuthority: same value passed to Governance in step 3.
+  //   initialAuditWriterAuthority: same auditWriter.pubkey passed in step 2.
+  // Both anchors must match Governance/AuditLog at tx-0 alignment.
   const scheduleContractAddress = await runStep(4, 'Deploy Schedule', async () => {
     const compiled = DRY_RUN ? null : await import(path.join(BUILD_ROOT, 'schedule', 'contract', 'index.js'));
     const { address, txHash } = await deployOrDryRun(
       'schedule',
       compiled?.Contract,
       null,
-      [auditContractAddress, governanceContractAddress],
+      [
+        auditContractAddress,
+        governanceContractAddress,
+        initialFederationAuthority,
+        auditWriterInfo.pubBytes,
+      ],
     );
     results.push({ step: 4, name: 'schedule deploy', ok: true, address, txHash });
     return address;
@@ -233,7 +243,13 @@ async function main(): Promise<void> {
       'lane',
       compiled?.Contract,
       null,
-      [auditContractAddress, governanceContractAddress, scheduleContractAddress],
+      [
+        auditContractAddress,
+        governanceContractAddress,
+        scheduleContractAddress,
+        initialFederationAuthority,
+        auditWriterInfo.pubBytes,
+      ],
     );
     results.push({ step: 4, name: 'lane deploy', ok: true, address, txHash });
     return address;
@@ -245,7 +261,14 @@ async function main(): Promise<void> {
       'views',
       compiled?.Contract,
       null,
-      [auditContractAddress, governanceContractAddress, scheduleContractAddress, laneContractAddress],
+      [
+        auditContractAddress,
+        governanceContractAddress,
+        scheduleContractAddress,
+        laneContractAddress,
+        initialFederationAuthority,
+        auditWriterInfo.pubBytes,
+      ],
     );
     results.push({ step: 4, name: 'views deploy', ok: true, address, txHash });
     return address;
