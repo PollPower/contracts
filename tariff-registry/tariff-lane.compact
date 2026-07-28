@@ -25,6 +25,10 @@ pure circuit RETUNE_MIN_INTERVAL_S(): Uint<64> {
   return 60 as Uint<64>;
 }
 
+pure circuit LANE_TREE_DEPTH(): Uint<64> {
+  return 20 as Uint<64>;
+}
+
 // =============================================================================
 // Witnesses
 // =============================================================================
@@ -61,6 +65,7 @@ witness witness_divmod(numerator: Field, divisor: Field): DivResult;
 // from the returned bits (two-sided checked cast) and reverts on any mismatch,
 // so a lying prover cannot misplace a leaf. Width = ACTION_LOG_DEPTH (24).
 witness action_log_path_bits(seq: Uint<64>): Vector<24, Boolean>;
+witness lane_path_bits(seq: Uint<64>): Vector<20, Boolean>;
 
 // =============================================================================
 // Structs
@@ -200,6 +205,11 @@ export ledger _classEntries: Map<Bytes<32>, ClassEntry>;
 // Keeper-observable via _actionLog kind ∈ {1 LANE_REGISTERED, 7 LANE_RETIRED}.
 // WI-14's settle circuit calls resolveLanes to route statutory shares in-circuit.
 export ledger _registeredLanes: Map<Bytes<32>, LaneRecord>;
+export ledger _lanesMerkleRoot: Bytes<32>;
+export ledger _lanesMerkleFrontier: Map<Uint<64>, Bytes<32>>;
+export ledger _lanesMerkleZeros: Map<Uint<64>, Bytes<32>>;
+export ledger _lanesMerkleClimb: Bytes<32>;
+export ledger _lanesMerkleSeq: Counter;
 
 // R-B: per-(operator, schedule, epoch) nonce.
 export ledger _retuneNonces: Map<Bytes<32>, Uint<64>>;
@@ -456,6 +466,16 @@ pure circuit actionLogBitAccum(acc: Field, bit: Boolean, pow: Field): Field {
   return acc + (bit ? pow : (0 as Field));
 }
 
+pure circuit LANE_TREE_POWERS(): Vector<20, Field> {
+  return [
+    1 as Field,        2 as Field,        4 as Field,        8 as Field,
+    16 as Field,       32 as Field,       64 as Field,       128 as Field,
+    256 as Field,      512 as Field,      1024 as Field,     2048 as Field,
+    4096 as Field,     8192 as Field,     16384 as Field,    32768 as Field,
+    65536 as Field,    131072 as Field,   262144 as Field,   524288 as Field,
+  ];
+}
+
 // §SCOPE B — canonical payload hash for a LaneRecord event (kinds 1 & 7).
 // N = 14 = tag + kindByte + 12 LaneRecord fields, declaration order.
 circuit laneActionPayloadHash(kind: Uint<8>, r: LaneRecord): Bytes<32> {
@@ -555,6 +575,32 @@ circuit appendActionLogLeaf(seq: Uint<64>, leaf: Bytes<32>): [] {
   registryActionLogRoot = _actionLogClimb;
 }
 
+circuit appendLaneLeaf(seq: Uint<64>, leaf: Bytes<32>): [] {
+  const bits = disclose(lane_path_bits(disclose(seq) as Uint<64>));
+  const reconF = fold(actionLogBitAccum, 0 as Field, bits, LANE_TREE_POWERS());
+  const seqF = disclose(seq) as Field;
+  const _r1 = (reconF - seqF) as Uint<64>;
+  const _r2 = (seqF - reconF) as Uint<64>;
+
+  // Chosen domain separator for the lane tree's internal pair hashes.
+  const nodeTag = pad(32, "pp:tariff:v1:lanesNode");
+  _lanesMerkleClimb = leaf;
+  for (const i of 0..20) {
+    const bit = bits[i];
+    const cur = _lanesMerkleClimb;
+    const sib = bit
+      ? _lanesMerkleFrontier.lookup(i as Uint<64>)
+      : _lanesMerkleZeros.lookup(i as Uint<64>);
+    if (!bit) {
+      _lanesMerkleFrontier.insert(i as Uint<64>, cur);
+    }
+    _lanesMerkleClimb = bit
+      ? persistentHash<Vector<3, Bytes<32>>>([nodeTag, sib, cur])
+      : persistentHash<Vector<3, Bytes<32>>>([nodeTag, cur, sib]);
+  }
+  _lanesMerkleRoot = _lanesMerkleClimb;
+}
+
 // Insert a RegistryActionEntry into _actionLog AND append its payloadHash to
 // the action-log Merkle tree (WI-13.2). `payloadHash` is computed per-kind by
 // the caller (§SCOPE B helpers) or is the pad(32,"") sentinel for non-mirrored
@@ -619,6 +665,15 @@ constructor(
   _OPS_FLOOR_BPS = 2000 as Uint<16>;
   _SANITY_BAND_PCT = 20 as Uint<16>;
   _hasPendingContext = false;
+  _lanesMerkleClimb = pad(32, "pp:tariff:v1:lanesEmpty");
+  const lanesNodeTag = pad(32, "pp:tariff:v1:lanesNode");
+  for (const i of 0..20) {
+    const z = _lanesMerkleClimb;
+    _lanesMerkleZeros.insert(i as Uint<64>, z);
+    _lanesMerkleFrontier.insert(i as Uint<64>, z);
+    _lanesMerkleClimb = persistentHash<Vector<3, Bytes<32>>>([lanesNodeTag, z, z]);
+  }
+  _lanesMerkleRoot = _lanesMerkleClimb;
 
   // WI-15.1 Fix A: seal the mirror-authority trust anchors at genesis.
   _mirroredFederationAuthority = disclose(initialFederationAuthority);
@@ -736,6 +791,31 @@ export circuit registerLane(
     registeredAt:      disclose(currentTime),
   };
   _registeredLanes.insert(dKey, disclose(record));
+  // V2-SPLIT-DESIGN.md §4.8 derived root is append-only in this implementation:
+  // chose (A) append-only per §4.6-implementation-note; sparse-tree deferred.
+  const laneRecordHash = persistentHash<Vector<13, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:laneRecord"),
+    record.scheduleId,
+    (record.laneKindByte as Field) as Bytes<32>,
+    record.leviedBy,
+    (record.bpsShare as Field) as Bytes<32>,
+    record.remitAddress,
+    (record.basis as Field) as Bytes<32>,
+    record.applicabilityHash,
+    record.statuteRefHash,
+    (record.effectiveEpoch as Field) as Bytes<32>,
+    (record.retiredEpoch as Field) as Bytes<32>,
+    (record.remittanceMode as Field) as Bytes<32>,
+    (record.registeredAt as Field) as Bytes<32>,
+  ]);
+  const laneLeaf = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:lanesLeaf"),
+    dKey,
+    laneRecordHash,
+  ]);
+  const laneSeq = _lanesMerkleSeq.read();
+  appendLaneLeaf(disclose(laneSeq) as Uint<64>, disclose(laneLeaf));
+  _lanesMerkleSeq.increment(1);
 
   // (h) Emit action kind 1 = LANE_REGISTERED.
   // WI-13.2: canonical payload over all 12 LaneRecord fields just inserted.
@@ -805,6 +885,31 @@ export circuit retireLane(
     registeredAt:      rec.registeredAt,
   };
   _registeredLanes.insert(dKey, disclose(retired));
+  // V2-SPLIT-DESIGN.md §4.8 derived root is append-only in this implementation:
+  // chose (A) append-only per §4.6-implementation-note; sparse-tree deferred.
+  const retiredLaneRecordHash = persistentHash<Vector<13, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:laneRecord"),
+    retired.scheduleId,
+    (retired.laneKindByte as Field) as Bytes<32>,
+    retired.leviedBy,
+    (retired.bpsShare as Field) as Bytes<32>,
+    retired.remitAddress,
+    (retired.basis as Field) as Bytes<32>,
+    retired.applicabilityHash,
+    retired.statuteRefHash,
+    (retired.effectiveEpoch as Field) as Bytes<32>,
+    (retired.retiredEpoch as Field) as Bytes<32>,
+    (retired.remittanceMode as Field) as Bytes<32>,
+    (retired.registeredAt as Field) as Bytes<32>,
+  ]);
+  const retiredLaneLeaf = persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:lanesLeaf"),
+    dKey,
+    retiredLaneRecordHash,
+  ]);
+  const retireLaneSeq = _lanesMerkleSeq.read();
+  appendLaneLeaf(disclose(retireLaneSeq) as Uint<64>, disclose(retiredLaneLeaf));
+  _lanesMerkleSeq.increment(1);
 
   // (f) Emit action kind 7 = LANE_RETIRED.
   //     nodeId: look it up from the parent schedule for keeper-mirror parity.
