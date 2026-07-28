@@ -142,7 +142,6 @@ async function runStep<T>(
 async function deployOrDryRun(
   siblingName: string,
   compiledContract: unknown,
-  privateStateProvider: unknown,
   constructorArgs: unknown[],
 ): Promise<{ address: string; txHash: string }> {
   if (DRY_RUN) {
@@ -163,14 +162,17 @@ async function deployOrDryRun(
   const { deployContract } = await import('@midnight-ntwrk/midnight-js-contracts');
   const { setNetworkId } = await import('@midnight-ntwrk/midnight-js-network-id');
   setNetworkId('preview');
+  const runtime = await getLiveRuntimeContext();
 
   // Wait for tx confirmation between steps (per DoD).
   // deployContract returns a deployed-contract handle whose finalizedDeployTxData
   // resolves once the tx is finalized in the block.
-  const deployedContract = await deployContract(privateStateProvider as any, {
-    contract: compiledContract as any,
+  // midnight-js-contracts@4.0.2:
+  // deployContract(providers, { compiledContract, ...options })
+  const deployedContract = await deployContract(runtime.providers as any, {
+    compiledContract: compiledContract as any,
+    privateStateId: `wi15.1-${siblingName}-state`,
     initialPrivateState: {} as any,
-    privateStateProvider: privateStateProvider as any,
     args: constructorArgs,
   } as any);
   const finalized = await (deployedContract as any).finalizedDeployTxData;
@@ -372,7 +374,6 @@ async function main(): Promise<void> {
     const { address, txHash } = await deployOrDryRun(
       'audit',
       compiled?.Contract,
-      null,
       [auditWriterInfo.pubBytes],
     );
     results.push({ step: 2, name: 'audit deploy', ok: true, address, txHash });
@@ -410,7 +411,6 @@ async function main(): Promise<void> {
     const { address, txHash } = await deployOrDryRun(
       'governance',
       compiled?.Contract,
-      null,
       [
         auditContractAddress,
         initialFederationAuthority,
@@ -434,7 +434,6 @@ async function main(): Promise<void> {
     const { address, txHash } = await deployOrDryRun(
       'schedule',
       compiled?.Contract,
-      null,
       [
         auditContractAddress,
         governanceContractAddress,
@@ -451,7 +450,6 @@ async function main(): Promise<void> {
     const { address, txHash } = await deployOrDryRun(
       'lane',
       compiled?.Contract,
-      null,
       [
         auditContractAddress,
         governanceContractAddress,
@@ -469,7 +467,6 @@ async function main(): Promise<void> {
     const { address, txHash } = await deployOrDryRun(
       'views',
       compiled?.Contract,
-      null,
       [
         auditContractAddress,
         governanceContractAddress,
