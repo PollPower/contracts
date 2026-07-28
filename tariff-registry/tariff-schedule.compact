@@ -593,7 +593,20 @@ circuit consumeFederationApproval(actionHash: Bytes<32>, opLabel: Bytes<32>): []
   );
   _consumedFederationApprovals.insert(dHash);
 }
-constructor(auditContractAddress: ContractAddress, governanceContractAddress: ContractAddress) {
+// WI-15.1 Fix A (PR #49 review):
+//   `initialFederationAuthority` and `initialAuditWriterAuthority` are sealed
+//   init parameters — the trust anchors for every mirror-write on this sibling
+//   are fixed at deploy time. Modeled on V2-SPLIT-ADDENDUM.md §A2's AuditLog
+//   constructor shape (`initialAuditWriterAuthority: Bytes<32>`).
+//   Closes the genesis front-run window where empty `_mirroredFederationAuthority`
+//   and `_auditWriterAuthorityTarget` cells let the first mirror-writer seed
+//   any authority they chose.
+constructor(
+  auditContractAddress: ContractAddress,
+  governanceContractAddress: ContractAddress,
+  initialFederationAuthority: Bytes<32>,
+  initialAuditWriterAuthority: Bytes<32>,
+) {
   _auditContractAddress = disclose(auditContractAddress);
   _governanceContractAddress = disclose(governanceContractAddress);
 
@@ -604,6 +617,10 @@ constructor(auditContractAddress: ContractAddress, governanceContractAddress: Co
   _OPS_FLOOR_BPS = 2000 as Uint<16>;
   _SANITY_BAND_PCT = 20 as Uint<16>;
   _hasPendingContext = false;
+
+  // WI-15.1 Fix A: seal the mirror-authority trust anchors at genesis.
+  _mirroredFederationAuthority = disclose(initialFederationAuthority);
+  _auditWriterAuthorityTarget = disclose(initialAuditWriterAuthority);
 
   _bootstrapComplete = true;
   _initialized = true;
@@ -834,16 +851,12 @@ export circuit mirrorGovernanceRoot(
     dAuth,
   ]);
 
-  // Bootstrap-friendly authority binding: the first mirror-write (when the
-  // mirrored fed-authority is still zero from the sibling constructor) seeds
-  // the trust anchor from the deploy-time governance authority hash. Once
-  // seeded, every subsequent mirror-write MUST match the previously-seeded
-  // authority AND MUST verify a signature under it. I-15-B is preserved:
-  // no forged root can be accepted because the signature is verified against
-  // the exact authority hash committed in the signed message.
+  // WI-15.1 Fix A: trust anchor is sealed at construction (see constructor).
+  // Every mirror-write MUST match `_mirroredFederationAuthority` verbatim AND
+  // verify a signature under it. No bootstrap short-circuit — the genesis
+  // authority is fixed by the deployer, not the first caller.
   const cur = _mirroredFederationAuthority;
-  const bootstrap = cur == pad(32, "");
-  assert(disclose(bootstrap || (dAuth == cur)), "MIRROR_GOV_AUTH_MISMATCH");
+  assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
   assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
          "MIRROR_GOV_ROOT_SIG_INVALID");
 
@@ -911,9 +924,9 @@ export circuit mirrorEpochAndFloors(
     dAuth,
   ]);
 
+  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
   const cur = _mirroredFederationAuthority;
-  const bootstrap = cur == pad(32, "");
-  assert(disclose(bootstrap || (dAuth == cur)), "MIRROR_GOV_AUTH_MISMATCH");
+  assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
   assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
          "MIRROR_EPOCH_FLOORS_SIG_INVALID");
 
@@ -977,9 +990,10 @@ export circuit mirrorFederationAuthority(
   ]);
 
   // Signer MUST be the CURRENT (pre-rotation) authority, per §4.3.
+  // WI-15.1 Fix A: `_mirroredFederationAuthority` is sealed at genesis by
+  // the constructor; no bootstrap short-circuit.
   const cur = _mirroredFederationAuthority;
-  const bootstrap = cur == pad(32, "");
-  assert(disclose(bootstrap || (dCur == cur)), "MIRROR_FED_AUTH_MISMATCH");
+  assert(disclose(dCur == cur), "MIRROR_FED_AUTH_MISMATCH");
   assert(disclose(signature_valid(dCur, msg, disclose(currentAuthSig))),
          "MIRROR_FED_AUTH_SIG_INVALID");
 
@@ -1035,12 +1049,12 @@ export circuit mirrorAuditRoot(
     dAuth,
   ]);
 
-  // Trust anchor for audit-writer authority is `_auditWriterAuthorityTarget`
-  // seeded by the Governance constructor. If both `_auditWriterAuthorityTarget`
-  // and the last-mirrored writer hash are zero at deploy, permit bootstrap.
+  // Trust anchor for audit-writer authority is `_auditWriterAuthorityTarget`,
+  // WI-15.1 Fix A: sealed at genesis by Schedule's constructor from
+  // `initialAuditWriterAuthority` (matching Governance's target for tx-0
+  // alignment). No bootstrap short-circuit.
   const target = _auditWriterAuthorityTarget;
-  const bootstrap = target == pad(32, "");
-  assert(disclose(bootstrap || (dAuth == target)), "MIRROR_AUDIT_AUTH_MISMATCH");
+  assert(disclose(dAuth == target), "MIRROR_AUDIT_AUTH_MISMATCH");
   assert(disclose(signature_valid(dAuth, msg, disclose(writerSig))),
          "MIRROR_AUDIT_ROOT_SIG_INVALID");
 

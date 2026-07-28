@@ -593,7 +593,21 @@ circuit consumeFederationApproval(actionHash: Bytes<32>, opLabel: Bytes<32>): []
   );
   _consumedFederationApprovals.insert(dHash);
 }
-constructor(auditContractAddress: ContractAddress, governanceContractAddress: ContractAddress, scheduleContractAddress: ContractAddress) {
+// WI-15.1 Fix A (PR #49 review):
+//   `initialFederationAuthority` and `initialAuditWriterAuthority` are sealed
+//   init parameters — the trust anchors for every mirror-write on this sibling
+//   are fixed at deploy time. Modeled on V2-SPLIT-ADDENDUM.md §A2's AuditLog
+//   constructor shape (`initialAuditWriterAuthority: Bytes<32>`).
+//   Closes the genesis front-run window where empty `_mirroredFederationAuthority`
+//   and `_auditWriterAuthorityTarget` cells let the first mirror-writer seed
+//   any authority they chose.
+constructor(
+  auditContractAddress: ContractAddress,
+  governanceContractAddress: ContractAddress,
+  scheduleContractAddress: ContractAddress,
+  initialFederationAuthority: Bytes<32>,
+  initialAuditWriterAuthority: Bytes<32>,
+) {
   _auditContractAddress = disclose(auditContractAddress);
   _governanceContractAddress = disclose(governanceContractAddress);
   _scheduleContractAddress = disclose(scheduleContractAddress);
@@ -605,6 +619,10 @@ constructor(auditContractAddress: ContractAddress, governanceContractAddress: Co
   _OPS_FLOOR_BPS = 2000 as Uint<16>;
   _SANITY_BAND_PCT = 20 as Uint<16>;
   _hasPendingContext = false;
+
+  // WI-15.1 Fix A: seal the mirror-authority trust anchors at genesis.
+  _mirroredFederationAuthority = disclose(initialFederationAuthority);
+  _auditWriterAuthorityTarget = disclose(initialAuditWriterAuthority);
 
   _bootstrapComplete = true;
   _initialized = true;
@@ -1080,9 +1098,9 @@ export circuit mirrorGovernanceRoot(
     dAuth,
   ]);
 
+  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
   const cur = _mirroredFederationAuthority;
-  const bootstrap = cur == pad(32, "");
-  assert(disclose(bootstrap || (dAuth == cur)), "MIRROR_GOV_AUTH_MISMATCH");
+  assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
   assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
          "MIRROR_GOV_ROOT_SIG_INVALID");
 
@@ -1147,9 +1165,9 @@ export circuit mirrorEpochAndFloors(
     dAuth,
   ]);
 
+  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
   const cur = _mirroredFederationAuthority;
-  const bootstrap = cur == pad(32, "");
-  assert(disclose(bootstrap || (dAuth == cur)), "MIRROR_GOV_AUTH_MISMATCH");
+  assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
   assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
          "MIRROR_EPOCH_FLOORS_SIG_INVALID");
 
@@ -1208,9 +1226,9 @@ export circuit mirrorFederationAuthority(
     dCur,
   ]);
 
+  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
   const cur = _mirroredFederationAuthority;
-  const bootstrap = cur == pad(32, "");
-  assert(disclose(bootstrap || (dCur == cur)), "MIRROR_FED_AUTH_MISMATCH");
+  assert(disclose(dCur == cur), "MIRROR_FED_AUTH_MISMATCH");
   assert(disclose(signature_valid(dCur, msg, disclose(currentAuthSig))),
          "MIRROR_FED_AUTH_SIG_INVALID");
 
@@ -1265,9 +1283,9 @@ export circuit mirrorSchedulesRoot(
     dAuth,
   ]);
 
+  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
   const cur = _mirroredFederationAuthority;
-  const bootstrap = cur == pad(32, "");
-  assert(disclose(bootstrap || (dAuth == cur)), "MIRROR_GOV_AUTH_MISMATCH");
+  assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
   assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
          "MIRROR_SCHEDULES_ROOT_SIG_INVALID");
 
@@ -1320,9 +1338,10 @@ export circuit mirrorAuditRoot(
     dAuth,
   ]);
 
+  // WI-15.1 Fix A: `_auditWriterAuthorityTarget` sealed at genesis by Lane's
+  // constructor from `initialAuditWriterAuthority`. No bootstrap short-circuit.
   const target = _auditWriterAuthorityTarget;
-  const bootstrap = target == pad(32, "");
-  assert(disclose(bootstrap || (dAuth == target)), "MIRROR_AUDIT_AUTH_MISMATCH");
+  assert(disclose(dAuth == target), "MIRROR_AUDIT_AUTH_MISMATCH");
   assert(disclose(signature_valid(dAuth, msg, disclose(writerSig))),
          "MIRROR_AUDIT_ROOT_SIG_INVALID");
 

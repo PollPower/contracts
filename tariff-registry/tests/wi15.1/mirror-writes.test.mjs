@@ -40,9 +40,9 @@ function assertReverts(fn, expected) {
   assert.fail(`expected Revert (${expected ?? 'any'}), but no throw`);
 }
 
-// Build fixture: fedAuth kp, plus one sibling per role. Bootstraps
-// `_mirroredFederationAuthority` on each sibling via the first mirror-write
-// signed by `fedAuth`.
+// Build fixture: fedAuth + auditWriter keypairs, plus one sibling per role.
+// WI-15.1 Fix A: `_mirroredFederationAuthority` and `_auditWriterAuthorityTarget`
+// are sealed at genesis by the constructor — no post-deploy bootstrap call.
 function makeFixture({ withAuditWriter = true } = {}) {
   const fedAuth = makeAuthorityKeypair();
   const auditWriter = makeAuthorityKeypair();
@@ -50,33 +50,16 @@ function makeFixture({ withAuditWriter = true } = {}) {
   const now = 1_700_000_000n;
   const t = now;
 
-  const schedule = new MirrorSibling({ role: 'schedule',
-    auditWriterAuthorityTarget: withAuditWriter ? auditWriter.authHash : pad32('') });
-  const lane = new MirrorSibling({ role: 'lane',
-    auditWriterAuthorityTarget: withAuditWriter ? auditWriter.authHash : pad32('') });
-  const views = new MirrorSibling({ role: 'views',
-    auditWriterAuthorityTarget: withAuditWriter ? auditWriter.authHash : pad32('') });
-  const governance = new MirrorSibling({ role: 'governance',
-    auditWriterAuthorityTarget: withAuditWriter ? auditWriter.authHash : pad32('') });
-
-  // Bootstrap fed auth on each sibling by installing fedAuth as the mirror.
-  // Uses the mirrorFederationAuthority bootstrap path (empty cur → accept).
-  // For Views (no fed-auth circuit... wait, we added it — see below).
-  const bootstrap = (sib) => {
-    const msg = sib._msgFedAuth(fedAuth.authHash, 1n, fedAuth.authHash);
-    const sig = fedAuth.sign(msg);
-    sib.mirrorFederationAuthority({
-      newAuth: fedAuth.authHash,
-      epochAtMirror: 1n,
-      sig,
-      currentAuthHash: fedAuth.authHash,
-      currentTime: t,
-    });
-  };
-  bootstrap(schedule);
-  bootstrap(lane);
-  bootstrap(views);
-  bootstrap(governance);
+  const sealedAudit = withAuditWriter ? auditWriter.authHash : pad32('');
+  const mk = (role) => new MirrorSibling({
+    role,
+    initialFederationAuthority: fedAuth.authHash,
+    initialAuditWriterAuthority: sealedAudit,
+  });
+  const schedule   = mk('schedule');
+  const lane       = mk('lane');
+  const views      = mk('views');
+  const governance = mk('governance');
 
   return { fedAuth, auditWriter, schedule, lane, views, governance, t };
 }
