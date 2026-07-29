@@ -8,8 +8,14 @@ import * as Rx from 'rxjs';
 import { deployContract } from '@midnight-ntwrk/midnight-js-contracts';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
 import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+import {
+  persistentHash as runtimePersistentHash,
+  CompactTypeBytes,
+  CompactTypeVector,
+} from '@midnight-ntwrk/compact-runtime';
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
+import { loadSeatSignatures, type ApprovalBundle } from './deploy/seat-signatures.js';
 
 // Preview network — required by midnight-js-contracts.deployContract.
 // midnight-js-network-id demands an explicit setNetworkId() call before any
@@ -49,12 +55,6 @@ type PilotSeat = {
   pkHex: string;
 };
 
-type ApprovalBundle = {
-  seatPubkeys: Uint8Array[];
-  signatures: Uint8Array[];
-  threshold: number;
-};
-
 type DeploymentRecord = {
   contractAddress: string;
   network: 'preview';
@@ -67,10 +67,19 @@ type DeploymentRecord = {
   classPath: string;
   actionSeqAtDeploy: string;
   registryActionLogRoot: string;
+  advanceEpochActionHashHex: string;
+  advancedToEpoch: string;
   payloadHashesEmitted: Array<{ seq: string; kind: number; payloadHashHex: string }>;
   deployedAt: string;
   deployerBech32: string;
   pilotMockDisclosure: string;
+};
+
+const Bytes32 = new CompactTypeBytes(32);
+const Vec6Bytes32 = new CompactTypeVector(6, Bytes32);
+type MsfedActionHashHelpers = {
+  padToBytes32: (asciiTag: string) => Uint8Array;
+  uintToBytes32: (value: bigint, label: string) => Uint8Array;
 };
 
 function sha256Bytes(data: Uint8Array | Buffer | string): Uint8Array {
@@ -389,6 +398,38 @@ function computeRegisterLaneActionHash(input: {
   ]);
 }
 
+function computeAdvanceEpochActionHash(
+  selfAddress: Uint8Array,
+  currentEpoch: bigint,
+  newEpoch: bigint,
+  newRefRateFiatPerKwh: bigint,
+  newGovernanceRoot: Uint8Array,
+  helpers: MsfedActionHashHelpers,
+): Uint8Array {
+  /*
+  const actionHash = persistentHash<Vector<6, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:advanceEpoch"),
+    selfBytes(),
+    currentEpochBytes,
+    newEpochBytes,
+    newRateBytes,
+    disclose(newGovernanceRoot),
+  ]);
+  */
+  const opSel = helpers.padToBytes32('pp:tariff:v1:advanceEpoch');
+  const currentEpochBytes = helpers.uintToBytes32(currentEpoch, 'currentEpoch');
+  const newEpochBytes = helpers.uintToBytes32(newEpoch, 'newEpoch');
+  const newRateBytes = helpers.uintToBytes32(newRefRateFiatPerKwh, 'newRefRate');
+  return new Uint8Array(runtimePersistentHash(Vec6Bytes32, [
+    opSel,
+    selfAddress,
+    currentEpochBytes,
+    newEpochBytes,
+    newRateBytes,
+    newGovernanceRoot,
+  ]));
+}
+
 function computeRetuneAuthHash(input: {
   selfBytes: Uint8Array;
   scheduleId: Uint8Array;
@@ -456,7 +497,7 @@ class ActionLogTree {
   append(leaf: Uint8Array): Uint8Array {
     const idx = this.nextIndex;
     this.set(0, idx, leaf);
-    let h = new Uint8Array(leaf);
+    let h: Uint8Array<ArrayBufferLike> = new Uint8Array(leaf);
     let i = idx;
     for (let lvl = 0; lvl < this.depth; lvl++) {
       const parent =
@@ -508,7 +549,23 @@ async function loadSettlementDeployUtils() {
   );
 }
 
+async function loadMsfedActionHashHelpers(): Promise<MsfedActionHashHelpers> {
+  const modulePath = path.resolve(__dirname, '..', 'multisig', 'tooling', 'federated-v1-actionhash.js');
+  const mod = await import(pathToFileURL(modulePath).href);
+  if (typeof mod.padToBytes32 !== 'function' || typeof mod.uintToBytes32 !== 'function') {
+    throw new Error(
+      `Expected padToBytes32/uintToBytes32 exports in ${modulePath}; verify PR #58 (cdfb875) is present.`,
+    );
+  }
+  return {
+    padToBytes32: mod.padToBytes32 as (asciiTag: string) => Uint8Array,
+    uintToBytes32: mod.uintToBytes32 as (value: bigint, label: string) => Uint8Array,
+  };
+}
+
 async function main() {
+  const seatSignaturesPath = readFlagValue('--seat-signatures');
+
   // H-1 disclosure (Preview-only): these pilot seat keys are deterministic and public.
   const pilotSeats = buildPilotSeats();
   const seatPubkeys = pilotSeats.map((s) => s.pk);
@@ -663,6 +720,7 @@ async function main() {
   } as any);
   const contractAddress: string = deployed.deployTxData.public.contractAddress;
   const selfBytes = new Uint8Array(Buffer.from(contractAddress.replace(/^0x/, ''), 'hex'));
+  const actionHashHelpers = await loadMsfedActionHashHelpers();
   if (selfBytes.length !== 32) {
     throw new Error(`Unexpected contractAddress byte length ${selfBytes.length}`);
   }
@@ -801,6 +859,44 @@ async function main() {
     divResult,
   );
 
+  const nextEpoch = currentEpoch + 1n;
+  const newRate = REF_RATE_FIAT_PER_KWH;
+  const newRoot = governanceRoot;
+  const advanceEpochActionHash = computeAdvanceEpochActionHash(
+    selfBytes,
+    currentEpoch,
+    nextEpoch,
+    newRate,
+    newRoot,
+    actionHashHelpers,
+  );
+  const advanceEpochBundle: ApprovalBundle = seatSignaturesPath
+    ? loadSeatSignatures(seatSignaturesPath)
+    : {
+        seatPubkeys,
+        signatures: await Promise.all(
+          pilotSeats.map((s) => ed.signAsync(advanceEpochActionHash, s.sk)),
+        ),
+        threshold: PILOT_THRESHOLD,
+      };
+  if (seatSignaturesPath) {
+    console.log(`[deploy] INFO --seat-signatures path used: ${seatSignaturesPath}`);
+  } else {
+    console.log('[deploy] INFO inline signing path used for advanceEpoch');
+  }
+  approvalBundles.set(
+    keyForBundle(advanceEpochActionHash, federationAuthority),
+    advanceEpochBundle,
+  );
+  console.log('[deploy] pilot smoke: advanceEpoch');
+  await deployed.callTx.advanceEpoch(
+    nextEpoch,
+    newRate,
+    newRoot,
+    currentTime,
+  );
+  const advancedCurrentEpoch = nextEpoch;
+
   const scheduleRecord = {
     scheduleId,
     nodeId: charterNodeId,
@@ -857,6 +953,8 @@ async function main() {
     classPath: toHex(classPath),
     actionSeqAtDeploy: '3',
     registryActionLogRoot: toHex(actionTree.root),
+    advanceEpochActionHashHex: toHex(advanceEpochActionHash),
+    advancedToEpoch: advancedCurrentEpoch.toString(),
     payloadHashesEmitted,
     deployedAt: new Date().toISOString(),
     deployerBech32,
@@ -867,6 +965,16 @@ async function main() {
   writeFileSync(OUTPUT_PUBLIC_JSON, JSON.stringify(out, null, 2));
   console.log(`Saved ${OUTPUT_PUBLIC_JSON}`);
   console.log(`CONTRACT_ADDRESS=${contractAddress}`);
+}
+
+function readFlagValue(flag: string): string | undefined {
+  const i = process.argv.indexOf(flag);
+  if (i === -1) return undefined;
+  const value = process.argv[i + 1];
+  if (!value || value.startsWith('--')) {
+    throw new Error(`${flag} requires a path argument`);
+  }
+  return value;
 }
 
 main().catch((err) => {

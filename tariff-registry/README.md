@@ -53,3 +53,11 @@ See PR #31 for the review discussion.
 
 Preview deploy tooling and kenya handoff steps are documented in
 [`PREVIEW-DEPLOY.md`](./PREVIEW-DEPLOY.md).
+
+For WI-15.7 pilot smoke, `deploy-tariff-registry-preview.ts` accepts optional
+`--seat-signatures <path>` to load a pre-signed `advanceEpoch` approval bundle
+from disk. Schema: `{ actionHash, epoch, signatures[] }`, where each signature
+entry is `{ seatId, signature, publicKey }` with hex-encoded Ed25519 bytes.
+Security tradeoff: this path avoids storing seat secret keys on operator disks,
+but the caller must ensure the file's `actionHash` matches the expected
+operation preimage for the current deployment before broadcasting.
