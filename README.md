@@ -8,6 +8,8 @@ This repository contains the **canonical, on-chain source** for every contract P
 
 > ⚠️ **EBT v8 Preview pilot posture (T+0 target: 2026-08-02).** The v8 contract lineage introduces `settle` against a mirrored TariffRegistry root plus a weekly owner-advance ceremony. Its Preview admin set is **1 real Tangem ring + 4 pilot-mock keys, all held by Garrett**. External attackers can derive the four pilot-mock private keys from public seeds (this is the tracked **H-1** gap). This posture is intentional for the Preview pilot to prove the ceremony loop; **mainnet Phase 2 is hard-gated on a full Tangem ring swap** (WI-14.2). See [`ebt/WI-14-CEREMONY-SKELETON.md`](./ebt/WI-14-CEREMONY-SKELETON.md) §9 CAL-1 and [`ebt/VNEXT-MIGRATION.md`](./ebt/VNEXT-MIGRATION.md) for the cutover plan.
 
+> 🔬 **EBT v8 ceremony rehearsal complete (2026-07-30).** The full 18-circuit v8 contract is **live on Midnight Preview** at `10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f`, deployed via a **ceremony-fenced approach** (v8's monolithic 18-circuit deploy tx exceeds Preview's per-tx block weight limit). The rehearsal deploys 8 ceremony-critical circuits in one tx, then adds the remaining 10 via `submitInsertVerifierKeyTx` maintenance txs — 10 sequential inserts, all `SucceedEntirely`, verified 18/18 DEFINED on-chain. Sunday's T+0 ceremony re-runs the same script against a fresh address. See [`ebt/V8-CEREMONY-FENCE.md`](./ebt/V8-CEREMONY-FENCE.md) for the design + rollout plan, and [`ebt/ceremony-artifacts/`](./ebt/ceremony-artifacts/) for the rehearsal manifests (10 tx hashes + T+0 pre-flight template).
+
 > **Released alongside the [PollPower White Paper v10.0](https://github.com/PollPower/whitepaper).**
 > The whitepaper describes the design rationale; this repository contains the code that enforces it.
 
@@ -17,6 +19,8 @@ This repository contains the **canonical, on-chain source** for every contract P
 
 | Contract | Purpose | Status |
 |---|---|---|
+| [`ebt/ebt-v8.compact`](./ebt/ebt-v8.compact) | **EBT v8 — next-generation settlement contract.** 18 exported circuits covering `settle` against a mirrored TariffRegistry root, full daemon-mirrored registry surface (register/retire lane, schedule lifecycle, class totals, action-log head/root), dual governance (`execMultisigOp` multisig-cosigned + `execOwnerOp` owner-signed), producer redemption, and break-glass emergency reissue. Carries forward the EBT-H-1 fix (5-field HAT signed payload includes `producerAddr` with domain sep `pollpower:ebt:v8:epoch1`). See [`ebt/VNEXT-DESIGN.md`](./ebt/VNEXT-DESIGN.md), [`ebt/VNEXT-MIGRATION.md`](./ebt/VNEXT-MIGRATION.md), and [`ebt/WI-14-CEREMONY-SKELETON.md`](./ebt/WI-14-CEREMONY-SKELETON.md). | 🚀 **PREVIEW (ceremony-fenced deploy)** — rehearsed live 2026-07-30 at `10158a54...ae474f`; T+0 ceremony 2026-08-02 |
+| [`ebt/ebt-v8-ceremony.compact`](./ebt/ebt-v8-ceremony.compact) | **EBT v8 ceremony-fenced build** — 8-circuit subset of v8, byte-identical to v8 in the circuits it defines (`initialize`, `attestProducerOwnership`, `revokeProducerOwnership`, `mirrorActionLogHead`, `mirrorScheduleLifecycle`, `mirrorClassStatutoryTotal`, `mirrorRegisterLane`, `settle`). Deployed in a single tx; the remaining 10 v8 circuits are added post-deploy via `submitInsertVerifierKeyTx` maintenance txs. This split is the workaround for v8's monolithic deploy exceeding Preview's per-tx block weight limit. See [`ebt/V8-CEREMONY-FENCE.md`](./ebt/V8-CEREMONY-FENCE.md). | ✅ **PREVIEW** — deployed 2026-07-30 as the base of the full 18-circuit rollout |
 | [`ebt/ebt-v7.4.2.compact`](./ebt/ebt-v7.4.2.compact) | **EBT v7.4.2 — current settlement contract.** v7.1 lineage + domain-bound dividend salt (LD-1: contract address bound into the mint record so it can't be replayed across deployments), and the four multisig setters / two owner setters merged into `execMultisigOp(op,…)` / `execOwnerOp(op,…)` to fit the block-weight limit. Adds in-place `setMultisigAuthority` rotation so the pre-mainnet Tangem ring swap needs no redeploy. Carries forward all v5.2 audit hardening (C-1, M-1, M-4, L-1, L-3). | ✅ **PRODUCTION (Preview)** — deployed + validated end-to-end 2026-07-05 |
 | [`ebt/ebt-v7.compact`](./ebt/ebt-v7.compact) | The Energy-Backed Token (v7). Unshielded, contract-minted ledger token — `settle()` mints the producer slice directly to the producer's wallet; `claimSplit()` distributes the ops/dividend/DAO slices. Carries forward all v5.2 audit hardening (C-1, M-1, M-4, L-1, L-3). | ✅ **PRODUCTION** — active mint path since 2026-06-17; superseded on Preview by v7.4.2 |
 | [`ebt/ebt-v7.1.compact`](./ebt/ebt-v7.1.compact) | EBT v7.1 — v7 + `DividendMintedEntry` public ledger log on dividend-slice mint, plus **3-of-5 multisig-gated** `setLivingDividendAddress` / `clearLivingDividendAddress` setters. Design basis for v7.4.2. See [`ebt/V7.1-EVENT-DIFF.md`](./ebt/V7.1-EVENT-DIFF.md). | ✅ **SUPERSEDED** — folded into the deployed v7.4.2 |
@@ -40,6 +44,17 @@ This repository contains the **canonical, on-chain source** for every contract P
 ---
 
 ## On-chain addresses (Midnight Preview)
+
+### EBT v8 (rehearsal, T+0 ceremony 2026-08-02)
+
+The full 18-circuit EBT v8 contract, deployed via the ceremony-fenced approach. The address below is the **rehearsal contract** from 2026-07-30; Sunday's T+0 ceremony re-runs the same deploy script against a fresh address, then rolls in the 10 deferred circuits on t+1..t+3.
+
+| Contract | Address | Deployed |
+|---|---|---|
+| **EBT v8 (ceremony-fenced deploy, 8 circuits)** | `10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f` | 2026-07-29 (rehearsal) |
+| **EBT v8 (full 18 circuits, same address post-vk-insert rollout)** | `10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f` | 2026-07-30 (all 10 inserts landed) |
+
+Rehearsal manifests (deploy tx + 10 vk-insert tx receipts) at [`ebt/ceremony-artifacts/`](./ebt/ceremony-artifacts/).
 
 ### Current production — v7.4 contract generation (2026-07-05) {#the-v74-contract-generation-2026-07-05}
 
@@ -117,10 +132,10 @@ A fresh two-wave audit reviewed the deployed v7.4.x stack, the Living Dividend, 
 |---|---|---|---|
 | LD-C-1 | Critical | LD prune/bump time gates trusted a prover-controlled `witness_blockTimeGte` → an attacker could forge elapsed time and prune an *active* member | ✅ Fixed in **LD v2.2.2** (stdlib `blockTimeGte`); staged in [settlement-api](https://github.com/PollPower/settlement-api) |
 | LD-H-3 | High | LD `bumpOnMint` was unauthenticated → salt-squat DoS of dividend distribution | ✅ Fixed in **LD v2.2.2** (keeper-signature gate + `setKeeperAuthority`) |
-| EBT-H-1 | High | `producerAddr` (the mint target) not bound in the HAT signed payload → mint-redirection risk (revises the earlier "C-1 fully fixed" note) | 📄 Open — bind `producerAddr` into the attestation payload |
+| EBT-H-1 | High | `producerAddr` (the mint target) not bound in the HAT signed payload → mint-redirection risk (revises the earlier "C-1 fully fixed" note) | ✅ **Fixed in EBT v8** — `settle` circuit now signs a 5-field HAT payload including `producerAddr` with domain separator `pollpower:ebt:v8:epoch1`. Verified present in the ceremony-deployed contract (2026-07-30). |
 | AUTH-H-1 | High | Pilot-mock council keys (same as H-1) | 📄 Open — Tangem ring ceremony |
 
-The LD fixes compile to a full ZK build and are mutation-tested; they await redeploy. EBT-H-1 and the medium/low findings (active-attestation check on `settle`, generic `execute()` hardening, rotation-runbook drift) are tracked for the pre-mainnet pass. Backend/app findings from the same audit are remediated in the [pollpower-v2-api](https://github.com/PollPower/pollpower-v2-api), [settlement-api](https://github.com/PollPower/settlement-api), and the consumer/producer apps.
+The LD fixes compile to a full ZK build and are mutation-tested; they await redeploy. **EBT-H-1 is fixed in the EBT v8 contract line** (deployed to Preview 2026-07-30). Remaining medium/low findings (active-attestation check on `settle`, generic `execute()` hardening, rotation-runbook drift) are tracked for the pre-mainnet pass. Backend/app findings from the same audit are remediated in the [pollpower-v2-api](https://github.com/PollPower/pollpower-v2-api), [settlement-api](https://github.com/PollPower/settlement-api), and the consumer/producer apps.
 
 ### Known limitations
 
@@ -170,6 +185,7 @@ v7's unshielded contract-mint model means a third party (the producer) provably 
 
 [Compact](https://docs.midnight.network/develop/tutorial/building) is the smart-contract language for Midnight, syntactically similar to TypeScript with ZK-aware semantics. The contracts are small enough to read in one sitting:
 
+- `ebt-v8.compact` — the next-generation settlement contract (18 circuits; TariffRegistry-mirrored `settle` + full governance/redemption/mirror surface). Deployed to Preview 2026-07-30 via ceremony-fenced approach; see [`ebt/V8-CEREMONY-FENCE.md`](./ebt/V8-CEREMONY-FENCE.md) for the deploy split rationale.
 - `ebt-v7.4.2.compact` — the current settlement contract (two signature verifications + BPS policy + unshielded mint + domain-bound dividend salt)
 - `living-dividend-v2.2.1.compact` — the current dividend pool (`accPerShare` accumulator + claim-on-demand + death filter)
 - `multisig-v7-ed25519.compact` — the current 3-of-5 council multi-sig
