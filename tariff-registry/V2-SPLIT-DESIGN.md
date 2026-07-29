@@ -1,6 +1,6 @@
 # TariffRegistry V2 – contract-split design (WI-15 candidate)
 
-Status: DESIGN PROPOSAL for parent review. Not for implementation until routed.
+Status: **IMPLEMENTED** — 5-sibling split deployed live on Midnight Preview on 2026-07-29 (`PollPower/contracts@main` PR #66 merged as `0627b55`). Preview addresses in the merge commit. Lane sibling shipped via aggressive shrink (registerLane-only) per `tariff-registry/V1.1-DEFERRED.md`; V1.1 will restore fenced circuits (retireLane, retuneClass, resolveLane*, mirror-writes, mirror ledger decls) once refTime headroom is available. This design doc remains authoritative for the split shape; refer to V1.1-DEFERRED.md for the deviation record and un-fence recipe.
 Kind: Split of monolithic `tariff-registry-v1.compact` into siblings.
 Authoring session: Solar Scout sub-agent (Joi persona)
 Date: 2026-07-27
