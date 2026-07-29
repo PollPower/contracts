@@ -342,10 +342,12 @@ On settle:
 4. Assert `writeActionSeq >= _registryActionLogHeadSeqMirror - CAL_MIRROR_STALE_TOLERANCE`.
    Fail with `LANE_MIRROR_STALE` otherwise.
 
-`CAL_MIRROR_STALE_TOLERANCE` becomes a new calibration placeholder
-(CAL-vNext-M1 — resolved by Garrett + supervising session before ceremony,
-not by the executing session). Recommended draft value: 4. That is, the
-keeper has room to submit up to 4 registry-event-lag before the settle
+`CAL_MIRROR_STALE_TOLERANCE` was a calibration placeholder
+(CAL-vNext-M1). **RESOLVED 2026-07-27 at 32 events** per
+[`WI-14-CEREMONY-SKELETON.md`](./WI-14-CEREMONY-SKELETON.md) §9 CAL-2 (raise
+to 64 before mainnet Phase 2). Alert threshold at 50% = 16 events
+triggers immediate ceremony supersession of the weekly cadence. The
+keeper has room to submit up to 32 registry-event-lag before the settle
 circuit refuses. Small enough that keeper down-time is surfaced fast; large
 enough to survive batch-window latency.
 
@@ -1239,11 +1241,11 @@ cannot be dispatched to `.compact` authoring until WI-13.2 lands on
 vNext dispatch → vNext merge → deploy ceremony. This corresponds to
 v2 brief §ESCALATION TRIGGERS #7.
 
-**E-2. CAL-vNext-M1 (mirror stale tolerance).** §3.3 introduces a new
-calibration placeholder for the `LANE_MIRROR_STALE` window. Draft value:
-4 (event-count window). Not resolved in this design pass; Garrett +
-supervising-session at dispatch. Corresponds to v2 brief §CALIBRATION
-PLACEHOLDERS.
+**E-2. CAL-vNext-M1 (mirror stale tolerance).** §3.3 introduced a
+calibration placeholder for the `LANE_MIRROR_STALE` window. **RESOLVED
+2026-07-27 at 32 events** (alert at 16 = 50% lag; raise to 64 before
+mainnet Phase 2) per [`WI-14-CEREMONY-SKELETON.md`](./WI-14-CEREMONY-SKELETON.md)
+§9 CAL-2. Corresponds to v2 brief §CALIBRATION PLACEHOLDERS.
 
 **E-3. CAL-vNext-M2 (escrow attestation stale tolerance).** §6.2 step 5
 introduces a similar tolerance for the escrow solvency attestation
