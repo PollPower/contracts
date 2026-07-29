@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-29T15:30:09.590Z",
+  "mode": "live",
+  "network": "preview",
+  "operation": "insertVerifierKey",
+  "contractAddress": "10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f",
+  "circuitId": "manualReissue",
+  "txHash": "00ebf0bf68a9a8682de02faf84ecd4b7fa053ddfc7be343b45e90f3f6b8ca9e18b",
+  "txStatus": "SucceedEntirely",
+  "durSeconds": 21.5,
+  "entry": "insert-vk-manualReissue.mjs"
+}

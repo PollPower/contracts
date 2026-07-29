@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-29T15:07:09.034Z",
+  "mode": "live",
+  "network": "preview",
+  "operation": "insertVerifierKey",
+  "contractAddress": "10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f",
+  "circuitId": "redeem",
+  "txHash": "00fedd6d36b311bfad11964b3989615864d7152fc4e03ced85503ee2288012b747",
+  "txStatus": "SucceedEntirely",
+  "durSeconds": 22.6,
+  "entry": "insert-vk-redeem.mjs"
+}
