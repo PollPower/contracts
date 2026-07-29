@@ -6,6 +6,8 @@ This repository contains the **canonical, on-chain source** for every contract P
 
 > **Milestone (2026-07-05):** the **Living Dividend** — the mechanism that pays every KYC-verified member a share of every energy sale — has now completed its **full economic loop live on Preview**: five members joined a brand-new (zero-state) dividend pool, an energy sale minted the dividend, and **all five members claimed and were paid on-chain**. This is the first end-to-end join → earn → claim → get-paid cycle for a group of members from a true zero start. See [the v7.4 stack](#the-v74-contract-generation-2026-07-05) below.
 
+> ⚠️ **EBT v8 Preview pilot posture (T+0 target: 2026-08-02).** The v8 contract lineage introduces `settle` against a mirrored TariffRegistry root plus a weekly owner-advance ceremony. Its Preview admin set is **1 real Tangem ring + 4 pilot-mock keys, all held by Garrett**. External attackers can derive the four pilot-mock private keys from public seeds (this is the tracked **H-1** gap). This posture is intentional for the Preview pilot to prove the ceremony loop; **mainnet Phase 2 is hard-gated on a full Tangem ring swap** (WI-14.2). See [`ebt/WI-14-CEREMONY-SKELETON.md`](./ebt/WI-14-CEREMONY-SKELETON.md) §9 CAL-1 and [`ebt/VNEXT-MIGRATION.md`](./ebt/VNEXT-MIGRATION.md) for the cutover plan.
+
 > **Released alongside the [PollPower White Paper v10.0](https://github.com/PollPower/whitepaper).**
 > The whitepaper describes the design rationale; this repository contains the code that enforces it.
 
