@@ -34,7 +34,11 @@ import {
   persistentHash as runtimePersistentHash,
   CompactTypeBytes,
   CompactTypeVector,
+  convertFieldToBytes,
 } from '@midnight-ntwrk/compact-runtime';
+import * as ed from '@noble/ed25519';
+import { sha512 } from '@noble/hashes/sha2.js';
+import { loadSeatSignatures, type ApprovalBundle, PILOT_THRESHOLD } from './seat-signatures.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -48,11 +52,18 @@ const CLASS_ENTRY_PATH_DEPTH = 16;
 const CHARTER_DEPTH = 12;
 const CHARTER_LEAF_TAG = 'pp:fed:charter:leaf';
 const CHARTER_NODE_TAG = 'pp:fed:charter:node';
+const CHARTER_LEAF_PAD_TAG = 'pp:fed:charter:leaf:pad';
+const MSFED_ADVANCE_EPOCH_DOMAIN = 'pp:tariff:v1:advanceEpoch';
+const Bytes32 = new CompactTypeBytes(32);
+const Vec6Bytes32 = new CompactTypeVector(6, Bytes32);
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const ROTATE_AUDIT_WRITER = process.argv.includes('--rotate-audit-writer');
 const FEDERATION_AUTHORITY_PUBKEY_ARG = readFlagValue('--federation-authority-pubkey');
 const REF_RATE_FIAT_PER_KWH_ARG = readFlagValue('--ref-rate-fiat-per-kwh');
+const SEAT_SIGNATURES_PATH = readFlagValue('--seat-signatures');
+
+(ed as any).hashes.sha512 = sha512;
 
 // ---------- helpers ----------------------------------------------------------
 function timestamp(): string {
@@ -61,6 +72,20 @@ function timestamp(): string {
 
 function bytesToHex(b: Uint8Array | Buffer): string {
   return Buffer.from(b).toString('hex');
+}
+
+function toHex(b: Uint8Array): string {
+  return Buffer.from(b).toString('hex');
+}
+
+function sha256Bytes(data: Uint8Array | Buffer | string): Uint8Array {
+  const h = createHash('sha256');
+  if (typeof data === 'string') {
+    h.update(data, 'utf8');
+  } else {
+    h.update(data);
+  }
+  return new Uint8Array(h.digest());
 }
 
 function readFlagValue(flag: string): string | undefined {
@@ -115,10 +140,27 @@ interface DeployStepResult {
 
 interface LiveRuntimeContext {
   providers: unknown;
+  deployUtils: any;
 }
 
+type CharterProof = {
+  siblings: Uint8Array[];
+  indices: boolean[];
+};
+
+type PilotSeat = {
+  seed: string;
+  sk: Uint8Array;
+  pk: Uint8Array;
+  pkHex: string;
+};
+
+type LiveWitnessState = {
+  approvalBundles: Map<string, ApprovalBundle>;
+  charterProofsByNodeId: Map<string, CharterProof>;
+};
+
 let liveRuntimeContextPromise: Promise<LiveRuntimeContext> | null = null;
-const compiledSiblingCache = new Map<string, Promise<unknown>>();
 
 const KNOWN_WITNESS_NAMES = [
   'signature_valid',
@@ -194,7 +236,7 @@ function verifySignatureRawEd25519(
   }
 }
 
-function buildWitnessProviders(): WitnessMap {
+function buildWitnessProviders(state: LiveWitnessState): WitnessMap {
   return {
     signature_valid(
       context: { privateState: unknown },
@@ -206,24 +248,51 @@ function buildWitnessProviders(): WitnessMap {
     },
     multisig_signature_valid(
       context: { privateState: unknown },
-      _payload: Uint8Array,
-      _authorityHash: Uint8Array,
+      payload: Uint8Array,
+      authorityHash: Uint8Array,
     ): [unknown, boolean] {
-      // Fail closed by default in this deploy harness. Live ceremonies that
-      // require federation approvals must inject signatures in a dedicated flow.
-      return [context.privateState, false];
+      if (payload.length !== 32 || authorityHash.length !== 32) {
+        return [context.privateState, false];
+      }
+      const bundle = state.approvalBundles.get(keyForBundle(payload, authorityHash));
+      if (!bundle) return [context.privateState, false];
+      if (bundle.seatPubkeys.length !== bundle.signatures.length) return [context.privateState, false];
+      if (bundle.threshold < 1 || bundle.threshold > bundle.seatPubkeys.length) {
+        return [context.privateState, false];
+      }
+      const computedAuthority = federationAuthorityFromSeats(bundle.seatPubkeys);
+      if (!bytesEq(computedAuthority, authorityHash)) return [context.privateState, false];
+
+      let valid = 0;
+      for (let i = 0; i < bundle.seatPubkeys.length; i++) {
+        const pk = bundle.seatPubkeys[i];
+        const sig = bundle.signatures[i];
+        if (pk.length !== 32 || sig.length !== 64) continue;
+        let ok = false;
+        try {
+          ok = ed.verify(sig, payload, pk);
+        } catch {
+          ok = false;
+        }
+        if (ok) valid += 1;
+      }
+      return [context.privateState, valid >= bundle.threshold && valid >= PILOT_THRESHOLD];
     },
     charter_membership_proof(
       context: { privateState: unknown },
-      _nodeId: Uint8Array,
+      nodeId: Uint8Array,
     ): [unknown, { siblings: Uint8Array[]; indices: boolean[] }] {
-      return [
-        context.privateState,
-        {
-          siblings: Array.from({ length: CHARTER_DEPTH }, () => new Uint8Array(32)),
-          indices: Array.from({ length: CHARTER_DEPTH }, () => false),
-        },
-      ];
+      const proof = state.charterProofsByNodeId.get(toHex(nodeId));
+      if (!proof) {
+        return [
+          context.privateState,
+          {
+            siblings: Array.from({ length: CHARTER_DEPTH }, () => new Uint8Array(32)),
+            indices: Array.from({ length: CHARTER_DEPTH }, () => false),
+          },
+        ];
+      }
+      return [context.privateState, proof];
     },
     witness_divmod(
       context: { privateState: unknown },
@@ -281,8 +350,11 @@ function witnessPathsForSibling(siblingName: string): { jsPath: string; dtsPath:
   };
 }
 
-function pickWitnessesForSibling(witnessNames: WitnessName[]): Record<string, WitnessProvider> {
-  const allWitnesses = buildWitnessProviders();
+function pickWitnessesForSibling(
+  witnessNames: WitnessName[],
+  witnessState: LiveWitnessState,
+): Record<string, WitnessProvider> {
+  const allWitnesses = buildWitnessProviders(witnessState);
   const selected: Record<string, WitnessProvider> = {};
   for (const witnessName of witnessNames) {
     const witness = allWitnesses[witnessName];
@@ -294,31 +366,27 @@ function pickWitnessesForSibling(witnessNames: WitnessName[]): Record<string, Wi
   return selected;
 }
 
-async function loadCompiledSiblingContract(siblingName: string): Promise<unknown> {
-  let cached = compiledSiblingCache.get(siblingName);
-  if (!cached) {
-    cached = (async () => {
-      const { jsPath, dtsPath, assetsPath } = witnessPathsForSibling(siblingName);
-      if (!fs.existsSync(jsPath)) {
-        fatalCli(`missing compiled sibling JS artifact: ${jsPath}`);
-      }
-      if (!fs.existsSync(dtsPath)) {
-        fatalCli(`missing compiled sibling d.ts artifact: ${dtsPath}`);
-      }
-
-      const dtsSource = fs.readFileSync(dtsPath, 'utf8');
-      const witnessNames = parseWitnessNamesFromSiblingDts(dtsSource);
-      const witnesses = pickWitnessesForSibling(witnessNames);
-      const buildModule = await import(pathToFileURL(jsPath).href);
-      const { CompiledContract } = await import('@midnight-ntwrk/compact-js');
-      return (CompiledContract.make as any)(siblingName, buildModule.Contract).pipe(
-        (CompiledContract.withWitnesses as any)(witnesses),
-        (CompiledContract.withCompiledFileAssets as any)(assetsPath),
-      );
-    })();
-    compiledSiblingCache.set(siblingName, cached);
+async function loadCompiledSiblingContract(
+  siblingName: string,
+  witnessState: LiveWitnessState,
+): Promise<unknown> {
+  const { jsPath, dtsPath, assetsPath } = witnessPathsForSibling(siblingName);
+  if (!fs.existsSync(jsPath)) {
+    fatalCli(`missing compiled sibling JS artifact: ${jsPath}`);
   }
-  return cached;
+  if (!fs.existsSync(dtsPath)) {
+    fatalCli(`missing compiled sibling d.ts artifact: ${dtsPath}`);
+  }
+
+  const dtsSource = fs.readFileSync(dtsPath, 'utf8');
+  const witnessNames = parseWitnessNamesFromSiblingDts(dtsSource);
+  const witnesses = pickWitnessesForSibling(witnessNames, witnessState);
+  const buildModule = await import(pathToFileURL(jsPath).href);
+  const { CompiledContract } = await import('@midnight-ntwrk/compact-js');
+  return (CompiledContract.make as any)(siblingName, buildModule.Contract).pipe(
+    (CompiledContract.withWitnesses as any)(witnesses),
+    (CompiledContract.withCompiledFileAssets as any)(assetsPath),
+  );
 }
 
 // Preview-network deploy wrapper. In non-dry-run mode this loads
@@ -328,6 +396,7 @@ async function loadCompiledSiblingContract(siblingName: string): Promise<unknown
 async function deployOrDryRun(
   siblingName: string,
   constructorArgs: unknown[],
+  witnessState: LiveWitnessState,
 ): Promise<{ address: string; txHash: string }> {
   if (DRY_RUN) {
     const h = createHash('sha256');
@@ -348,108 +417,241 @@ async function deployOrDryRun(
   const { setNetworkId } = await import('@midnight-ntwrk/midnight-js-network-id');
   setNetworkId('preview');
   const runtime = await getLiveRuntimeContext();
+  const siblingDir = path.join(BUILD_ROOT, siblingName);
+  const providers = runtime.deployUtils.withZkConfigDir(runtime.providers as any, siblingDir);
 
-  // Wait for tx confirmation between steps (per DoD).
-  // deployContract returns a deployed-contract handle whose finalizedDeployTxData
-  // resolves once the tx is finalized in the block.
+  // deployContract returns a handle with `deployTxData` (already finalized) and
+  // `callTx`/`circuitMaintenanceTx`/`contractMaintenanceTx` interfaces.
   // midnight-js-contracts@4.0.2:
-  // deployContract(providers, { compiledContract, ...options })
-  const compiledContract = await loadCompiledSiblingContract(siblingName);
-  const deployedContract = await deployContract(runtime.providers as any, {
+  //   deployContract(providers, { compiledContract, ...options })
+  //   -> { deployTxData: FinalizedDeployTxData<C>, callTx, circuitMaintenanceTx, contractMaintenanceTx }
+  // where deployTxData.public: FinalizedTxData (has txId, txHash).
+  const compiledContract = await loadCompiledSiblingContract(siblingName, witnessState);
+  const deployedContract = await deployContract(providers as any, {
     compiledContract: compiledContract as any,
     privateStateId: `wi15.1-${siblingName}-state`,
     initialPrivateState: {} as any,
     args: constructorArgs,
   } as any);
-  const finalized = await (deployedContract as any).finalizedDeployTxData;
+  const deployTxData = (deployedContract as any).deployTxData;
   return {
-    address: (deployedContract as any).deployTxData.public.contractAddress,
-    txHash: finalized.txId ?? 'unknown',
+    address: deployTxData.public.contractAddress,
+    txHash: deployTxData?.public?.txId ?? deployTxData?.public?.txHash ?? 'unknown',
   };
 }
 
 function pad32(tag: string): Uint8Array {
-  const bytes = Buffer.from(tag, 'utf8');
-  if (bytes.length > 32) {
-    throw new Error(`[wi15.1] tag too long for pad32: ${tag}`);
-  }
   const out = new Uint8Array(32);
-  out.set(bytes);
+  const b = Buffer.from(tag, 'utf8');
+  if (b.length > 32) {
+    throw new Error(`pad32: tag too long (${b.length}): ${tag}`);
+  }
+  out.set(b, 0);
   return out;
 }
 
-function persistentHashParts(parts: Uint8Array[]): Uint8Array {
+function u64ToBytes32(u: bigint | number): Uint8Array {
+  const v = BigInt(u);
+  if (v < 0n) {
+    throw new Error(`u64ToBytes32: negative input ${v}`);
+  }
+  const buf = Buffer.alloc(32);
+  buf.writeBigUInt64BE(v & 0xffff_ffff_ffff_ffffn, 24);
+  return new Uint8Array(buf);
+}
+
+function bytesEq(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function cmpBytesLex(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, p) => sum + p.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
+}
+
+function persistentHash(parts: Uint8Array[]): Uint8Array {
   for (const p of parts) {
     if (p.length !== 32) {
-      throw new Error(`[wi15.1] persistentHash part must be 32 bytes, got ${p.length}`);
+      throw new Error(`persistentHash: expected 32-byte part, got ${p.length}`);
     }
   }
-  return runtimePersistentHash(
-    new CompactTypeVector(parts.length, new CompactTypeBytes(32)),
-    parts,
-  );
+  const h = createHash('sha256');
+  for (const p of parts) {
+    h.update(p);
+  }
+  return new Uint8Array(h.digest());
 }
 
-function computeEmptyCharterTreeLevels(): Uint8Array[] {
-  // tariff-governance.compact:
-  //   leaf = persistentHash([pad(32, "pp:fed:charter:leaf"), disclose(nodeId)])
-  //   pair = persistentHash([pad(32, "pp:fed:charter:node"), left, right])
-  // Empty charter tree convention here uses nodeId=0x00..00 as the empty leaf payload.
-  const levels: Uint8Array[] = [];
-  let current = persistentHashParts([
-    pad32(CHARTER_LEAF_TAG),
-    new Uint8Array(32),
-  ]);
-  levels.push(current);
-  const pairDomain = pad32(CHARTER_NODE_TAG);
-  for (let i = 0; i < CHARTER_DEPTH; i++) {
-    current = persistentHashParts([pairDomain, current, current]);
-    levels.push(current);
-  }
-  return levels;
+function deriveSeat(seed: string): PilotSeat {
+  const sk = sha256Bytes(seed);
+  const pk = ed.getPublicKey(sk);
+  return { seed, sk, pk, pkHex: toHex(pk) };
 }
 
-function computeEmptyCharterTreeRoot(): Uint8Array {
-  const levels = computeEmptyCharterTreeLevels();
-  const root = levels[CHARTER_DEPTH];
-  if (root.length !== 32) {
-    throw new Error(`[wi15.1] empty charter root length mismatch: ${root.length}`);
-  }
-  return root;
+function buildPilotSeats(): PilotSeat[] {
+  return [0, 1, 2, 3, 4].map((i) => deriveSeat(`pp-tariff-pilot-seat-${i}`));
 }
 
-function writeEmptyCharterRootVerificationArtifact(): void {
-  const levels1 = computeEmptyCharterTreeLevels();
-  const levels2 = computeEmptyCharterTreeLevels();
-  const root1 = levels1[CHARTER_DEPTH];
-  const root2 = levels2[CHARTER_DEPTH];
-  const deterministic = Buffer.from(root1).equals(Buffer.from(root2));
-  const nonZero = !Buffer.from(root1).equals(Buffer.alloc(32));
-  const lines: string[] = [
-    '# Empty Charter Root Verification',
-    `generatedAt=${new Date().toISOString()}`,
-    `CHARTER_DEPTH=${CHARTER_DEPTH}`,
-    `leafDomain=${CHARTER_LEAF_TAG}`,
-    `nodeDomain=${CHARTER_NODE_TAG}`,
-    '',
-  ];
-  for (let i = 0; i < levels1.length; i++) {
-    lines.push(`level[${i}]=${bytesToHex(levels1[i])}`);
+function federationAuthorityFromSeats(seatPubkeys: Uint8Array[]): Uint8Array {
+  const sorted = [...seatPubkeys].sort(cmpBytesLex);
+  const cat = concatBytes(sorted);
+  return sha256Bytes(cat);
+}
+
+function buildCharterTree(nodeIds: Uint8Array[]) {
+  if (nodeIds.length > 2 ** CHARTER_DEPTH) {
+    throw new Error('charter tree: too many nodes');
   }
-  lines.push('');
-  lines.push(`root=${bytesToHex(root1)}`);
-  lines.push(`deterministic=${deterministic}`);
-  lines.push(`nonZero=${nonZero}`);
-  if (!deterministic) {
-    throw new Error('[wi15.1] empty charter root determinism check failed');
+  const leafHash = (nodeId: Uint8Array): Uint8Array => persistentHash([pad32(CHARTER_LEAF_TAG), nodeId]);
+  const padHash = sha256Bytes(pad32(CHARTER_LEAF_PAD_TAG));
+  const pairHash = (left: Uint8Array, right: Uint8Array): Uint8Array =>
+    persistentHash([pad32(CHARTER_NODE_TAG), left, right]);
+
+  const leaves: Uint8Array[] = nodeIds.map(leafHash);
+  while (leaves.length < 2 ** CHARTER_DEPTH) leaves.push(padHash);
+
+  const levels: Uint8Array[][] = [leaves];
+  for (let d = 0; d < CHARTER_DEPTH; d++) {
+    const cur = levels[d];
+    const nxt: Uint8Array[] = [];
+    for (let i = 0; i < cur.length; i += 2) {
+      nxt.push(pairHash(cur[i], cur[i + 1]));
+    }
+    levels.push(nxt);
   }
-  if (!nonZero) {
-    throw new Error('[wi15.1] empty charter root must not be all zeros');
+  const root = levels[CHARTER_DEPTH][0];
+
+  const proofsByNodeId = new Map<string, CharterProof>();
+  for (let i = 0; i < nodeIds.length; i++) {
+    const siblings: Uint8Array[] = [];
+    const indices: boolean[] = [];
+    let idx = i;
+    for (let d = 0; d < CHARTER_DEPTH; d++) {
+      const sibIdx = idx ^ 1;
+      siblings.push(levels[d][sibIdx]);
+      indices.push((idx & 1) === 1);
+      idx >>= 1;
+    }
+    proofsByNodeId.set(toHex(nodeIds[i]), { siblings, indices });
   }
-  fs.writeFileSync(
-    path.join(ARTIFACTS_DIR, 'empty-charter-root-verification.txt'),
-    lines.join('\n') + '\n',
-  );
+  return { root, proofsByNodeId };
+}
+
+function contractAddressArg(addressHex: string): { bytes: Uint8Array } {
+  const hex = addressHex.startsWith('0x') ? addressHex.slice(2) : addressHex;
+  const bytes = new Uint8Array(Buffer.from(hex, 'hex'));
+  if (bytes.length !== 32) {
+    throw new Error(
+      `[wi15.1] contract address must decode to 32 bytes, got ${bytes.length} for ${addressHex}`,
+    );
+  }
+  return { bytes };
+}
+
+function asBytes32FromHex(addressHex: string): Uint8Array {
+  const hex = addressHex.startsWith('0x') ? addressHex.slice(2) : addressHex;
+  const bytes = new Uint8Array(Buffer.from(hex, 'hex'));
+  if (bytes.length === 32) {
+    return bytes;
+  }
+  if (!DRY_RUN) {
+    throw new Error(`[wi15.1] expected 32-byte contract address, got ${bytes.length} bytes`);
+  }
+  return sha256Bytes(bytes);
+}
+
+function keyForBundle(payload: Uint8Array, authorityHash: Uint8Array): string {
+  return `${toHex(payload)}:${toHex(authorityHash)}`;
+}
+
+// -----------------------------------------------------------------------------
+// msfed ActionHash byte-encoding helpers (WI-15.1-C2 STOP-3 fix, 2026-07-29).
+//
+// These MUST byte-match what the compact circuit produces at runtime. The
+// canonical spec lives at tariff-governance.compact lines 637-644:
+//
+//   const currentEpochBytes = (currentE as Field) as Bytes<32>;
+//   const newEpochBytes     = (dNew as Field) as Bytes<32>;
+//   const newRateBytes      = (disclose(newRefRateFiatPerKwh) as Field) as Bytes<32>;
+//   const actionHash = persistentHash<Vector<6, Bytes<32>>>([
+//     pad(32, "pp:tariff:v1:advanceEpoch"),
+//     selfBytes(),
+//     currentEpochBytes,
+//     newEpochBytes,
+//     newRateBytes,
+//     disclose(newGovernanceRoot),
+//   ]);
+//
+// Encoding truth:
+//   - `pad(32, "...")` treats the tag as ASCII bytes, LSB-first in the 32-byte
+//     slot (i.e. bytes[0] = first char of tag, high bytes zero).
+//   - `(x as Field) as Bytes<32>` is precisely what @midnight-ntwrk/compact-
+//     runtime's `convertFieldToBytes(32, value, label)` produces: little-endian
+//     with bytes[0] = LSB, high bytes zero.
+//
+// These are byte-for-byte equivalent to the canonical exports at
+// ~/contracts/multisig/tooling/federated-v1-actionhash.ts padToBytes32 and
+// uintToBytes32. Inlined here (rather than dynamically loaded) so the deploy
+// script cannot silently drift from a broken shadow file. If future contracts
+// change the encoding, update BOTH this block AND the canonical .ts exports
+// in lockstep and re-run the actionhash oracle check.
+//
+// DO NOT reuse the local pad32/u64ToBytes32 above (lines ~447 and ~457) for
+// msfed hashing — those use UTF-8 pad and BIG-endian uint layout for legacy
+// charter-tree hashing, which is a separate scheme that is NOT what the
+// compact circuit expects for msfed action hashes.
+// -----------------------------------------------------------------------------
+function msfedPadToBytes32(asciiTag: string): Uint8Array {
+  const bytes = new Uint8Array(32);
+  const ascii = Buffer.from(asciiTag, 'ascii');
+  if (ascii.length > 32) {
+    throw new Error(`msfedPadToBytes32: tag too long (>32 bytes): ${asciiTag}`);
+  }
+  bytes.set(ascii, 0);
+  return bytes;
+}
+
+function msfedUintToBytes32(value: bigint, label: string): Uint8Array {
+  return convertFieldToBytes(32, value, label);
+}
+
+function computeAdvanceEpochActionHash(
+  selfAddress: Uint8Array,
+  currentEpoch: bigint,
+  newEpoch: bigint,
+  newRefRateFiatPerKwh: bigint,
+  newGovernanceRoot: Uint8Array,
+): Uint8Array {
+  const opSel = msfedPadToBytes32(MSFED_ADVANCE_EPOCH_DOMAIN);
+  const currentEpochBytes = msfedUintToBytes32(currentEpoch, 'currentEpoch');
+  const newEpochBytes = msfedUintToBytes32(newEpoch, 'newEpoch');
+  const newRateBytes = msfedUintToBytes32(newRefRateFiatPerKwh, 'newRefRate');
+  return new Uint8Array(runtimePersistentHash(Vec6Bytes32, [
+    opSel,
+    selfAddress,
+    currentEpochBytes,
+    newEpochBytes,
+    newRateBytes,
+    newGovernanceRoot,
+  ]));
 }
 
 async function loadSettlementDeployUtils(): Promise<any> {
@@ -492,7 +694,10 @@ async function getLiveRuntimeContext(): Promise<LiveRuntimeContext> {
     const deployUtils = await loadSettlementDeployUtils();
     const walletCtx = await deployUtils.createWallet(parsed.seed);
     const providers = await deployUtils.createProviders(walletCtx, BUILD_ROOT);
-    return { providers };
+    if (typeof deployUtils.withZkConfigDir !== 'function') {
+      fatalCli('settlement deploy utils is missing withZkConfigDir(providers, zkConfigDir)');
+    }
+    return { providers, deployUtils };
   })();
   return liveRuntimeContextPromise;
 }
@@ -502,6 +707,7 @@ async function callCircuitOrDryRun(
   address: string,
   circuitName: string,
   args: unknown[],
+  witnessState: LiveWitnessState,
 ): Promise<{ txHash: string }> {
   if (DRY_RUN) {
     const h = createHash('sha256').update(siblingName).update(circuitName);
@@ -513,8 +719,10 @@ async function callCircuitOrDryRun(
   setNetworkId('preview');
 
   const runtime = await getLiveRuntimeContext();
-  const compiled = await loadCompiledSiblingContract(siblingName);
-  const deployed = await findDeployedContract(runtime.providers as any, {
+  const siblingDir = path.join(BUILD_ROOT, siblingName);
+  const providers = runtime.deployUtils.withZkConfigDir(runtime.providers as any, siblingDir);
+  const compiled = await loadCompiledSiblingContract(siblingName, witnessState);
+  const deployed = await findDeployedContract(providers as any, {
     compiledContract: compiled as any,
     contractAddress: address as any,
   } as any);
@@ -536,11 +744,20 @@ async function main(): Promise<void> {
   if (!fs.existsSync(ARTIFACTS_DIR)) {
     fs.mkdirSync(ARTIFACTS_DIR, { recursive: true });
   }
-  writeEmptyCharterRootVerificationArtifact();
 
   const results: DeployStepResult[] = [];
   const stamp = timestamp();
   const manifestPath = path.join(ARTIFACTS_DIR, `wi15.1-preview-${stamp}.json`);
+  const pilotSeats = buildPilotSeats();
+  const seatPubkeys = pilotSeats.map((s) => s.pk);
+  const seatPubkeysHex = pilotSeats.map((s) => s.pkHex);
+  const derivedFederationAuthority = federationAuthorityFromSeats(seatPubkeys);
+  const charterNodeId = sha256Bytes('pp-preview-node-0');
+  const charterTree = buildCharterTree([charterNodeId]);
+  const witnessState: LiveWitnessState = {
+    approvalBundles: new Map<string, ApprovalBundle>(),
+    charterProofsByNodeId: charterTree.proofsByNodeId,
+  };
 
   // ------------------- STEP 1: Generate audit-writer keypair -----------------
   const auditWriterInfo = await runStep(1, 'Generate deploy-scoped auditWriter keypair', async () => {
@@ -559,6 +776,7 @@ async function main(): Promise<void> {
     const { address, txHash } = await deployOrDryRun(
       'audit',
       [auditWriterInfo.pubBytes],
+      witnessState,
     );
     results.push({ step: 2, name: 'audit deploy', ok: true, address, txHash });
     return address;
@@ -570,16 +788,20 @@ async function main(): Promise<void> {
   //   initialRefRateFiatPerKwh, initialAuditWriterAuthority.
   const initialFederationAuthority = (() => {
     if (FEDERATION_AUTHORITY_PUBKEY_ARG !== undefined) {
-      return parseFederationAuthorityPubkeyHex(FEDERATION_AUTHORITY_PUBKEY_ARG);
+      const parsed = parseFederationAuthorityPubkeyHex(FEDERATION_AUTHORITY_PUBKEY_ARG);
+      if (!bytesEq(parsed, derivedFederationAuthority)) {
+        fatalCli(
+          `--federation-authority-pubkey mismatch: expected ${toHex(derivedFederationAuthority)}, got ${toHex(parsed)}`,
+        );
+      }
+      return parsed;
     }
-    if (DRY_RUN) {
-      return randomBytes(32);
+    if (!DRY_RUN) {
+      fatalCli('missing required --federation-authority-pubkey <hex> in live mode');
     }
-    fatalCli('missing required --federation-authority-pubkey <hex> in live mode');
+    return derivedFederationAuthority;
   })();
-  // Governance root must be deterministic at genesis: the empty charter Merkle
-  // tree root (depth 12, fixed domains) for identical dry-run/live behavior.
-  const initialGovernanceRoot = computeEmptyCharterTreeRoot();
+  const initialGovernanceRoot = charterTree.root;
   const initialRefRateFiatPerKwh = (() => {
     if (REF_RATE_FIAT_PER_KWH_ARG !== undefined) {
       return parseRefRateFiatPerKwh(REF_RATE_FIAT_PER_KWH_ARG);
@@ -594,12 +816,13 @@ async function main(): Promise<void> {
     const { address, txHash } = await deployOrDryRun(
       'governance',
       [
-        auditContractAddress,
+        DRY_RUN ? auditContractAddress : contractAddressArg(auditContractAddress),
         initialFederationAuthority,
         initialGovernanceRoot,
-        initialRefRateFiatPerKwh.toString(),
+        DRY_RUN ? initialRefRateFiatPerKwh.toString() : initialRefRateFiatPerKwh,
         auditWriterInfo.pubBytes,
       ],
+      witnessState,
     );
     results.push({ step: 3, name: 'governance deploy', ok: true, address, txHash });
     return address;
@@ -615,11 +838,12 @@ async function main(): Promise<void> {
     const { address, txHash } = await deployOrDryRun(
       'schedule',
       [
-        auditContractAddress,
-        governanceContractAddress,
+        DRY_RUN ? auditContractAddress : contractAddressArg(auditContractAddress),
+        DRY_RUN ? governanceContractAddress : contractAddressArg(governanceContractAddress),
         initialFederationAuthority,
         auditWriterInfo.pubBytes,
       ],
+      witnessState,
     );
     results.push({ step: 4, name: 'schedule deploy', ok: true, address, txHash });
     return address;
@@ -629,12 +853,13 @@ async function main(): Promise<void> {
     const { address, txHash } = await deployOrDryRun(
       'lane',
       [
-        auditContractAddress,
-        governanceContractAddress,
-        scheduleContractAddress,
+        DRY_RUN ? auditContractAddress : contractAddressArg(auditContractAddress),
+        DRY_RUN ? governanceContractAddress : contractAddressArg(governanceContractAddress),
+        DRY_RUN ? scheduleContractAddress : contractAddressArg(scheduleContractAddress),
         initialFederationAuthority,
         auditWriterInfo.pubBytes,
       ],
+      witnessState,
     );
     results.push({ step: 4, name: 'lane deploy', ok: true, address, txHash });
     return address;
@@ -644,13 +869,14 @@ async function main(): Promise<void> {
     const { address, txHash } = await deployOrDryRun(
       'views',
       [
-        auditContractAddress,
-        governanceContractAddress,
-        scheduleContractAddress,
-        laneContractAddress,
+        DRY_RUN ? auditContractAddress : contractAddressArg(auditContractAddress),
+        DRY_RUN ? governanceContractAddress : contractAddressArg(governanceContractAddress),
+        DRY_RUN ? scheduleContractAddress : contractAddressArg(scheduleContractAddress),
+        DRY_RUN ? laneContractAddress : contractAddressArg(laneContractAddress),
         initialFederationAuthority,
         auditWriterInfo.pubBytes,
       ],
+      witnessState,
     );
     results.push({ step: 4, name: 'views deploy', ok: true, address, txHash });
     return address;
@@ -659,20 +885,66 @@ async function main(): Promise<void> {
   // ------------------- STEP 5: Bootstrap AuditLog shards ----------------------
   // WI-13.3 policy K=8 shards: (8), (16), (24). Terminal shard sets
   // _bootstrapComplete=true.
-  for (const shardEnd of [8, 16, 24]) {
-    await runStep(5, `bootstrapActionLog(${shardEnd})`, async () => {
-      const { txHash } = await callCircuitOrDryRun('audit', auditContractAddress, 'bootstrapActionLog', [shardEnd]);
-      results.push({ step: 5, name: `bootstrapActionLog(${shardEnd})`, ok: true, txHash });
+  for (const shardEnd of [8n, 16n, 24n]) {
+    const shardEndNumber = Number(shardEnd);
+    await runStep(5, `bootstrapActionLog(${shardEndNumber})`, async () => {
+      const { txHash } = await callCircuitOrDryRun(
+        'audit',
+        auditContractAddress,
+        'bootstrapActionLog',
+        [DRY_RUN ? shardEndNumber : shardEnd],
+        witnessState,
+      );
+      results.push({ step: 5, name: `bootstrapActionLog(${shardEndNumber})`, ok: true, txHash });
     });
   }
 
   // ------------------- STEP 6: Seed Governance epoch -------------------------
-  // advanceEpoch(1, newRefRate, newGovRoot, currentTime, ...federationApproval)
-  // Federation approval bundle is out of scope for this script's dry-run path;
-  // in the live path this requires an msfed bundle for
-  // "pp:tariff:v1:advanceEpoch". See settlement-api/scripts/advance-epoch.ts.
+  let advanceEpochActionHashHex = '';
   await runStep(6, 'Governance advanceEpoch(1, ...)', async () => {
-    const { txHash } = await callCircuitOrDryRun('governance', governanceContractAddress, 'advanceEpoch', [1]);
+    const governanceSelfBytes = asBytes32FromHex(governanceContractAddress);
+    const currentEpoch = 0n;
+    const newEpoch = 1n;
+    const newRefRate = initialRefRateFiatPerKwh;
+    const newGovRoot = initialGovernanceRoot;
+    const currentTime = BigInt(Math.floor(Date.now() / 1000));
+
+    // Single code path for dry-run and live: the inline msfed helpers above
+    // are byte-identical to the compact circuit's encoding, so no branching is
+    // needed. Previously we split DRY_RUN → local pad32/u64ToBytes32 and live
+    // → dynamic-loaded shadow file, but both branches drifted from the
+    // canonical convertFieldToBytes/ASCII-pad spec (WI-15.1-C2 STOP-3, 07-29).
+    const advanceEpochActionHash = computeAdvanceEpochActionHash(
+      governanceSelfBytes,
+      currentEpoch,
+      newEpoch,
+      newRefRate,
+      newGovRoot,
+    );
+    advanceEpochActionHashHex = toHex(advanceEpochActionHash);
+    const advanceEpochBundle: ApprovalBundle = SEAT_SIGNATURES_PATH
+      ? loadSeatSignatures(SEAT_SIGNATURES_PATH)
+      : {
+          seatPubkeys,
+          signatures: await Promise.all(
+            pilotSeats.map((s) => ed.signAsync(advanceEpochActionHash, s.sk)),
+          ),
+          threshold: PILOT_THRESHOLD,
+        };
+    witnessState.approvalBundles.set(
+      keyForBundle(advanceEpochActionHash, initialFederationAuthority),
+      advanceEpochBundle,
+    );
+
+    const { txHash } = await callCircuitOrDryRun(
+      'governance',
+      governanceContractAddress,
+      'advanceEpoch',
+      DRY_RUN
+        ? [Number(newEpoch), Number(newRefRate), newGovRoot, Number(currentTime)]
+        : [newEpoch, newRefRate, newGovRoot, currentTime],
+      witnessState,
+    );
     results.push({ step: 6, name: 'advanceEpoch(1)', ok: true, txHash });
   });
 
@@ -687,7 +959,9 @@ async function main(): Promise<void> {
         'audit',
         auditContractAddress,
         'rotateAuditWriterAuthority',
+        // TODO(step-8): forward-port from V1's rotation ceremony.
         [rotatedAuditWriterPubHex],
+        witnessState,
       );
       results.push({ step: 8, name: 'rotateAuditWriterAuthority', ok: true, txHash });
     });
@@ -713,7 +987,10 @@ async function main(): Promise<void> {
     },
     governanceInit: {
       federationAuthorityHex: bytesToHex(initialFederationAuthority),
+      seatPubkeysHex,
+      charterNodeIdHex: toHex(charterNodeId),
       governanceRootHex: bytesToHex(initialGovernanceRoot),
+      advanceEpochActionHashHex,
       refRateFiatPerKwh: initialRefRateFiatPerKwh.toString(),
     },
     stepResults: results,
