@@ -28,7 +28,7 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, randomBytes, verify } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   persistentHash as runtimePersistentHash,
@@ -41,6 +41,10 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const BUILD_ROOT = path.join(REPO_ROOT, 'build');
 const ARTIFACTS_DIR = path.join(__dirname, 'artifacts');
 const DEPLOYMENT_JSON_PATH = path.join(REPO_ROOT, 'deployment.json');
+const ACTION_LOG_PATH_DEPTH = 24;
+const SCHEDULE_PATH_DEPTH = 20;
+const LANE_PATH_DEPTH = 16;
+const CLASS_ENTRY_PATH_DEPTH = 16;
 const CHARTER_DEPTH = 12;
 const CHARTER_LEAF_TAG = 'pp:fed:charter:leaf';
 const CHARTER_NODE_TAG = 'pp:fed:charter:node';
@@ -114,6 +118,22 @@ interface LiveRuntimeContext {
 }
 
 let liveRuntimeContextPromise: Promise<LiveRuntimeContext> | null = null;
+const compiledSiblingCache = new Map<string, Promise<unknown>>();
+
+const KNOWN_WITNESS_NAMES = [
+  'signature_valid',
+  'multisig_signature_valid',
+  'charter_membership_proof',
+  'witness_divmod',
+  'action_log_path_bits',
+  'schedule_path_bits',
+  'lane_path_bits',
+  'class_entry_path_bits',
+] as const;
+
+type WitnessName = (typeof KNOWN_WITNESS_NAMES)[number];
+type WitnessProvider = (...args: any[]) => [unknown, unknown];
+type WitnessMap = Partial<Record<WitnessName, WitnessProvider>>;
 
 // A recoverable step wrapper that logs the failing step and returns non-zero
 // on any failure (per DoD: "On failure, log the failing step and exit non-zero").
@@ -135,13 +155,178 @@ async function runStep<T>(
   }
 }
 
+function makePathBits(seq: bigint, depth: number): boolean[] {
+  const bits: boolean[] = [];
+  let n = seq;
+  for (let i = 0; i < depth; i++) {
+    bits.push((n & 1n) === 1n);
+    n >>= 1n;
+  }
+  return bits;
+}
+
+function verifySignatureRawEd25519(
+  pubkey: Uint8Array,
+  messageHash: Uint8Array,
+  signature: Uint8Array,
+): boolean {
+  try {
+    if (pubkey.length !== 32 || messageHash.length !== 32 || signature.length !== 64) {
+      return false;
+    }
+    const spkiDer = Buffer.concat([
+      Buffer.from('302a300506032b6570032100', 'hex'),
+      Buffer.from(pubkey),
+    ]);
+    const publicKey = createPublicKey({
+      key: spkiDer,
+      format: 'der',
+      type: 'spki',
+    });
+    return verify(
+      null,
+      Buffer.from(messageHash),
+      publicKey,
+      Buffer.from(signature),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function buildWitnessProviders(): WitnessMap {
+  return {
+    signature_valid(
+      context: { privateState: unknown },
+      pubkey: Uint8Array,
+      messageHash: Uint8Array,
+      signature: Uint8Array,
+    ): [unknown, boolean] {
+      return [context.privateState, verifySignatureRawEd25519(pubkey, messageHash, signature)];
+    },
+    multisig_signature_valid(
+      context: { privateState: unknown },
+      _payload: Uint8Array,
+      _authorityHash: Uint8Array,
+    ): [unknown, boolean] {
+      // Fail closed by default in this deploy harness. Live ceremonies that
+      // require federation approvals must inject signatures in a dedicated flow.
+      return [context.privateState, false];
+    },
+    charter_membership_proof(
+      context: { privateState: unknown },
+      _nodeId: Uint8Array,
+    ): [unknown, { siblings: Uint8Array[]; indices: boolean[] }] {
+      return [
+        context.privateState,
+        {
+          siblings: Array.from({ length: CHARTER_DEPTH }, () => new Uint8Array(32)),
+          indices: Array.from({ length: CHARTER_DEPTH }, () => false),
+        },
+      ];
+    },
+    witness_divmod(
+      context: { privateState: unknown },
+      numerator: bigint,
+      divisor: bigint,
+    ): [unknown, { quotient: bigint; remainder: bigint }] {
+      if (divisor === 0n) {
+        return [context.privateState, { quotient: 0n, remainder: 0n }];
+      }
+      return [context.privateState, { quotient: numerator / divisor, remainder: numerator % divisor }];
+    },
+    action_log_path_bits(
+      context: { privateState: unknown },
+      seq: bigint,
+    ): [unknown, boolean[]] {
+      return [context.privateState, makePathBits(BigInt(seq), ACTION_LOG_PATH_DEPTH)];
+    },
+    schedule_path_bits(
+      context: { privateState: unknown },
+      seq: bigint,
+    ): [unknown, boolean[]] {
+      return [context.privateState, makePathBits(BigInt(seq), SCHEDULE_PATH_DEPTH)];
+    },
+    lane_path_bits(
+      context: { privateState: unknown },
+      seq: bigint,
+    ): [unknown, boolean[]] {
+      return [context.privateState, makePathBits(BigInt(seq), LANE_PATH_DEPTH)];
+    },
+    class_entry_path_bits(
+      context: { privateState: unknown },
+      seq: bigint,
+    ): [unknown, boolean[]] {
+      return [context.privateState, makePathBits(BigInt(seq), CLASS_ENTRY_PATH_DEPTH)];
+    },
+  };
+}
+
+function parseWitnessNamesFromSiblingDts(dtsSource: string): WitnessName[] {
+  const names: WitnessName[] = [];
+  for (const witnessName of KNOWN_WITNESS_NAMES) {
+    if (new RegExp(`\\b${witnessName}\\b`).test(dtsSource)) {
+      names.push(witnessName);
+    }
+  }
+  return names;
+}
+
+function witnessPathsForSibling(siblingName: string): { jsPath: string; dtsPath: string; assetsPath: string } {
+  const contractDir = path.join(BUILD_ROOT, siblingName, 'contract');
+  return {
+    jsPath: path.join(contractDir, 'index.js'),
+    dtsPath: path.join(contractDir, 'index.d.ts'),
+    assetsPath: path.join(BUILD_ROOT, siblingName),
+  };
+}
+
+function pickWitnessesForSibling(witnessNames: WitnessName[]): Record<string, WitnessProvider> {
+  const allWitnesses = buildWitnessProviders();
+  const selected: Record<string, WitnessProvider> = {};
+  for (const witnessName of witnessNames) {
+    const witness = allWitnesses[witnessName];
+    if (typeof witness !== 'function') {
+      throw new Error(`[wi15.1] witness provider is missing implementation: ${witnessName}`);
+    }
+    selected[witnessName] = witness;
+  }
+  return selected;
+}
+
+async function loadCompiledSiblingContract(siblingName: string): Promise<unknown> {
+  let cached = compiledSiblingCache.get(siblingName);
+  if (!cached) {
+    cached = (async () => {
+      const { jsPath, dtsPath, assetsPath } = witnessPathsForSibling(siblingName);
+      if (!fs.existsSync(jsPath)) {
+        fatalCli(`missing compiled sibling JS artifact: ${jsPath}`);
+      }
+      if (!fs.existsSync(dtsPath)) {
+        fatalCli(`missing compiled sibling d.ts artifact: ${dtsPath}`);
+      }
+
+      const dtsSource = fs.readFileSync(dtsPath, 'utf8');
+      const witnessNames = parseWitnessNamesFromSiblingDts(dtsSource);
+      const witnesses = pickWitnessesForSibling(witnessNames);
+      const buildModule = await import(pathToFileURL(jsPath).href);
+      const { CompiledContract } = await import('@midnight-ntwrk/compact-js');
+      return (CompiledContract.make as any)(siblingName, buildModule.Contract).pipe(
+        (CompiledContract.withWitnesses as any)(witnesses),
+        (CompiledContract.withCompiledFileAssets as any)(assetsPath),
+      );
+    })();
+    compiledSiblingCache.set(siblingName, cached);
+  }
+  return cached;
+}
+
 // Preview-network deploy wrapper. In non-dry-run mode this loads
 // @midnight-ntwrk/midnight-js-contracts and calls deployContract; in dry-run
 // mode it returns a deterministic pseudo-address derived from the constructor
 // args hash so downstream steps can proceed.
 async function deployOrDryRun(
   siblingName: string,
-  compiledContract: unknown,
   constructorArgs: unknown[],
 ): Promise<{ address: string; txHash: string }> {
   if (DRY_RUN) {
@@ -169,6 +354,7 @@ async function deployOrDryRun(
   // resolves once the tx is finalized in the block.
   // midnight-js-contracts@4.0.2:
   // deployContract(providers, { compiledContract, ...options })
+  const compiledContract = await loadCompiledSiblingContract(siblingName);
   const deployedContract = await deployContract(runtime.providers as any, {
     compiledContract: compiledContract as any,
     privateStateId: `wi15.1-${siblingName}-state`,
@@ -327,9 +513,9 @@ async function callCircuitOrDryRun(
   setNetworkId('preview');
 
   const runtime = await getLiveRuntimeContext();
-  const compiled = await import(path.join(BUILD_ROOT, siblingName, 'contract', 'index.js'));
+  const compiled = await loadCompiledSiblingContract(siblingName);
   const deployed = await findDeployedContract(runtime.providers as any, {
-    compiledContract: (compiled as any).Contract,
+    compiledContract: compiled as any,
     contractAddress: address as any,
   } as any);
   const callFn = (deployed.callTx as Record<string, (...circuitArgs: unknown[]) => Promise<any>>)[circuitName];
@@ -370,10 +556,8 @@ async function main(): Promise<void> {
 
   // ------------------- STEP 2: Deploy AuditLog -------------------------------
   const auditContractAddress = await runStep(2, 'Deploy AuditLog', async () => {
-    const compiled = DRY_RUN ? null : await import(path.join(BUILD_ROOT, 'audit', 'contract', 'index.js'));
     const { address, txHash } = await deployOrDryRun(
       'audit',
-      compiled?.Contract,
       [auditWriterInfo.pubBytes],
     );
     results.push({ step: 2, name: 'audit deploy', ok: true, address, txHash });
@@ -407,10 +591,8 @@ async function main(): Promise<void> {
   })();
 
   const governanceContractAddress = await runStep(3, 'Deploy Governance', async () => {
-    const compiled = DRY_RUN ? null : await import(path.join(BUILD_ROOT, 'governance', 'contract', 'index.js'));
     const { address, txHash } = await deployOrDryRun(
       'governance',
-      compiled?.Contract,
       [
         auditContractAddress,
         initialFederationAuthority,
@@ -430,10 +612,8 @@ async function main(): Promise<void> {
   //   initialAuditWriterAuthority: same auditWriter.pubkey passed in step 2.
   // Both anchors must match Governance/AuditLog at tx-0 alignment.
   const scheduleContractAddress = await runStep(4, 'Deploy Schedule', async () => {
-    const compiled = DRY_RUN ? null : await import(path.join(BUILD_ROOT, 'schedule', 'contract', 'index.js'));
     const { address, txHash } = await deployOrDryRun(
       'schedule',
-      compiled?.Contract,
       [
         auditContractAddress,
         governanceContractAddress,
@@ -446,10 +626,8 @@ async function main(): Promise<void> {
   });
 
   const laneContractAddress = await runStep(4, 'Deploy Lane', async () => {
-    const compiled = DRY_RUN ? null : await import(path.join(BUILD_ROOT, 'lane', 'contract', 'index.js'));
     const { address, txHash } = await deployOrDryRun(
       'lane',
-      compiled?.Contract,
       [
         auditContractAddress,
         governanceContractAddress,
@@ -463,10 +641,8 @@ async function main(): Promise<void> {
   });
 
   const viewsContractAddress = await runStep(4, 'Deploy Views', async () => {
-    const compiled = DRY_RUN ? null : await import(path.join(BUILD_ROOT, 'views', 'contract', 'index.js'));
     const { address, txHash } = await deployOrDryRun(
       'views',
-      compiled?.Contract,
       [
         auditContractAddress,
         governanceContractAddress,
