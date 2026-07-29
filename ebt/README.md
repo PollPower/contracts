@@ -8,10 +8,65 @@ EBT is the unit of account for the PollPower energy economy. One token represent
 
 | File | Status |
 |---|---|
-| [`ebt-v7.compact`](./ebt-v7.compact) | ✅ **PRODUCTION (Preview)** — unshielded, contract-minted native-UTXO token. Transferable + redeemable. Deployed 2026-06-17 |
+| [`ebt-v8.compact`](./ebt-v8.compact) | 🚀 **PREVIEW (rehearsed, T+0 ceremony 2026-08-02)** — next-generation 18-circuit contract with TariffRegistry-mirrored `settle`, full daemon-mirror surface, dual governance, EBT-H-1 fix. Deployed 2026-07-30 via ceremony-fenced approach at `10158a54...ae474f`. |
+| [`ebt-v8-ceremony.compact`](./ebt-v8-ceremony.compact) | ✅ **PREVIEW** — 8-circuit fenced build (byte-identical subset of v8), the base of the ceremony deploy. Remaining 10 circuits added post-deploy via `submitInsertVerifierKeyTx`. See [`V8-CEREMONY-FENCE.md`](./V8-CEREMONY-FENCE.md). |
+| [`ebt-v7.4.2.compact`](./ebt-v7.4.2.compact) | ✅ **PRODUCTION (Preview)** — v7.1 lineage + domain-bound dividend salt + merged `execMultisigOp`/`execOwnerOp` setters. Deployed 2026-07-05. Current settlement contract until v8 cutover post-ceremony. |
+| [`ebt-v7.1.compact`](./ebt-v7.1.compact) | 🟡 **SUPERSEDED** — v7 + `DividendMintedEntry` event log + 3-of-5 multisig setters for Living Dividend. Design basis for v7.4.2. |
+| [`ebt-v7.compact`](./ebt-v7.compact) | ✅ **PRODUCTION** — unshielded, contract-minted native-UTXO token. Transferable + redeemable. Deployed 2026-06-17. Superseded on Preview by v7.4.2. |
 | [`ebt-v5.2.compact`](./ebt-v5.2.compact) | 🟡 **LEGACY** — audit-hardened public-balance token, active mint path 2026-06-12 → 2026-06-17. Superseded by v7 |
 | [`ebt-v5.compact`](./ebt-v5.compact) | ⚠️ **LEGACY** — original mint path, balance reads only |
 | [`ebt-v5.1.compact`](./ebt-v5.1.compact) | ❌ **DEAD-LETTER** — deployed but never wired. Superseded by v5.2 before cutover. |
+
+---
+
+## EBT v8 (Preview rehearsal, T+0 ceremony 2026-08-02) — TariffRegistry-mirrored settlement
+
+**Address (Midnight Preview, rehearsal):** `10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f`
+**Deployed:** 2026-07-30 (ceremony-fenced deploy + full vk-insert rollout of 18 circuits)
+**Design:** [`VNEXT-DESIGN.md`](./VNEXT-DESIGN.md) · [`VNEXT-MIGRATION.md`](./VNEXT-MIGRATION.md) · [`WI-14-CEREMONY-SKELETON.md`](./WI-14-CEREMONY-SKELETON.md) · [`V8-CEREMONY-FENCE.md`](./V8-CEREMONY-FENCE.md)
+**Rehearsal artifacts:** [`ceremony-artifacts/`](./ceremony-artifacts/) — deploy manifest + 10 vk-insert tx receipts + T+0 pre-flight template
+
+### What changed from v7.4.2
+
+v7.4.2's `settle` verified attestations against **in-contract state** — the meter authority pubkey, the multisig authority hash, and the escrow attestor pubkey were all stored on the contract itself. v8 restructures `settle` around a **mirrored TariffRegistry** (deployed 2026-07-29 at `91a70ba3...58131`): the contract holds mirror-copies of the registry's authoritative state (`_registeredLanesMirror`, `_scheduleLiveMirror`, `_classStatutoryTotalBpsMirror`, `_registryActionLogRootMirror`, `_registryActionLogHeadSeqMirror`), and an off-chain **mirror daemon** advances those mirrors as the registry emits action-log events.
+
+This separates the **rate/lane/schedule authoring authority** (TariffRegistry, human-audited) from the **settlement execution authority** (EBT v8, keeper-driven). The registry publishes; the daemon mirrors; `settle` verifies against the mirror + freshness guards. See [`VNEXT-DESIGN.md`](./VNEXT-DESIGN.md) for the full architectural rationale.
+
+Other changes:
+
+- **EBT-H-1 (audit 2026-07-07) fixed.** `settle` now signs a **5-field HAT payload** including `producerAddr` with domain sep `pollpower:ebt:v8:epoch1`. The mint-redirection vector is closed.
+- **Governance surface: dual-track.** `execMultisigOp(op, ...)` handles 3-of-5 multisig-cosigned ops (LD binding, escrow attestor rotation, treasury reissue). `execOwnerOp(op, ...)` handles single-owner-signed ops (owner-key rotation, meter authority rotation).
+- **`claimSplit` refactored** to work against the daemon-mirrored settlement state.
+- **Read-only view circuits** (`resolveLanesMirror`, `isLaneActiveMirror`, `getRegistryActionLogHeadSeq`) for daemon health-checks and off-chain lookups.
+- **`manualReissue` retained** as the break-glass emergency path, rate-limited + authority co-signed per M-4.
+
+### The ceremony-fenced deploy
+
+v8's compiled 18-circuit verifier-key bundle exceeds Midnight Preview's per-tx block weight limit (`1010: Invalid Transaction: Transaction would exhaust the block limits`). To ship it, we use a **two-phase deploy**:
+
+1. **Ceremony deploy** of [`ebt-v8-ceremony.compact`](./ebt-v8-ceremony.compact) — the 8 circuits needed to run the T+0 ceremony end-to-end (`initialize`, 4 mirror setters, `attestProducerOwnership`, `revokeProducerOwnership`, `settle`). Fits in one tx.
+2. **Post-deploy vk-insert rollout** — the remaining 10 circuits (`getRegistryActionLogHeadSeq`, `claimSplit`, `execMultisigOp`, `redeem`, `mirrorActionLogRoot`, `mirrorRetireLane`, `execOwnerOp`, `manualReissue`, `resolveLanesMirror`, `isLaneActiveMirror`) are added one at a time via `submitInsertVerifierKeyTx` maintenance txs.
+
+Each maintenance tx has its own block-weight budget, so spreading the vk bundle across 10 txs sidesteps the block limit entirely. Full rationale + rollout scripts + priority order in [`V8-CEREMONY-FENCE.md`](./V8-CEREMONY-FENCE.md); rollout scripts live in [`rollout/`](./rollout/).
+
+The rehearsal on 2026-07-30 landed all 10 inserts cleanly — mean tx elapsed 21.9s ± 1.7s, zero failures, on-chain state verified 18/18 DEFINED after row 10. Sunday's T+0 ceremony re-runs the same script against a fresh contract address.
+
+### Circuits (18 total)
+
+**Ceremony-deploy (8):**
+`initialize` · `attestProducerOwnership` · `revokeProducerOwnership` · `mirrorActionLogHead` · `mirrorScheduleLifecycle` · `mirrorClassStatutoryTotal` · `mirrorRegisterLane` · `settle`
+
+**Post-deploy vk-insert (10):**
+`getRegistryActionLogHeadSeq` · `claimSplit` · `execMultisigOp` · `redeem` · `mirrorActionLogRoot` · `mirrorRetireLane` · `execOwnerOp` · `manualReissue` · `resolveLanesMirror` · `isLaneActiveMirror`
+
+### Reproducing the deploy
+
+All scripts are in this directory:
+
+- [`deploy-ebt-v8-ceremony.mjs`](./deploy-ebt-v8-ceremony.mjs) — deploys the 8-circuit fenced contract
+- [`rollout/insert-vk-<circuit>.mjs`](./rollout/) — 10 per-circuit vk-insert scripts (one per deferred circuit)
+- [`rollout/insert-vk-template.mjs`](./rollout/insert-vk-template.mjs) — the parametrized template all 10 were generated from
+- [`verify-ceremony-state.mjs`](./verify-ceremony-state.mjs) — on-chain state verifier (reads `deployment.json.circuitsRolledIn` as source of truth; asserts on-chain matches)
 
 ---
 
