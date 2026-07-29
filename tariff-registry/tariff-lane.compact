@@ -729,7 +729,14 @@ constructor(
   _classEntriesMerkleRoot = _classEntriesMerkleClimb;
 
   // WI-15.1 Fix A: seal the mirror-authority trust anchors at genesis.
-  _mirroredFederationAuthority = disclose(initialFederationAuthority);
+  // ============================================================================
+  // WI-15.1 DEFERRED TO v1.1 (aggressive shrink) - region: F1-constructor-mirror-init
+  // Genesis init of _mirroredFederationAuthority - fenced because all mirror circuits are fenced (F4) and mirror ledger cells are removed (F3), so there is no reader.
+  // Un-fence: strip leading '// ' from lines between BEGIN and END markers.
+  // ============================================================================
+  // BEGIN DEFERRED-TO-V1.1-F1-constructor-mirror-init
+  // _mirroredFederationAuthority = disclose(initialFederationAuthority);
+  // END DEFERRED-TO-V1.1-F1-constructor-mirror-init
   _auditWriterAuthorityTarget = disclose(initialAuditWriterAuthority);
 
   _bootstrapComplete = true;
@@ -1178,76 +1185,83 @@ export circuit registerLane(
 //   );
 // }
 // END DEFERRED-TO-V1.1
-export circuit resolveLane(
-  scheduleId:   Bytes<32>,
-  leviedBy:     Bytes<32>,
-  laneKindByte: Uint<8>,
-): LaneRecord {
-  assertInitialized();
-  const key = laneKey(scheduleId, leviedBy, laneKindByte);
-  assert(_registeredLanes.member(disclose(key)), "LANE_NOT_FOUND");
-  return _registeredLanes.lookup(disclose(key));
-}
-export circuit resolveLanes(
-  scheduleId:    Bytes<32>,
-  leviedBys:     Vector<4, Bytes<32>>,
-  laneKindBytes: Vector<4, Uint<8>>,
-): Vector<4, LaneRecord> {
-  assertInitialized();
-  const dLeviedBys = disclose(leviedBys);
-  const dKinds     = disclose(laneKindBytes);
-  const zero = LaneRecord {
-    scheduleId:        pad(32, ""),
-    laneKindByte:      0 as Uint<8>,
-    leviedBy:          pad(32, ""),
-    bpsShare:          0 as Uint<16>,
-    remitAddress:      pad(32, ""),
-    basis:             0 as Uint<8>,
-    applicabilityHash: pad(32, ""),
-    statuteRefHash:    pad(32, ""),
-    effectiveEpoch:    0 as Uint<64>,
-    retiredEpoch:      0 as Uint<64>,
-    remittanceMode:    0 as Uint<8>,
-    registeredAt:      0 as Uint<64>,
-  };
-  const k0 = laneKey(scheduleId, dLeviedBys[0], dKinds[0]);
-  const r0 = _registeredLanes.member(disclose(k0))
-    ? _registeredLanes.lookup(disclose(k0)) : zero;
-  const k1 = laneKey(scheduleId, dLeviedBys[1], dKinds[1]);
-  const r1 = _registeredLanes.member(disclose(k1))
-    ? _registeredLanes.lookup(disclose(k1)) : zero;
-  const k2 = laneKey(scheduleId, dLeviedBys[2], dKinds[2]);
-  const r2 = _registeredLanes.member(disclose(k2))
-    ? _registeredLanes.lookup(disclose(k2)) : zero;
-  const k3 = laneKey(scheduleId, dLeviedBys[3], dKinds[3]);
-  const r3 = _registeredLanes.member(disclose(k3))
-    ? _registeredLanes.lookup(disclose(k3)) : zero;
-  return [r0, r1, r2, r3];
-}
-export circuit isLaneActive(
-  scheduleId:   Bytes<32>,
-  leviedBy:     Bytes<32>,
-  laneKindByte: Uint<8>,
-): Boolean {
-  assertInitialized();
-  const key = laneKey(scheduleId, leviedBy, laneKindByte);
-  if (!_registeredLanes.member(disclose(key))) {
-    return false;
-  }
-  const rec = _registeredLanes.lookup(disclose(key));
-  if (rec.retiredEpoch != 0 as Uint<64>) {
-    return false;
-  }
-  // MED-B: parent schedule must exist and be live.
-  const dSid = disclose(scheduleId);
-  if (!_registeredSchedules.member(dSid)) {
-    return false;
-  }
-  if (_registeredSchedules.lookup(dSid).retiredEpoch != 0 as Uint<64>) {
-    return false;
-  }
-  return _currentEpoch.read() >= rec.effectiveEpoch;
-}
+// ============================================================================
+// WI-15.1 DEFERRED TO v1.1 (aggressive shrink) - region: F2-read-views
+// Lane read-view circuits (resolveLane, resolveLanes, isLaneActive). Zero production callers verified 2026-07-29 across settlement-api + 7 other repos. Only test callers exist. Fenced to reduce Lane sibling refTime weight cost at deploy time (attempt #5 failed at Lane 580 KB with 1010 block-limit exhausted; Schedule at 485 KB consumed 93.56 percent of maxExtrinsic refTime).
+// Un-fence: strip leading '// ' from lines between BEGIN and END markers.
+// ============================================================================
+// BEGIN DEFERRED-TO-V1.1-F2-read-views
+// export circuit resolveLane(
+  // scheduleId:   Bytes<32>,
+  // leviedBy:     Bytes<32>,
+  // laneKindByte: Uint<8>,
+// ): LaneRecord {
+  // assertInitialized();
+  // const key = laneKey(scheduleId, leviedBy, laneKindByte);
+  // assert(_registeredLanes.member(disclose(key)), "LANE_NOT_FOUND");
+  // return _registeredLanes.lookup(disclose(key));
+// }
+// export circuit resolveLanes(
+  // scheduleId:    Bytes<32>,
+  // leviedBys:     Vector<4, Bytes<32>>,
+  // laneKindBytes: Vector<4, Uint<8>>,
+// ): Vector<4, LaneRecord> {
+  // assertInitialized();
+  // const dLeviedBys = disclose(leviedBys);
+  // const dKinds     = disclose(laneKindBytes);
+  // const zero = LaneRecord {
+    // scheduleId:        pad(32, ""),
+    // laneKindByte:      0 as Uint<8>,
+    // leviedBy:          pad(32, ""),
+    // bpsShare:          0 as Uint<16>,
+    // remitAddress:      pad(32, ""),
+    // basis:             0 as Uint<8>,
+    // applicabilityHash: pad(32, ""),
+    // statuteRefHash:    pad(32, ""),
+    // effectiveEpoch:    0 as Uint<64>,
+    // retiredEpoch:      0 as Uint<64>,
+    // remittanceMode:    0 as Uint<8>,
+    // registeredAt:      0 as Uint<64>,
+  // };
+  // const k0 = laneKey(scheduleId, dLeviedBys[0], dKinds[0]);
+  // const r0 = _registeredLanes.member(disclose(k0))
+    // ? _registeredLanes.lookup(disclose(k0)) : zero;
+  // const k1 = laneKey(scheduleId, dLeviedBys[1], dKinds[1]);
+  // const r1 = _registeredLanes.member(disclose(k1))
+    // ? _registeredLanes.lookup(disclose(k1)) : zero;
+  // const k2 = laneKey(scheduleId, dLeviedBys[2], dKinds[2]);
+  // const r2 = _registeredLanes.member(disclose(k2))
+    // ? _registeredLanes.lookup(disclose(k2)) : zero;
+  // const k3 = laneKey(scheduleId, dLeviedBys[3], dKinds[3]);
+  // const r3 = _registeredLanes.member(disclose(k3))
+    // ? _registeredLanes.lookup(disclose(k3)) : zero;
+  // return [r0, r1, r2, r3];
+// }
+// export circuit isLaneActive(
+  // scheduleId:   Bytes<32>,
+  // leviedBy:     Bytes<32>,
+  // laneKindByte: Uint<8>,
+// ): Boolean {
+  // assertInitialized();
+  // const key = laneKey(scheduleId, leviedBy, laneKindByte);
+  // if (!_registeredLanes.member(disclose(key))) {
+    // return false;
+  // }
+  // const rec = _registeredLanes.lookup(disclose(key));
+  // if (rec.retiredEpoch != 0 as Uint<64>) {
+    // return false;
+  // }
+  // // MED-B: parent schedule must exist and be live.
+  // const dSid = disclose(scheduleId);
+  // if (!_registeredSchedules.member(dSid)) {
+    // return false;
+  // }
+  // if (_registeredSchedules.lookup(dSid).retiredEpoch != 0 as Uint<64>) {
+    // return false;
+  // }
+  // return _currentEpoch.read() >= rec.effectiveEpoch;
+// }
+// END DEFERRED-TO-V1.1-F2-read-views
 
 // =============================================================================
 // WI-15.1 mirror-write endpoints (V2-SPLIT-DESIGN.md §4.1, §4.2, §4.3, §4.6, §4.9)
@@ -1264,308 +1278,322 @@ export circuit isLaneActive(
 //
 //   Every mirror-write circuit MUST verify a signature under the source contract's federation authority (or a designated mirror-writer authority) over the tuple `(newRootValue, sourceEpochAtMirror)`, AND MUST enforce monotone `sourceEpochAtMirror` progression against a locally stored `_lastMirroredEpoch`.
 
-export ledger _mirroredGovernanceRoot:          Bytes<32>;
-export ledger _mirroredEpoch:                   Uint<64>;
-export ledger _mirroredLDFloorBps:              Uint<16>;
-export ledger _mirroredOpsFloorBps:             Uint<16>;
-export ledger _mirroredSanityBandPct:           Uint<16>;
-export ledger _mirroredRefRateFiatPerKwh:       Uint<64>;
-export ledger _mirroredFederationAuthority:     Bytes<32>;
-export ledger _mirroredSchedulesRoot:           Bytes<32>;
-export ledger _mirroredSchedulesEpoch:          Uint<64>;
-export ledger _mirroredAuditRoot:               Bytes<32>;
-export ledger _mirroredAuditGlobalSeq:          Uint<64>;
+// ============================================================================
+// WI-15.1 DEFERRED TO v1.1 (aggressive shrink) - region: F3-mirror-ledger-decls
+// 11 _mirrored* ledger declarations. No external reader; only mirror circuits (F4, fenced) reference them. Removing them shrinks compiled ABI.
+// Un-fence: strip leading '// ' from lines between BEGIN and END markers.
+// ============================================================================
+// BEGIN DEFERRED-TO-V1.1-F3-mirror-ledger-decls
+// export ledger _mirroredGovernanceRoot:          Bytes<32>;
+// export ledger _mirroredEpoch:                   Uint<64>;
+// export ledger _mirroredLDFloorBps:              Uint<16>;
+// export ledger _mirroredOpsFloorBps:             Uint<16>;
+// export ledger _mirroredSanityBandPct:           Uint<16>;
+// export ledger _mirroredRefRateFiatPerKwh:       Uint<64>;
+// export ledger _mirroredFederationAuthority:     Bytes<32>;
+// export ledger _mirroredSchedulesRoot:           Bytes<32>;
+// export ledger _mirroredSchedulesEpoch:          Uint<64>;
+// export ledger _mirroredAuditRoot:               Bytes<32>;
+// export ledger _mirroredAuditGlobalSeq:          Uint<64>;
+// END DEFERRED-TO-V1.1-F3-mirror-ledger-decls
 
 // -----------------------------------------------------------------------------
 // mirrorGovernanceRoot — Lane (§4.1)
 // -----------------------------------------------------------------------------
-export circuit mirrorGovernanceRoot(
-  newRoot:         Bytes<32>,
-  epochAtMirror:   Uint<64>,
-  govAuthoritySig: Bytes<64>,
-  govAuthorityHash: Bytes<32>,
-  currentTime:     Uint<64>,
-): [] {
-  assertInitialized();
-  assert(disclose(blockTimeGte(disclose(currentTime))),
-         "mirrorGovernanceRoot: timestamp cannot be in the future");
-
-  const dRoot  = disclose(newRoot);
-  const dEpoch = disclose(epochAtMirror);
-  const dAuth  = disclose(govAuthorityHash);
-  const epochBytes = (dEpoch as Field) as Bytes<32>;
-
-  const msg = persistentHash<Vector<5, Bytes<32>>>([
-    pad(32, "pp:tariff:v2:mirrorGovRoot"),
-    selfBytes(),
-    dRoot,
-    epochBytes,
-    dAuth,
-  ]);
-
-  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
-  const cur = _mirroredFederationAuthority;
-  assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
-  assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
-         "MIRROR_GOV_ROOT_SIG_INVALID");
-
-  const upGap = ((dEpoch - _mirroredEpoch - 1) as Uint<64>);
-
-  _mirroredGovernanceRoot = dRoot;
-  _mirroredEpoch = dEpoch;
-
-  const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
-    pad(32, "pp:tariff:v2:mirrorGovRoot"),
-    dRoot,
-    epochBytes,
-  ]);
-  emitAction(
-    16 as Uint<8>,
-    pad(32, ""),
-    pad(32, ""),
-    msg,
-    payloadHash,
-    currentTime,
-  );
-}
-
-// -----------------------------------------------------------------------------
-// mirrorEpochAndFloors — Lane (§4.2)
-// -----------------------------------------------------------------------------
-export circuit mirrorEpochAndFloors(
-  newEpoch:         Uint<64>,
-  newLDFloorBps:    Uint<16>,
-  newOpsFloorBps:   Uint<16>,
-  newSanityBandPct: Uint<16>,
-  newRefRateFiatPerKwh: Uint<64>,
-  govAuthoritySig:  Bytes<64>,
-  govAuthorityHash: Bytes<32>,
-  currentTime:      Uint<64>,
-): [] {
-  assertInitialized();
-  assert(disclose(blockTimeGte(disclose(currentTime))),
-         "mirrorEpochAndFloors: timestamp cannot be in the future");
-
-  const dEpoch = disclose(newEpoch);
-  const dLD    = disclose(newLDFloorBps);
-  const dOps   = disclose(newOpsFloorBps);
-  const dBand  = disclose(newSanityBandPct);
-  const dRate  = disclose(newRefRateFiatPerKwh);
-  const dAuth  = disclose(govAuthorityHash);
-
-  const epochBytes = (dEpoch as Field) as Bytes<32>;
-  const ldBytes    = (dLD    as Field) as Bytes<32>;
-  const opsBytes   = (dOps   as Field) as Bytes<32>;
-  const bandBytes  = (dBand  as Field) as Bytes<32>;
-  const rateBytes  = (dRate  as Field) as Bytes<32>;
-
-  const msg = persistentHash<Vector<8, Bytes<32>>>([
-    pad(32, "pp:tariff:v2:mirrorEpochFloors"),
-    selfBytes(),
-    epochBytes,
-    ldBytes,
-    opsBytes,
-    bandBytes,
-    rateBytes,
-    dAuth,
-  ]);
-
-  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
-  const cur = _mirroredFederationAuthority;
-  assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
-  assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
-         "MIRROR_EPOCH_FLOORS_SIG_INVALID");
-
-  const upGap = ((dEpoch - _mirroredEpoch - 1) as Uint<64>);
-
-  _mirroredEpoch = dEpoch;
-  _mirroredLDFloorBps = dLD;
-  _mirroredOpsFloorBps = dOps;
-  _mirroredSanityBandPct = dBand;
-  _mirroredRefRateFiatPerKwh = dRate;
-
-  const payloadHash = persistentHash<Vector<6, Bytes<32>>>([
-    pad(32, "pp:tariff:v2:mirrorEpochFloors"),
-    epochBytes,
-    ldBytes,
-    opsBytes,
-    bandBytes,
-    rateBytes,
-  ]);
-  emitAction(
-    17 as Uint<8>,
-    pad(32, ""),
-    pad(32, ""),
-    msg,
-    payloadHash,
-    currentTime,
-  );
-}
-
-// -----------------------------------------------------------------------------
-// mirrorFederationAuthority — Lane (§4.3)
-// -----------------------------------------------------------------------------
-export circuit mirrorFederationAuthority(
-  newAuth:         Bytes<32>,
-  epochAtMirror:   Uint<64>,
-  currentAuthSig:  Bytes<64>,
-  currentAuthHash: Bytes<32>,
-  currentTime:     Uint<64>,
-): [] {
-  assertInitialized();
-  assert(disclose(blockTimeGte(disclose(currentTime))),
-         "mirrorFederationAuthority: timestamp cannot be in the future");
-
-  const dNew   = disclose(newAuth);
-  const dEpoch = disclose(epochAtMirror);
-  const dCur   = disclose(currentAuthHash);
-  const epochBytes = (dEpoch as Field) as Bytes<32>;
-
-  assert(dNew != pad(32, ""), "MIRROR_FED_AUTH_ZERO");
-
-  const msg = persistentHash<Vector<5, Bytes<32>>>([
-    pad(32, "pp:tariff:v2:mirrorFedAuth"),
-    selfBytes(),
-    dNew,
-    epochBytes,
-    dCur,
-  ]);
-
-  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
-  const cur = _mirroredFederationAuthority;
-  assert(disclose(dCur == cur), "MIRROR_FED_AUTH_MISMATCH");
-  assert(disclose(signature_valid(dCur, msg, disclose(currentAuthSig))),
-         "MIRROR_FED_AUTH_SIG_INVALID");
-
-  const upGap = ((dEpoch - _mirroredEpoch - 1) as Uint<64>);
-
-  _mirroredFederationAuthority = dNew;
-  _mirroredEpoch = dEpoch;
-
-  const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
-    pad(32, "pp:tariff:v2:mirrorFedAuth"),
-    dNew,
-    epochBytes,
-  ]);
-  emitAction(
-    18 as Uint<8>,
-    pad(32, ""),
-    pad(32, ""),
-    msg,
-    payloadHash,
-    currentTime,
-  );
-}
-
-// -----------------------------------------------------------------------------
-// mirrorSchedulesRoot — Lane (§4.6)
-// -----------------------------------------------------------------------------
-// Per §4.6: Lane needs `_registeredSchedules.member(scheduleId)` and
-// `retiredEpoch == 0` (I-13.1-C) via witness Merkle proof against
-// `_mirroredSchedulesRoot`. Signer is the federation authority per the
-// mirror-write pattern table (§4 opening rows).
-export circuit mirrorSchedulesRoot(
-  newRoot:         Bytes<32>,
-  schedulesEpoch:  Uint<64>,
-  govAuthoritySig: Bytes<64>,
-  govAuthorityHash: Bytes<32>,
-  currentTime:     Uint<64>,
-): [] {
-  assertInitialized();
-  assert(disclose(blockTimeGte(disclose(currentTime))),
-         "mirrorSchedulesRoot: timestamp cannot be in the future");
-
-  const dRoot  = disclose(newRoot);
-  const dEpoch = disclose(schedulesEpoch);
-  const dAuth  = disclose(govAuthorityHash);
-  const epochBytes = (dEpoch as Field) as Bytes<32>;
-
-  const msg = persistentHash<Vector<5, Bytes<32>>>([
-    pad(32, "pp:tariff:v2:mirrorSchedulesRoot"),
-    selfBytes(),
-    dRoot,
-    epochBytes,
-    dAuth,
-  ]);
-
-  // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
-  const cur = _mirroredFederationAuthority;
-  assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
-  assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
-         "MIRROR_SCHEDULES_ROOT_SIG_INVALID");
-
-  // I-15-B monotone against `_mirroredSchedulesEpoch` (per §4.6: Lane
-  // holds `_mirroredSchedulesEpoch` as the local sibling epoch).
-  const upGap = ((dEpoch - _mirroredSchedulesEpoch - 1) as Uint<64>);
-
-  _mirroredSchedulesRoot = dRoot;
-  _mirroredSchedulesEpoch = dEpoch;
-
-  const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
-    pad(32, "pp:tariff:v2:mirrorSchedulesRoot"),
-    dRoot,
-    epochBytes,
-  ]);
-  emitAction(
-    19 as Uint<8>,
-    pad(32, ""),
-    pad(32, ""),
-    msg,
-    payloadHash,
-    currentTime,
-  );
-}
-
-// -----------------------------------------------------------------------------
-// mirrorAuditRoot — Lane (§4.9)
-// -----------------------------------------------------------------------------
-export circuit mirrorAuditRoot(
-  newRoot:              Bytes<32>,
-  globalSeqAtMirror:    Uint<64>,
-  writerSig:            Bytes<64>,
-  writerAuthHash:       Bytes<32>,
-  currentTime:          Uint<64>,
-): [] {
-  assertInitialized();
-  assert(disclose(blockTimeGte(disclose(currentTime))),
-         "mirrorAuditRoot: timestamp cannot be in the future");
-
-  const dRoot  = disclose(newRoot);
-  const dSeq   = disclose(globalSeqAtMirror);
-  const dAuth  = disclose(writerAuthHash);
-  const seqBytes = (dSeq as Field) as Bytes<32>;
-
-  const msg = persistentHash<Vector<5, Bytes<32>>>([
-    pad(32, "pp:tariff:v2:mirrorAuditRoot"),
-    selfBytes(),
-    dRoot,
-    seqBytes,
-    dAuth,
-  ]);
-
-  // WI-15.1 Fix A: `_auditWriterAuthorityTarget` sealed at genesis by Lane's
-  // constructor from `initialAuditWriterAuthority`. No bootstrap short-circuit.
-  const target = _auditWriterAuthorityTarget;
-  assert(disclose(dAuth == target), "MIRROR_AUDIT_AUTH_MISMATCH");
-  assert(disclose(signature_valid(dAuth, msg, disclose(writerSig))),
-         "MIRROR_AUDIT_ROOT_SIG_INVALID");
-
-  const upGap = ((dSeq - _mirroredAuditGlobalSeq - 1) as Uint<64>);
-
-  _mirroredAuditRoot = dRoot;
-  _mirroredAuditGlobalSeq = dSeq;
-
-  const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
-    pad(32, "pp:tariff:v2:mirrorAuditRoot"),
-    dRoot,
-    seqBytes,
-  ]);
-  emitAction(
-    22 as Uint<8>,
-    pad(32, ""),
-    pad(32, ""),
-    msg,
-    payloadHash,
-    currentTime,
-  );
-}
+// ============================================================================
+// WI-15.1 DEFERRED TO v1.1 (aggressive shrink) - region: F4-mirror-circuits
+// 5 mirror-write circuits (mirrorGovernanceRoot, mirrorEpochAndFloors, mirrorFederationAuthority, mirrorSchedulesRoot, mirrorAuditRoot). No production callers, no mirror-writer daemon exists yet (per MEMORY.md 2026-07-18). Fenced to reduce Lane sibling refTime weight cost.
+// Un-fence: strip leading '// ' from lines between BEGIN and END markers.
+// ============================================================================
+// BEGIN DEFERRED-TO-V1.1-F4-mirror-circuits
+// export circuit mirrorGovernanceRoot(
+  // newRoot:         Bytes<32>,
+  // epochAtMirror:   Uint<64>,
+  // govAuthoritySig: Bytes<64>,
+  // govAuthorityHash: Bytes<32>,
+  // currentTime:     Uint<64>,
+// ): [] {
+  // assertInitialized();
+  // assert(disclose(blockTimeGte(disclose(currentTime))),
+         // "mirrorGovernanceRoot: timestamp cannot be in the future");
+//
+  // const dRoot  = disclose(newRoot);
+  // const dEpoch = disclose(epochAtMirror);
+  // const dAuth  = disclose(govAuthorityHash);
+  // const epochBytes = (dEpoch as Field) as Bytes<32>;
+//
+  // const msg = persistentHash<Vector<5, Bytes<32>>>([
+    // pad(32, "pp:tariff:v2:mirrorGovRoot"),
+    // selfBytes(),
+    // dRoot,
+    // epochBytes,
+    // dAuth,
+  // ]);
+//
+  // // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
+  // const cur = _mirroredFederationAuthority;
+  // assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
+  // assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
+         // "MIRROR_GOV_ROOT_SIG_INVALID");
+//
+  // const upGap = ((dEpoch - _mirroredEpoch - 1) as Uint<64>);
+//
+  // _mirroredGovernanceRoot = dRoot;
+  // _mirroredEpoch = dEpoch;
+//
+  // const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
+    // pad(32, "pp:tariff:v2:mirrorGovRoot"),
+    // dRoot,
+    // epochBytes,
+  // ]);
+  // emitAction(
+    // 16 as Uint<8>,
+    // pad(32, ""),
+    // pad(32, ""),
+    // msg,
+    // payloadHash,
+    // currentTime,
+  // );
+// }
+//
+// // -----------------------------------------------------------------------------
+// // mirrorEpochAndFloors — Lane (§4.2)
+// // -----------------------------------------------------------------------------
+// export circuit mirrorEpochAndFloors(
+  // newEpoch:         Uint<64>,
+  // newLDFloorBps:    Uint<16>,
+  // newOpsFloorBps:   Uint<16>,
+  // newSanityBandPct: Uint<16>,
+  // newRefRateFiatPerKwh: Uint<64>,
+  // govAuthoritySig:  Bytes<64>,
+  // govAuthorityHash: Bytes<32>,
+  // currentTime:      Uint<64>,
+// ): [] {
+  // assertInitialized();
+  // assert(disclose(blockTimeGte(disclose(currentTime))),
+         // "mirrorEpochAndFloors: timestamp cannot be in the future");
+//
+  // const dEpoch = disclose(newEpoch);
+  // const dLD    = disclose(newLDFloorBps);
+  // const dOps   = disclose(newOpsFloorBps);
+  // const dBand  = disclose(newSanityBandPct);
+  // const dRate  = disclose(newRefRateFiatPerKwh);
+  // const dAuth  = disclose(govAuthorityHash);
+//
+  // const epochBytes = (dEpoch as Field) as Bytes<32>;
+  // const ldBytes    = (dLD    as Field) as Bytes<32>;
+  // const opsBytes   = (dOps   as Field) as Bytes<32>;
+  // const bandBytes  = (dBand  as Field) as Bytes<32>;
+  // const rateBytes  = (dRate  as Field) as Bytes<32>;
+//
+  // const msg = persistentHash<Vector<8, Bytes<32>>>([
+    // pad(32, "pp:tariff:v2:mirrorEpochFloors"),
+    // selfBytes(),
+    // epochBytes,
+    // ldBytes,
+    // opsBytes,
+    // bandBytes,
+    // rateBytes,
+    // dAuth,
+  // ]);
+//
+  // // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
+  // const cur = _mirroredFederationAuthority;
+  // assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
+  // assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
+         // "MIRROR_EPOCH_FLOORS_SIG_INVALID");
+//
+  // const upGap = ((dEpoch - _mirroredEpoch - 1) as Uint<64>);
+//
+  // _mirroredEpoch = dEpoch;
+  // _mirroredLDFloorBps = dLD;
+  // _mirroredOpsFloorBps = dOps;
+  // _mirroredSanityBandPct = dBand;
+  // _mirroredRefRateFiatPerKwh = dRate;
+//
+  // const payloadHash = persistentHash<Vector<6, Bytes<32>>>([
+    // pad(32, "pp:tariff:v2:mirrorEpochFloors"),
+    // epochBytes,
+    // ldBytes,
+    // opsBytes,
+    // bandBytes,
+    // rateBytes,
+  // ]);
+  // emitAction(
+    // 17 as Uint<8>,
+    // pad(32, ""),
+    // pad(32, ""),
+    // msg,
+    // payloadHash,
+    // currentTime,
+  // );
+// }
+//
+// // -----------------------------------------------------------------------------
+// // mirrorFederationAuthority — Lane (§4.3)
+// // -----------------------------------------------------------------------------
+// export circuit mirrorFederationAuthority(
+  // newAuth:         Bytes<32>,
+  // epochAtMirror:   Uint<64>,
+  // currentAuthSig:  Bytes<64>,
+  // currentAuthHash: Bytes<32>,
+  // currentTime:     Uint<64>,
+// ): [] {
+  // assertInitialized();
+  // assert(disclose(blockTimeGte(disclose(currentTime))),
+         // "mirrorFederationAuthority: timestamp cannot be in the future");
+//
+  // const dNew   = disclose(newAuth);
+  // const dEpoch = disclose(epochAtMirror);
+  // const dCur   = disclose(currentAuthHash);
+  // const epochBytes = (dEpoch as Field) as Bytes<32>;
+//
+  // assert(dNew != pad(32, ""), "MIRROR_FED_AUTH_ZERO");
+//
+  // const msg = persistentHash<Vector<5, Bytes<32>>>([
+    // pad(32, "pp:tariff:v2:mirrorFedAuth"),
+    // selfBytes(),
+    // dNew,
+    // epochBytes,
+    // dCur,
+  // ]);
+//
+  // // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
+  // const cur = _mirroredFederationAuthority;
+  // assert(disclose(dCur == cur), "MIRROR_FED_AUTH_MISMATCH");
+  // assert(disclose(signature_valid(dCur, msg, disclose(currentAuthSig))),
+         // "MIRROR_FED_AUTH_SIG_INVALID");
+//
+  // const upGap = ((dEpoch - _mirroredEpoch - 1) as Uint<64>);
+//
+  // _mirroredFederationAuthority = dNew;
+  // _mirroredEpoch = dEpoch;
+//
+  // const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
+    // pad(32, "pp:tariff:v2:mirrorFedAuth"),
+    // dNew,
+    // epochBytes,
+  // ]);
+  // emitAction(
+    // 18 as Uint<8>,
+    // pad(32, ""),
+    // pad(32, ""),
+    // msg,
+    // payloadHash,
+    // currentTime,
+  // );
+// }
+//
+// // -----------------------------------------------------------------------------
+// // mirrorSchedulesRoot — Lane (§4.6)
+// // -----------------------------------------------------------------------------
+// // Per §4.6: Lane needs `_registeredSchedules.member(scheduleId)` and
+// // `retiredEpoch == 0` (I-13.1-C) via witness Merkle proof against
+// // `_mirroredSchedulesRoot`. Signer is the federation authority per the
+// // mirror-write pattern table (§4 opening rows).
+// export circuit mirrorSchedulesRoot(
+  // newRoot:         Bytes<32>,
+  // schedulesEpoch:  Uint<64>,
+  // govAuthoritySig: Bytes<64>,
+  // govAuthorityHash: Bytes<32>,
+  // currentTime:     Uint<64>,
+// ): [] {
+  // assertInitialized();
+  // assert(disclose(blockTimeGte(disclose(currentTime))),
+         // "mirrorSchedulesRoot: timestamp cannot be in the future");
+//
+  // const dRoot  = disclose(newRoot);
+  // const dEpoch = disclose(schedulesEpoch);
+  // const dAuth  = disclose(govAuthorityHash);
+  // const epochBytes = (dEpoch as Field) as Bytes<32>;
+//
+  // const msg = persistentHash<Vector<5, Bytes<32>>>([
+    // pad(32, "pp:tariff:v2:mirrorSchedulesRoot"),
+    // selfBytes(),
+    // dRoot,
+    // epochBytes,
+    // dAuth,
+  // ]);
+//
+  // // WI-15.1 Fix A: sealed genesis trust anchor — no bootstrap short-circuit.
+  // const cur = _mirroredFederationAuthority;
+  // assert(disclose(dAuth == cur), "MIRROR_GOV_AUTH_MISMATCH");
+  // assert(disclose(signature_valid(dAuth, msg, disclose(govAuthoritySig))),
+         // "MIRROR_SCHEDULES_ROOT_SIG_INVALID");
+//
+  // // I-15-B monotone against `_mirroredSchedulesEpoch` (per §4.6: Lane
+  // // holds `_mirroredSchedulesEpoch` as the local sibling epoch).
+  // const upGap = ((dEpoch - _mirroredSchedulesEpoch - 1) as Uint<64>);
+//
+  // _mirroredSchedulesRoot = dRoot;
+  // _mirroredSchedulesEpoch = dEpoch;
+//
+  // const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
+    // pad(32, "pp:tariff:v2:mirrorSchedulesRoot"),
+    // dRoot,
+    // epochBytes,
+  // ]);
+  // emitAction(
+    // 19 as Uint<8>,
+    // pad(32, ""),
+    // pad(32, ""),
+    // msg,
+    // payloadHash,
+    // currentTime,
+  // );
+// }
+//
+// // -----------------------------------------------------------------------------
+// // mirrorAuditRoot — Lane (§4.9)
+// // -----------------------------------------------------------------------------
+// export circuit mirrorAuditRoot(
+  // newRoot:              Bytes<32>,
+  // globalSeqAtMirror:    Uint<64>,
+  // writerSig:            Bytes<64>,
+  // writerAuthHash:       Bytes<32>,
+  // currentTime:          Uint<64>,
+// ): [] {
+  // assertInitialized();
+  // assert(disclose(blockTimeGte(disclose(currentTime))),
+         // "mirrorAuditRoot: timestamp cannot be in the future");
+//
+  // const dRoot  = disclose(newRoot);
+  // const dSeq   = disclose(globalSeqAtMirror);
+  // const dAuth  = disclose(writerAuthHash);
+  // const seqBytes = (dSeq as Field) as Bytes<32>;
+//
+  // const msg = persistentHash<Vector<5, Bytes<32>>>([
+    // pad(32, "pp:tariff:v2:mirrorAuditRoot"),
+    // selfBytes(),
+    // dRoot,
+    // seqBytes,
+    // dAuth,
+  // ]);
+//
+  // // WI-15.1 Fix A: `_auditWriterAuthorityTarget` sealed at genesis by Lane's
+  // // constructor from `initialAuditWriterAuthority`. No bootstrap short-circuit.
+  // const target = _auditWriterAuthorityTarget;
+  // assert(disclose(dAuth == target), "MIRROR_AUDIT_AUTH_MISMATCH");
+  // assert(disclose(signature_valid(dAuth, msg, disclose(writerSig))),
+         // "MIRROR_AUDIT_ROOT_SIG_INVALID");
+//
+  // const upGap = ((dSeq - _mirroredAuditGlobalSeq - 1) as Uint<64>);
+//
+  // _mirroredAuditRoot = dRoot;
+  // _mirroredAuditGlobalSeq = dSeq;
+//
+  // const payloadHash = persistentHash<Vector<3, Bytes<32>>>([
+    // pad(32, "pp:tariff:v2:mirrorAuditRoot"),
+    // dRoot,
+    // seqBytes,
+  // ]);
+  // emitAction(
+    // 22 as Uint<8>,
+    // pad(32, ""),
+    // pad(32, ""),
+    // msg,
+    // payloadHash,
+    // currentTime,
+  // );
+// }
+// END DEFERRED-TO-V1.1-F4-mirror-circuits
