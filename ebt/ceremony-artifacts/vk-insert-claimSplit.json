@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-29T14:56:09.577Z",
+  "mode": "live",
+  "network": "preview",
+  "operation": "insertVerifierKey",
+  "contractAddress": "10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f",
+  "circuitId": "claimSplit",
+  "txHash": "00eea886e0fa7bd8a4da22b3080fc763c703bca2e05eaac29b7781f25a3e70df44",
+  "txStatus": "SucceedEntirely",
+  "durSeconds": 23.4,
+  "entry": "insert-vk-claimSplit.mjs"
+}

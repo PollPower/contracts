@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-29T14:38:38.589Z",
+  "mode": "live",
+  "network": "preview",
+  "variant": "ebt-v8-ceremony",
+  "address": "10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f",
+  "txHash": "00a2d098e22123e19b3d3beb747647c54951808f354d740cf7699f1672b1cc49a3",
+  "entry": "deploy-ebt-v8-ceremony.mjs"
+}

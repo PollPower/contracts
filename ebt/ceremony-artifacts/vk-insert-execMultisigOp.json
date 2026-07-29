@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-29T15:01:44.412Z",
+  "mode": "live",
+  "network": "preview",
+  "operation": "insertVerifierKey",
+  "contractAddress": "10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f",
+  "circuitId": "execMultisigOp",
+  "txHash": "007f62960c35ca844b55c805bb6b865aafc23b9b72613421f6f7c3037d0b6c70a0",
+  "txStatus": "SucceedEntirely",
+  "durSeconds": 21.3,
+  "entry": "insert-vk-execMultisigOp.mjs"
+}

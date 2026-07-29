@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-29T14:46:50.378Z",
+  "mode": "live",
+  "network": "preview",
+  "operation": "insertVerifierKey",
+  "contractAddress": "10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f",
+  "circuitId": "getRegistryActionLogHeadSeq",
+  "txHash": "unknown",
+  "durSeconds": 20.8,
+  "entry": "insert-vk-getRegistryActionLogHeadSeq.mjs"
+}
