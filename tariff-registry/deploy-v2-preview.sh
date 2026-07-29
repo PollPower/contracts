@@ -75,8 +75,8 @@ fi
 
 if [[ -z "${TARIFF_DEPLOY_UTILS:-}" ]] \
   || [[ ! -f "${TARIFF_DEPLOY_UTILS:-}" ]] \
-  || ! rg -q 'export async function createWallet' "$TARIFF_DEPLOY_UTILS" \
-  || ! rg -q 'export async function createProviders' "$TARIFF_DEPLOY_UTILS"; then
+  || ! grep -q 'export async function createWallet' "$TARIFF_DEPLOY_UTILS" \
+  || ! grep -q 'export async function createProviders' "$TARIFF_DEPLOY_UTILS"; then
   echo "[wrapper] TARIFF_DEPLOY_UTILS missing or invalid: ${TARIFF_DEPLOY_UTILS:-}" >&2
   exit 4
 fi
@@ -102,7 +102,7 @@ if [[ ! -f "$DEPLOY_SCRIPT" ]]; then
 fi
 
 if [[ ! -f "$CONTRACT_DIR/node_modules/@midnight-ntwrk/midnight-js-contracts/package.json" ]]; then
-  echo "[wrapper] npm install required — @midnight-ntwrk/midnight-js-contracts not installed" >&2
+  echo "[wrapper] npm install required ΓÇö @midnight-ntwrk/midnight-js-contracts not installed" >&2
   exit 8
 fi
 
