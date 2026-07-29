@@ -882,276 +882,302 @@ export circuit registerLane(
     currentTime,
   );
 }
-export circuit retireLane(
-  scheduleId:   Bytes<32>,
-  leviedBy:     Bytes<32>,
-  laneKindByte: Uint<8>,
-  currentTime:  Uint<64>,
-): [] {
-  assertInitialized();
-  assert(disclose(blockTimeGte(disclose(currentTime))),
-         "retireLane: timestamp cannot be in the future");
-
-  // (a) Look up the lane by (scheduleId, leviedBy, laneKindByte).
-  const key = laneKey(scheduleId, leviedBy, laneKindByte);
-  const dKey = disclose(key);
-  assert(_registeredLanes.member(dKey), "LANE_NOT_FOUND");
-  const rec = _registeredLanes.lookup(dKey);
-
-  // (b) I-13.1-F: must be active.
-  assert(rec.retiredEpoch == 0 as Uint<64>, "LANE_ALREADY_RETIRED");
-
-  // (c) Prepare hash inputs.
-  const kindBytes         = (disclose(laneKindByte) as Field) as Bytes<32>;
-  const currentEpochBytes = (_currentEpoch.read() as Field) as Bytes<32>;
-  const timeBytes         = (disclose(currentTime) as Field) as Bytes<32>;
-
-  const actionHash = persistentHash<Vector<7, Bytes<32>>>([
-    pad(32, "pp:tariff:v1:retireLane"),
-    selfBytes(),
-    disclose(scheduleId),
-    disclose(leviedBy),
-    kindBytes,
-    currentEpochBytes,
-    timeBytes,
-  ]);
-
-  // (d) Federation approval + replay guard.
-  consumeFederationApproval(
-    actionHash,
-    pad(32, "pp:tariff:v1:retireLane"),
-  );
-
-  // (e) Mark retired; re-insert.
-  const retired = LaneRecord {
-    scheduleId:        rec.scheduleId,
-    laneKindByte:      rec.laneKindByte,
-    leviedBy:          rec.leviedBy,
-    bpsShare:          rec.bpsShare,
-    remitAddress:      rec.remitAddress,
-    basis:             rec.basis,
-    applicabilityHash: rec.applicabilityHash,
-    statuteRefHash:    rec.statuteRefHash,
-    effectiveEpoch:    rec.effectiveEpoch,
-    retiredEpoch:      _currentEpoch.read(),
-    remittanceMode:    rec.remittanceMode,
-    registeredAt:      rec.registeredAt,
-  };
-  _registeredLanes.insert(dKey, disclose(retired));
-  // V2-SPLIT-DESIGN.md §4.8 derived root is append-only in this implementation:
-  // chose (A) append-only per §4.6-implementation-note; sparse-tree deferred.
-  const retiredLaneRecordHash = persistentHash<Vector<13, Bytes<32>>>([
-    pad(32, "pp:tariff:v1:laneRecord"),
-    retired.scheduleId,
-    (retired.laneKindByte as Field) as Bytes<32>,
-    retired.leviedBy,
-    (retired.bpsShare as Field) as Bytes<32>,
-    retired.remitAddress,
-    (retired.basis as Field) as Bytes<32>,
-    retired.applicabilityHash,
-    retired.statuteRefHash,
-    (retired.effectiveEpoch as Field) as Bytes<32>,
-    (retired.retiredEpoch as Field) as Bytes<32>,
-    (retired.remittanceMode as Field) as Bytes<32>,
-    (retired.registeredAt as Field) as Bytes<32>,
-  ]);
-  const retiredLaneLeaf = persistentHash<Vector<3, Bytes<32>>>([
-    pad(32, "pp:tariff:v1:lanesLeaf"),
-    dKey,
-    retiredLaneRecordHash,
-  ]);
-  const retireLaneSeq = _lanesMerkleSeq.read();
-  appendLaneLeaf(disclose(retireLaneSeq) as Uint<64>, disclose(retiredLaneLeaf));
-  _lanesMerkleSeq.increment(1);
-
-  // (f) Emit action kind 7 = LANE_RETIRED.
-  //     nodeId: look it up from the parent schedule for keeper-mirror parity.
-  const schedRec = _registeredSchedules.lookup(disclose(scheduleId));
-  // WI-13.2: canonical payload over the RETIRED LaneRecord (retiredEpoch != 0),
-  // so WI-14's mirrorRetireLane overwrites its mirror with the same hash.
-  const payloadHash = laneActionPayloadHash(7 as Uint<8>, retired);
-  emitAction(
-    7 as Uint<8>,
-    scheduleId,
-    schedRec.nodeId,
-    actionHash,
-    payloadHash,
-    currentTime,
-  );
-}
-export circuit retuneClass(
-  scheduleId:            Bytes<32>,
-  classPath:             Bytes<32>,
-  newSplitBps:           SplitShares,
-  newRateFiatPerKwh:     Uint<64>,      // WI-06 §5.5: rate is a leaf-op knob
-  operatorId:            Bytes<32>,
-  operatorSignature:     Bytes<64>,
-  nonceIn:               Uint<64>,
-  currentTime:           Uint<64>,
-  divLo:                 DivResult,     // witness-divmod for low band edge
-  divHi:                 DivResult,     // witness-divmod for high band edge
-): [] {
-  assertInitialized();
-  assert(disclose(blockTimeGte(disclose(currentTime))),
-         "retuneClass: timestamp cannot be in the future");
-
-  const dSid = disclose(scheduleId);
-  assert(_registeredSchedules.member(dSid), "SCHEDULE_NOT_FOUND");
-  const rec = _registeredSchedules.lookup(dSid);
-
-  // SCHEDULE_NOT_LIVE: registered but retired at or before current epoch.
-  // rec.retiredEpoch == 0 means "still live." If nonzero, it was retired
-  // AT that epoch — no more retunes.
-  assert(rec.retiredEpoch == 0 as Uint<64>, "SCHEDULE_NOT_LIVE");
-
-  // Operator pubkey binding: the schedule pins WHICH operator may retune it.
-  assert(disclose(operatorId) == rec.operatorPubkey,
-         "RETUNE_OPERATOR_MISMATCH");
-
-  // R-B compound nonce: strict monotonicity per (operator, schedule, epoch).
-  const nonceKey = retuneNonceKey(operatorId, scheduleId);
-  const prev = _retuneNonces.member(disclose(nonceKey))
-    ? _retuneNonces.lookup(disclose(nonceKey))
-    : 0 as Uint<64>;
-  const expected = (prev + 1 as Uint<64>) as Uint<64>;
-  assert(disclose(nonceIn) == expected, "RETUNE_NONCE_MISMATCH");
-
-  // Cooldown: minimum interval since last retune of THIS class by THIS operator
-  // on THIS schedule.
-  const cdKey = retuneCooldownKey(operatorId, scheduleId, classPath);
-  if (_retuneLastTime.member(disclose(cdKey))) {
-    const lastT = _retuneLastTime.lookup(disclose(cdKey));
-    const earliest = (lastT + RETUNE_MIN_INTERVAL_S()) as Uint<64>;
-    // checked-cast: reverts if currentTime < earliest.
-    const _gap = (disclose(currentTime) - earliest) as Uint<64>;
-  }
-
-  // Operator sig hash — binds all inputs + epoch + nonce + self.
-  const currentEpochBytes = (_currentEpoch.read() as Field) as Bytes<32>;
-  const nonceBytes = (disclose(nonceIn) as Field) as Bytes<32>;
-  const timeBytes  = (disclose(currentTime) as Field) as Bytes<32>;
-  const rateBytes  = (disclose(newRateFiatPerKwh) as Field) as Bytes<32>;
-  const shHash     = splitSharesHash(newSplitBps);
-
-  // WI-13.2 design decision #5: this is the operator AUTHORIZATION/signature
-  // hash (flows into emitAction's actionHash slot), NOT the new canonical
-  // mirror payloadHash. Renamed retuneAuthHash to avoid conflation with the
-  // RegistryActionEntry.payloadHash added by this amendment.
-  const retuneAuthHash = persistentHash<Vector<9, Bytes<32>>>([
-    pad(32, "pp:tariff:v1:retuneClass"),
-    selfBytes(),
-    dSid,
-    disclose(classPath),
-    shHash,
-    rateBytes,
-    currentEpochBytes,
-    nonceBytes,
-    timeBytes,
-  ]);
-  assert(disclose(signature_valid(disclose(operatorId), retuneAuthHash,
-                                  disclose(operatorSignature))),
-         "RETUNE_OPERATOR_SIG_INVALID");
-
-  // I-B floor re-check (F-5, per retune). Checked-casts, no Field <.
-  const dSplit = disclose(newSplitBps);
-  const _ldMargin  = (dSplit.ldShareBps  - _LD_FLOOR_BPS)  as Uint<16>;
-  const _opsMargin = (dSplit.opsShareBps - _OPS_FLOOR_BPS) as Uint<16>;
-  //                    ^ reverts if under floor
-
-  // I-C: sum to EXACTLY 10000 (Field equality — EBT v7.4.2 L564 pattern).
-  const sumF = (dSplit.producerShareBps  as Field)
-             + (dSplit.ldShareBps        as Field)
-             + (dSplit.opsShareBps       as Field)
-             + (dSplit.daoShareBps       as Field)
-             + (dSplit.operatorMarginBps as Field)
-             + (dSplit.statutoryTotalBps as Field);
-  assert(sumF == 10000 as Field, "RETUNE_SUM_NOT_10000");
-
-  // T3.5 sanity band: newRateFiatPerKwh must be within ±SANITY_BAND_PCT of
-  // the SCHEDULE's declared refRateFiatPerKwh (rec.refRateFiatPerKwh).
-  // TARIFF-SCHEDULE-MODEL.md §4.4a C1 with checkedDivide-based edge calc
-  // (memo cites this section for the exact idiom).
-  //   lowEdge  = ref - checkedDivide(ref * bandLowBps, 10000)
-  //   highEdge = ref + checkedDivide(ref * bandHighBps, 10000)
-  //   assert lowEdge <= newRate <= highEdge  (two checked casts)
-  //
-  // bandBps = SANITY_BAND_PCT * 100  (e.g. 20% → 2000 bps).
-  // All intermediate math in Field to avoid Uint<128> overflow warnings;
-  // final band-edge assertions in Uint<128> via checked casts.
-  const bandBpsF = (_SANITY_BAND_PCT as Field) * (100 as Field);
-  const refRateF = rec.refRateFiatPerKwh as Field;
-  const bandDelta = checkedDivide(
-    refRateF * bandBpsF,
-    10000 as Field,
-    disclose(divLo),
-  );
-  // divHi is threaded through for future asymmetric bands + to lock the ABI
-  // shape; today the band is symmetric so bandDelta serves both edges.
-  const _dummyHi = checkedDivide(
-    refRateF * bandBpsF,
-    10000 as Field,
-    disclose(divHi),
-  );
-  const bandDeltaF = bandDelta as Field;
-  const newRateF = disclose(newRateFiatPerKwh) as Field;
-  // lowEdge  = refRate - bandDelta  (must not underflow refRate as Field)
-  // highEdge = refRate + bandDelta
-  //   assert lowEdge <= newRate  ≡ (newRate - lowEdge) as Uint<128>
-  //   assert newRate <= highEdge ≡ (highEdge - newRate) as Uint<128>
-  // Combining:
-  //   loGap = newRate - (refRate - bandDelta) = newRate + bandDelta - refRate
-  //   hiGap = (refRate + bandDelta) - newRate
-  const _bandLo = ((newRateF + bandDeltaF - refRateF) as Uint<128>);
-  const _bandHi = ((refRateF + bandDeltaF - newRateF) as Uint<128>);
-
-  // Commit the new class entry (bps + rate + timestamp).
-  const splitKey = classSplitKey(scheduleId, classPath);
-  const classEntry = ClassEntry {
-    bps:            disclose(newSplitBps),
-    rateFiatPerKwh: disclose(newRateFiatPerKwh),
-    lastUpdatedAt:  disclose(currentTime),
-  };
-  _classEntries.insert(disclose(splitKey), disclose(classEntry));
-  const classEntryHash = persistentHash<Vector<9, Bytes<32>>>([
-    pad(32, "pp:tariff:v1:classEntry"),
-    (classEntry.bps.producerShareBps as Field) as Bytes<32>,
-    (classEntry.bps.ldShareBps as Field) as Bytes<32>,
-    (classEntry.bps.opsShareBps as Field) as Bytes<32>,
-    (classEntry.bps.daoShareBps as Field) as Bytes<32>,
-    (classEntry.bps.operatorMarginBps as Field) as Bytes<32>,
-    (classEntry.bps.statutoryTotalBps as Field) as Bytes<32>,
-    (classEntry.rateFiatPerKwh as Field) as Bytes<32>,
-    (classEntry.lastUpdatedAt as Field) as Bytes<32>,
-  ]);
-  // V2-SPLIT-DESIGN.md §4.7 maps class-entry root updates to `retuneClass`.
-  // chose (A) append-only per §4.6-implementation-note; sparse-tree deferred.
-  const classEntryLeaf = persistentHash<Vector<3, Bytes<32>>>([
-    pad(32, "pp:tariff:v1:classEntriesLeaf"),
-    disclose(splitKey),
-    classEntryHash,
-  ]);
-  const classEntrySeq = _classEntriesMerkleSeq.read();
-  appendClassEntryLeaf(disclose(classEntrySeq) as Uint<64>, disclose(classEntryLeaf));
-  _classEntriesMerkleSeq.increment(1);
-
-  // Advance nonce and cooldown.
-  _retuneNonces.insert(disclose(nonceKey), disclose(nonceIn));
-  _retuneLastTime.insert(disclose(cdKey), disclose(currentTime));
-
-  // WI-13.2: canonical payload over (scheduleId, classPath, the 6 SplitShares
-  // subfields, rateFiatPerKwh, lastUpdatedAt = currentTime). Distinct from the
-  // authorization hash (retuneAuthHash → actionHash slot).
-  const payloadHash = retuneActionPayloadHash(
-    scheduleId, classPath, newSplitBps, newRateFiatPerKwh, currentTime);
-  emitAction(
-    2 as Uint<8>,
-    dSid,
-    rec.nodeId,
-    retuneAuthHash,
-    payloadHash,
-    currentTime,
-  );
-}
+// ============================================================================
+// DEFERRED TO v1.1 (WI-15.1 Lane-shrink for Preview block limit)
+// ----------------------------------------------------------------------------
+// B1 attempt #4 (2026-07-29) proved the full Lane sibling exceeds Preview's
+// per-transaction block limit (error 1010: Invalid Transaction: would exhaust
+// the block limits). Root cause: msfed write circuits registerLane (180 KB),
+// retireLane (161 KB), and retuneClass (170 KB) sum to 511 KB of zkir alone;
+// combined contract/index.js = 693 KB vs Schedule's 485 KB (largest sibling
+// that DOES deploy).
+//
+// retireLane and retuneClass are lifecycle ops with ZERO day-1 pilot callers:
+//   - No callers in /opt/pollpower/settlement-api/src/ (verified 2026-07-29)
+//   - No internal .compact callers in any sibling (verified 2026-07-29)
+//   - Only references are comments and struct docstrings
+//
+// registerLane STAYS (day-1 requirement for lane bootstrap).
+//
+// Fence approach: line-prefix (//). Un-fence for v1.1 = strip leading '// '
+// from lines between the BEGIN and END markers below.
+// Expected new contract/index.js size: ~350-400 KB (well under 485 KB).
+//
+// Related: PR #64 (WI-15.1 live-mode audit fixes) blocked on live B1 success.
+// This shrink unblocks that PR.
+// ============================================================================
+// BEGIN DEFERRED-TO-V1.1
+// export circuit retireLane(
+//   scheduleId:   Bytes<32>,
+//   leviedBy:     Bytes<32>,
+//   laneKindByte: Uint<8>,
+//   currentTime:  Uint<64>,
+// ): [] {
+//   assertInitialized();
+//   assert(disclose(blockTimeGte(disclose(currentTime))),
+//          "retireLane: timestamp cannot be in the future");
+//
+//   // (a) Look up the lane by (scheduleId, leviedBy, laneKindByte).
+//   const key = laneKey(scheduleId, leviedBy, laneKindByte);
+//   const dKey = disclose(key);
+//   assert(_registeredLanes.member(dKey), "LANE_NOT_FOUND");
+//   const rec = _registeredLanes.lookup(dKey);
+//
+//   // (b) I-13.1-F: must be active.
+//   assert(rec.retiredEpoch == 0 as Uint<64>, "LANE_ALREADY_RETIRED");
+//
+//   // (c) Prepare hash inputs.
+//   const kindBytes         = (disclose(laneKindByte) as Field) as Bytes<32>;
+//   const currentEpochBytes = (_currentEpoch.read() as Field) as Bytes<32>;
+//   const timeBytes         = (disclose(currentTime) as Field) as Bytes<32>;
+//
+//   const actionHash = persistentHash<Vector<7, Bytes<32>>>([
+//     pad(32, "pp:tariff:v1:retireLane"),
+//     selfBytes(),
+//     disclose(scheduleId),
+//     disclose(leviedBy),
+//     kindBytes,
+//     currentEpochBytes,
+//     timeBytes,
+//   ]);
+//
+//   // (d) Federation approval + replay guard.
+//   consumeFederationApproval(
+//     actionHash,
+//     pad(32, "pp:tariff:v1:retireLane"),
+//   );
+//
+//   // (e) Mark retired; re-insert.
+//   const retired = LaneRecord {
+//     scheduleId:        rec.scheduleId,
+//     laneKindByte:      rec.laneKindByte,
+//     leviedBy:          rec.leviedBy,
+//     bpsShare:          rec.bpsShare,
+//     remitAddress:      rec.remitAddress,
+//     basis:             rec.basis,
+//     applicabilityHash: rec.applicabilityHash,
+//     statuteRefHash:    rec.statuteRefHash,
+//     effectiveEpoch:    rec.effectiveEpoch,
+//     retiredEpoch:      _currentEpoch.read(),
+//     remittanceMode:    rec.remittanceMode,
+//     registeredAt:      rec.registeredAt,
+//   };
+//   _registeredLanes.insert(dKey, disclose(retired));
+//   // V2-SPLIT-DESIGN.md §4.8 derived root is append-only in this implementation:
+//   // chose (A) append-only per §4.6-implementation-note; sparse-tree deferred.
+//   const retiredLaneRecordHash = persistentHash<Vector<13, Bytes<32>>>([
+//     pad(32, "pp:tariff:v1:laneRecord"),
+//     retired.scheduleId,
+//     (retired.laneKindByte as Field) as Bytes<32>,
+//     retired.leviedBy,
+//     (retired.bpsShare as Field) as Bytes<32>,
+//     retired.remitAddress,
+//     (retired.basis as Field) as Bytes<32>,
+//     retired.applicabilityHash,
+//     retired.statuteRefHash,
+//     (retired.effectiveEpoch as Field) as Bytes<32>,
+//     (retired.retiredEpoch as Field) as Bytes<32>,
+//     (retired.remittanceMode as Field) as Bytes<32>,
+//     (retired.registeredAt as Field) as Bytes<32>,
+//   ]);
+//   const retiredLaneLeaf = persistentHash<Vector<3, Bytes<32>>>([
+//     pad(32, "pp:tariff:v1:lanesLeaf"),
+//     dKey,
+//     retiredLaneRecordHash,
+//   ]);
+//   const retireLaneSeq = _lanesMerkleSeq.read();
+//   appendLaneLeaf(disclose(retireLaneSeq) as Uint<64>, disclose(retiredLaneLeaf));
+//   _lanesMerkleSeq.increment(1);
+//
+//   // (f) Emit action kind 7 = LANE_RETIRED.
+//   //     nodeId: look it up from the parent schedule for keeper-mirror parity.
+//   const schedRec = _registeredSchedules.lookup(disclose(scheduleId));
+//   // WI-13.2: canonical payload over the RETIRED LaneRecord (retiredEpoch != 0),
+//   // so WI-14's mirrorRetireLane overwrites its mirror with the same hash.
+//   const payloadHash = laneActionPayloadHash(7 as Uint<8>, retired);
+//   emitAction(
+//     7 as Uint<8>,
+//     scheduleId,
+//     schedRec.nodeId,
+//     actionHash,
+//     payloadHash,
+//     currentTime,
+//   );
+// }
+// export circuit retuneClass(
+//   scheduleId:            Bytes<32>,
+//   classPath:             Bytes<32>,
+//   newSplitBps:           SplitShares,
+//   newRateFiatPerKwh:     Uint<64>,      // WI-06 §5.5: rate is a leaf-op knob
+//   operatorId:            Bytes<32>,
+//   operatorSignature:     Bytes<64>,
+//   nonceIn:               Uint<64>,
+//   currentTime:           Uint<64>,
+//   divLo:                 DivResult,     // witness-divmod for low band edge
+//   divHi:                 DivResult,     // witness-divmod for high band edge
+// ): [] {
+//   assertInitialized();
+//   assert(disclose(blockTimeGte(disclose(currentTime))),
+//          "retuneClass: timestamp cannot be in the future");
+//
+//   const dSid = disclose(scheduleId);
+//   assert(_registeredSchedules.member(dSid), "SCHEDULE_NOT_FOUND");
+//   const rec = _registeredSchedules.lookup(dSid);
+//
+//   // SCHEDULE_NOT_LIVE: registered but retired at or before current epoch.
+//   // rec.retiredEpoch == 0 means "still live." If nonzero, it was retired
+//   // AT that epoch — no more retunes.
+//   assert(rec.retiredEpoch == 0 as Uint<64>, "SCHEDULE_NOT_LIVE");
+//
+//   // Operator pubkey binding: the schedule pins WHICH operator may retune it.
+//   assert(disclose(operatorId) == rec.operatorPubkey,
+//          "RETUNE_OPERATOR_MISMATCH");
+//
+//   // R-B compound nonce: strict monotonicity per (operator, schedule, epoch).
+//   const nonceKey = retuneNonceKey(operatorId, scheduleId);
+//   const prev = _retuneNonces.member(disclose(nonceKey))
+//     ? _retuneNonces.lookup(disclose(nonceKey))
+//     : 0 as Uint<64>;
+//   const expected = (prev + 1 as Uint<64>) as Uint<64>;
+//   assert(disclose(nonceIn) == expected, "RETUNE_NONCE_MISMATCH");
+//
+//   // Cooldown: minimum interval since last retune of THIS class by THIS operator
+//   // on THIS schedule.
+//   const cdKey = retuneCooldownKey(operatorId, scheduleId, classPath);
+//   if (_retuneLastTime.member(disclose(cdKey))) {
+//     const lastT = _retuneLastTime.lookup(disclose(cdKey));
+//     const earliest = (lastT + RETUNE_MIN_INTERVAL_S()) as Uint<64>;
+//     // checked-cast: reverts if currentTime < earliest.
+//     const _gap = (disclose(currentTime) - earliest) as Uint<64>;
+//   }
+//
+//   // Operator sig hash — binds all inputs + epoch + nonce + self.
+//   const currentEpochBytes = (_currentEpoch.read() as Field) as Bytes<32>;
+//   const nonceBytes = (disclose(nonceIn) as Field) as Bytes<32>;
+//   const timeBytes  = (disclose(currentTime) as Field) as Bytes<32>;
+//   const rateBytes  = (disclose(newRateFiatPerKwh) as Field) as Bytes<32>;
+//   const shHash     = splitSharesHash(newSplitBps);
+//
+//   // WI-13.2 design decision #5: this is the operator AUTHORIZATION/signature
+//   // hash (flows into emitAction's actionHash slot), NOT the new canonical
+//   // mirror payloadHash. Renamed retuneAuthHash to avoid conflation with the
+//   // RegistryActionEntry.payloadHash added by this amendment.
+//   const retuneAuthHash = persistentHash<Vector<9, Bytes<32>>>([
+//     pad(32, "pp:tariff:v1:retuneClass"),
+//     selfBytes(),
+//     dSid,
+//     disclose(classPath),
+//     shHash,
+//     rateBytes,
+//     currentEpochBytes,
+//     nonceBytes,
+//     timeBytes,
+//   ]);
+//   assert(disclose(signature_valid(disclose(operatorId), retuneAuthHash,
+//                                   disclose(operatorSignature))),
+//          "RETUNE_OPERATOR_SIG_INVALID");
+//
+//   // I-B floor re-check (F-5, per retune). Checked-casts, no Field <.
+//   const dSplit = disclose(newSplitBps);
+//   const _ldMargin  = (dSplit.ldShareBps  - _LD_FLOOR_BPS)  as Uint<16>;
+//   const _opsMargin = (dSplit.opsShareBps - _OPS_FLOOR_BPS) as Uint<16>;
+//   //                    ^ reverts if under floor
+//
+//   // I-C: sum to EXACTLY 10000 (Field equality — EBT v7.4.2 L564 pattern).
+//   const sumF = (dSplit.producerShareBps  as Field)
+//              + (dSplit.ldShareBps        as Field)
+//              + (dSplit.opsShareBps       as Field)
+//              + (dSplit.daoShareBps       as Field)
+//              + (dSplit.operatorMarginBps as Field)
+//              + (dSplit.statutoryTotalBps as Field);
+//   assert(sumF == 10000 as Field, "RETUNE_SUM_NOT_10000");
+//
+//   // T3.5 sanity band: newRateFiatPerKwh must be within ±SANITY_BAND_PCT of
+//   // the SCHEDULE's declared refRateFiatPerKwh (rec.refRateFiatPerKwh).
+//   // TARIFF-SCHEDULE-MODEL.md §4.4a C1 with checkedDivide-based edge calc
+//   // (memo cites this section for the exact idiom).
+//   //   lowEdge  = ref - checkedDivide(ref * bandLowBps, 10000)
+//   //   highEdge = ref + checkedDivide(ref * bandHighBps, 10000)
+//   //   assert lowEdge <= newRate <= highEdge  (two checked casts)
+//   //
+//   // bandBps = SANITY_BAND_PCT * 100  (e.g. 20% → 2000 bps).
+//   // All intermediate math in Field to avoid Uint<128> overflow warnings;
+//   // final band-edge assertions in Uint<128> via checked casts.
+//   const bandBpsF = (_SANITY_BAND_PCT as Field) * (100 as Field);
+//   const refRateF = rec.refRateFiatPerKwh as Field;
+//   const bandDelta = checkedDivide(
+//     refRateF * bandBpsF,
+//     10000 as Field,
+//     disclose(divLo),
+//   );
+//   // divHi is threaded through for future asymmetric bands + to lock the ABI
+//   // shape; today the band is symmetric so bandDelta serves both edges.
+//   const _dummyHi = checkedDivide(
+//     refRateF * bandBpsF,
+//     10000 as Field,
+//     disclose(divHi),
+//   );
+//   const bandDeltaF = bandDelta as Field;
+//   const newRateF = disclose(newRateFiatPerKwh) as Field;
+//   // lowEdge  = refRate - bandDelta  (must not underflow refRate as Field)
+//   // highEdge = refRate + bandDelta
+//   //   assert lowEdge <= newRate  ≡ (newRate - lowEdge) as Uint<128>
+//   //   assert newRate <= highEdge ≡ (highEdge - newRate) as Uint<128>
+//   // Combining:
+//   //   loGap = newRate - (refRate - bandDelta) = newRate + bandDelta - refRate
+//   //   hiGap = (refRate + bandDelta) - newRate
+//   const _bandLo = ((newRateF + bandDeltaF - refRateF) as Uint<128>);
+//   const _bandHi = ((refRateF + bandDeltaF - newRateF) as Uint<128>);
+//
+//   // Commit the new class entry (bps + rate + timestamp).
+//   const splitKey = classSplitKey(scheduleId, classPath);
+//   const classEntry = ClassEntry {
+//     bps:            disclose(newSplitBps),
+//     rateFiatPerKwh: disclose(newRateFiatPerKwh),
+//     lastUpdatedAt:  disclose(currentTime),
+//   };
+//   _classEntries.insert(disclose(splitKey), disclose(classEntry));
+//   const classEntryHash = persistentHash<Vector<9, Bytes<32>>>([
+//     pad(32, "pp:tariff:v1:classEntry"),
+//     (classEntry.bps.producerShareBps as Field) as Bytes<32>,
+//     (classEntry.bps.ldShareBps as Field) as Bytes<32>,
+//     (classEntry.bps.opsShareBps as Field) as Bytes<32>,
+//     (classEntry.bps.daoShareBps as Field) as Bytes<32>,
+//     (classEntry.bps.operatorMarginBps as Field) as Bytes<32>,
+//     (classEntry.bps.statutoryTotalBps as Field) as Bytes<32>,
+//     (classEntry.rateFiatPerKwh as Field) as Bytes<32>,
+//     (classEntry.lastUpdatedAt as Field) as Bytes<32>,
+//   ]);
+//   // V2-SPLIT-DESIGN.md §4.7 maps class-entry root updates to `retuneClass`.
+//   // chose (A) append-only per §4.6-implementation-note; sparse-tree deferred.
+//   const classEntryLeaf = persistentHash<Vector<3, Bytes<32>>>([
+//     pad(32, "pp:tariff:v1:classEntriesLeaf"),
+//     disclose(splitKey),
+//     classEntryHash,
+//   ]);
+//   const classEntrySeq = _classEntriesMerkleSeq.read();
+//   appendClassEntryLeaf(disclose(classEntrySeq) as Uint<64>, disclose(classEntryLeaf));
+//   _classEntriesMerkleSeq.increment(1);
+//
+//   // Advance nonce and cooldown.
+//   _retuneNonces.insert(disclose(nonceKey), disclose(nonceIn));
+//   _retuneLastTime.insert(disclose(cdKey), disclose(currentTime));
+//
+//   // WI-13.2: canonical payload over (scheduleId, classPath, the 6 SplitShares
+//   // subfields, rateFiatPerKwh, lastUpdatedAt = currentTime). Distinct from the
+//   // authorization hash (retuneAuthHash → actionHash slot).
+//   const payloadHash = retuneActionPayloadHash(
+//     scheduleId, classPath, newSplitBps, newRateFiatPerKwh, currentTime);
+//   emitAction(
+//     2 as Uint<8>,
+//     dSid,
+//     rec.nodeId,
+//     retuneAuthHash,
+//     payloadHash,
+//     currentTime,
+//   );
+// }
+// END DEFERRED-TO-V1.1
 export circuit resolveLane(
   scheduleId:   Bytes<32>,
   leviedBy:     Bytes<32>,
