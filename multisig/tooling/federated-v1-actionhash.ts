@@ -69,7 +69,7 @@ export const V7_DOMAIN = {
 export const COUNCIL_SIZE = 5;
 export const CONVENE_PERIOD_SECONDS = 2_592_000n; // 30 days - matches contract
 
-function padToBytes32(asciiTag: string): Uint8Array {
+export function padToBytes32(asciiTag: string): Uint8Array {
   const bytes = new Uint8Array(32);
   const ascii = Buffer.from(asciiTag, 'ascii');
   if (ascii.length > 32) throw new Error(`tag too long (>32 bytes): ${asciiTag}`);
@@ -79,7 +79,7 @@ function padToBytes32(asciiTag: string): Uint8Array {
 
 // uint -> Field -> Bytes<32>, matching the contract's
 //   (value as Field) as Bytes<32>
-function uintToBytes32(value: bigint, label: string): Uint8Array {
+export function uintToBytes32(value: bigint, label: string): Uint8Array {
   return convertFieldToBytes(32, value, label);
 }
 
