@@ -1,0 +1,49 @@
+[pilot-monolith] Starting tariff population...
+[pilot-monolith] using manifest: /home/pollpower/contracts/tariff-registry/deploy/artifacts/monolith-preview-2026-07-31T16-27-30.json
+[pilot-monolith] contractAddress=556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[pilot-monolith] scheduleAddr=556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[pilot-monolith] laneAddr=556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[pilot-monolith] auditAddr=556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[pilot-monolith] govAddr=556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[pilot-monolith] federationAuthority=f41fdb102441fda7eddd2d96e6920e6a9cd033ff110fc98c6594043c68391ba1
+[pilot-monolith] federation authority verified
+2026-08-01 01:05:36        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-08-01 01:05:36        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[pilot-monolith] readCurrentEpoch: _currentEpoch=0
+[pilot-monolith] currentEpoch=0, effectiveEpoch=2
+[pilot-monolith] scheduleActionHash=491df40befe13eb9259106f5e3da580252b952d91626e488c4e5950536eac2d6
+[pilot-monolith] validatorAttestor=3e64530c332524b85a8d4c53e2699392da6dc31a4080c5a2f1655261179ca6af
+[pilot-monolith] Submitting registerSchedule...
+[witness] signature_valid called:
+  pubkey  = 3e64530c332524b85a8d4c53e2699392da6dc31a4080c5a2f1655261179ca6af len 32
+  msgHash = 491df40befe13eb9259106f5e3da580252b952d91626e488c4e5950536eac2d6 len 32
+  sig     = 9fb5c73be43004b6e711d9a80bc9830634ab74fc0d96942304c0c1163e6103edeee189fa5e65284ee1f454b1189202286357bee45c4241c016d4aabf6ff1660c len 64
+  verify  = true 
+[witness] multisig_signature_valid called:
+  payload       = 491df40befe13eb9259106f5e3da580252b952d91626e488c4e5950536eac2d6 len 32
+  authorityHash = f41fdb102441fda7eddd2d96e6920e6a9cd033ff110fc98c6594043c68391ba1 len 32
+[pilot-monolith] registerSchedule tx: 0023f957e6ecdc80cc24985d84a16f67917d9670af0816069ef3218fb70bf12db8
+[pilot-monolith] derived scheduleId=0a0ca2e41632da85802a34207c58883f54cc2a1375ca77887c7b8dc682df101a
+[pilot-monolith] Submitting registerLane (producer)...
+[witness] multisig_signature_valid called:
+  payload       = 574694ef8b8ef8c7609a338429ddbff60a00cc9cd52f2d2cf34ecfd5b1c60290 len 32
+  authorityHash = f41fdb102441fda7eddd2d96e6920e6a9cd033ff110fc98c6594043c68391ba1 len 32
+[pilot-monolith]   producer tx: 006ea78e41591c09dd29f5b02666de9386201dd1506fd00a6cac9b569875b0b19b
+[pilot-monolith] Submitting registerLane (ops)...
+[witness] multisig_signature_valid called:
+  payload       = 3ddc0dd5be7a01424d5a41091d4ef3c66bbc2cd7b50e0d16b99acbbc50d909d7 len 32
+  authorityHash = f41fdb102441fda7eddd2d96e6920e6a9cd033ff110fc98c6594043c68391ba1 len 32
+[pilot-monolith]   ops tx: 00c19a8901928f67c4c366a2f2dd99be7780c49dad37c4abcdcf173b865bab233e
+[pilot-monolith] Submitting registerLane (dividend)...
+[witness] multisig_signature_valid called:
+  payload       = eb46a04b2b78bcdd38f5ec336e46606dac7e9fd830d5e62791b8c3330b423f1f len 32
+  authorityHash = f41fdb102441fda7eddd2d96e6920e6a9cd033ff110fc98c6594043c68391ba1 len 32
+[pilot-monolith]   dividend tx: 00009a5e7444ff5cc87622c4494ab9ee688c83f4c2884af692318549f886aaea70
+[pilot-monolith] Submitting registerLane (statutory)...
+[witness] multisig_signature_valid called:
+  payload       = b579af24fec1df2f39f46bf78eede5ced24ebfced0229776d4ea2caea3585f6a len 32
+  authorityHash = f41fdb102441fda7eddd2d96e6920e6a9cd033ff110fc98c6594043c68391ba1 len 32
+[pilot-monolith]   statutory tx: 00215c1478827e5b03684ff7500a1cec1b6eb0ca6364345e9dbd59901c58bb5e66
+[pilot-monolith] bps sum verified: 10000
+[pilot-monolith] manifest written: /home/pollpower/contracts/tariff-registry/deploy/artifacts/pilot-tariff-monolith-2026-08-01T01-24-27-440Z.json
+[pilot-monolith] ALL DONE (1138458ms)

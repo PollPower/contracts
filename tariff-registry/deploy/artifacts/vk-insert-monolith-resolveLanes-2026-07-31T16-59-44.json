@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-31T16:59:44.846Z",
+  "mode": "live",
+  "network": "preview",
+  "operation": "insertVerifierKey",
+  "contractAddress": "556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9",
+  "circuitId": "resolveLanes",
+  "txHash": "00823e0fc11c3443b640d4809fa6a083abd6463fb974341d1fe5bfd002d6316cb5",
+  "txStatus": "SucceedEntirely",
+  "onChainStatus": "DEFINED",
+  "durSeconds": 24.7,
+  "entry": "insert-vk-resolveLanes.mjs"
+}

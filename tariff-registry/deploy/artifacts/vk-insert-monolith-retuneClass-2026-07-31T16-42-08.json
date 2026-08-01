@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-31T16:42:08.752Z",
+  "mode": "live",
+  "network": "preview",
+  "operation": "insertVerifierKey",
+  "contractAddress": "556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9",
+  "circuitId": "retuneClass",
+  "txHash": "003c7f2bb8e85562d275de83fb6b8b7d82550215ad3eb235f4fd97f01fee026781",
+  "txStatus": "SucceedEntirely",
+  "onChainStatus": "DEFINED",
+  "durSeconds": 19,
+  "entry": "insert-vk-retuneClass.mjs"
+}

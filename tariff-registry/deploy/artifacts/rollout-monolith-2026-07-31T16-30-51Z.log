@@ -1,0 +1,251 @@
+[rollout] start: 2026-07-31T16:30:51Z
+[rollout] 11 circuits to insert
+
+==================== isScheduleActive ====================
+[rollout] 16:30:51 starting isScheduleActive
+[insert-vk:isScheduleActive] start: 2026-07-31T16:30:51.850Z
+[insert-vk:isScheduleActive] mode: live preview
+[insert-vk:isScheduleActive] circuit: isScheduleActive
+[insert-vk:isScheduleActive] loading providers...
+2026-07-31 16:31:01        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-07-31 16:31:01        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[insert-vk:isScheduleActive] target contract: 556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[insert-vk:isScheduleActive] target circuit:  isScheduleActive
+[insert-vk:isScheduleActive] confirming circuit is CURRENTLY undefined on chain...
+[insert-vk:isScheduleActive] OK: circuit is not yet defined on chain
+[insert-vk:isScheduleActive] loading full compiled contract...
+[insert-vk:isScheduleActive] loading verifier key bytes...
+[insert-vk:isScheduleActive] loaded 1351 verifier bytes from /home/pollpower/contracts/tariff-registry/build/keys/isScheduleActive.verifier
+[insert-vk:isScheduleActive] submitting InsertVerifierKey maintenance tx...
+[insert-vk:isScheduleActive] InsertVerifierKey tx succeeded in 21.6s
+[insert-vk:isScheduleActive] post-tx operation for isScheduleActive: DEFINED ✅
+[insert-vk:isScheduleActive] wrote manifest: /home/pollpower/contracts/tariff-registry/deploy/artifacts/vk-insert-monolith-isScheduleActive-2026-07-31T16-33-38.json
+[insert-vk:isScheduleActive] DONE
+[rollout] ✅ isScheduleActive ok in 167s
+
+==================== retireSchedule ====================
+[rollout] 16:33:38 starting retireSchedule
+[insert-vk:retireSchedule] start: 2026-07-31T16:33:38.444Z
+[insert-vk:retireSchedule] mode: live preview
+[insert-vk:retireSchedule] circuit: retireSchedule
+[insert-vk:retireSchedule] loading providers...
+2026-07-31 16:33:48        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-07-31 16:33:48        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[insert-vk:retireSchedule] target contract: 556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[insert-vk:retireSchedule] target circuit:  retireSchedule
+[insert-vk:retireSchedule] confirming circuit is CURRENTLY undefined on chain...
+[insert-vk:retireSchedule] OK: circuit is not yet defined on chain
+[insert-vk:retireSchedule] loading full compiled contract...
+[insert-vk:retireSchedule] loading verifier key bytes...
+[insert-vk:retireSchedule] loaded 2119 verifier bytes from /home/pollpower/contracts/tariff-registry/build/keys/retireSchedule.verifier
+[insert-vk:retireSchedule] submitting InsertVerifierKey maintenance tx...
+[insert-vk:retireSchedule] InsertVerifierKey tx succeeded in 21.9s
+[insert-vk:retireSchedule] post-tx operation for retireSchedule: DEFINED ✅
+[insert-vk:retireSchedule] wrote manifest: /home/pollpower/contracts/tariff-registry/deploy/artifacts/vk-insert-monolith-retireSchedule-2026-07-31T16-36-26.json
+[insert-vk:retireSchedule] DONE
+[rollout] ✅ retireSchedule ok in 168s
+
+==================== retireLane ====================
+[rollout] 16:36:26 starting retireLane
+[insert-vk:retireLane] start: 2026-07-31T16:36:26.889Z
+[insert-vk:retireLane] mode: live preview
+[insert-vk:retireLane] circuit: retireLane
+[insert-vk:retireLane] loading providers...
+2026-07-31 16:36:32        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-07-31 16:36:32        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[insert-vk:retireLane] target contract: 556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[insert-vk:retireLane] target circuit:  retireLane
+[insert-vk:retireLane] confirming circuit is CURRENTLY undefined on chain...
+[insert-vk:retireLane] OK: circuit is not yet defined on chain
+[insert-vk:retireLane] loading full compiled contract...
+[insert-vk:retireLane] loading verifier key bytes...
+[insert-vk:retireLane] loaded 2119 verifier bytes from /home/pollpower/contracts/tariff-registry/build/keys/retireLane.verifier
+[insert-vk:retireLane] submitting InsertVerifierKey maintenance tx...
+[insert-vk:retireLane] InsertVerifierKey tx succeeded in 25.4s
+[insert-vk:retireLane] post-tx operation for retireLane: DEFINED ✅
+[insert-vk:retireLane] wrote manifest: /home/pollpower/contracts/tariff-registry/deploy/artifacts/vk-insert-monolith-retireLane-2026-07-31T16-39-20.json
+[insert-vk:retireLane] DONE
+[rollout] ✅ retireLane ok in 174s
+
+==================== retuneClass ====================
+[rollout] 16:39:20 starting retuneClass
+[insert-vk:retuneClass] start: 2026-07-31T16:39:20.866Z
+[insert-vk:retuneClass] mode: live preview
+[insert-vk:retuneClass] circuit: retuneClass
+[insert-vk:retuneClass] loading providers...
+2026-07-31 16:39:30        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-07-31 16:39:30        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[insert-vk:retuneClass] target contract: 556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[insert-vk:retuneClass] target circuit:  retuneClass
+[insert-vk:retuneClass] confirming circuit is CURRENTLY undefined on chain...
+[insert-vk:retuneClass] OK: circuit is not yet defined on chain
+[insert-vk:retuneClass] loading full compiled contract...
+[insert-vk:retuneClass] loading verifier key bytes...
+[insert-vk:retuneClass] loaded 2119 verifier bytes from /home/pollpower/contracts/tariff-registry/build/keys/retuneClass.verifier
+[insert-vk:retuneClass] submitting InsertVerifierKey maintenance tx...
+[insert-vk:retuneClass] InsertVerifierKey tx succeeded in 19.0s
+[insert-vk:retuneClass] post-tx operation for retuneClass: DEFINED ✅
+[insert-vk:retuneClass] wrote manifest: /home/pollpower/contracts/tariff-registry/deploy/artifacts/vk-insert-monolith-retuneClass-2026-07-31T16-42-08.json
+[insert-vk:retuneClass] DONE
+[rollout] ✅ retuneClass ok in 168s
+
+==================== setFederationAuthority ====================
+[rollout] 16:42:08 starting setFederationAuthority
+[insert-vk:setFederationAuthority] start: 2026-07-31T16:42:08.814Z
+[insert-vk:setFederationAuthority] mode: live preview
+[insert-vk:setFederationAuthority] circuit: setFederationAuthority
+[insert-vk:setFederationAuthority] loading providers...
+2026-07-31 16:42:16        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-07-31 16:42:16        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[insert-vk:setFederationAuthority] target contract: 556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[insert-vk:setFederationAuthority] target circuit:  setFederationAuthority
+[insert-vk:setFederationAuthority] confirming circuit is CURRENTLY undefined on chain...
+[insert-vk:setFederationAuthority] OK: circuit is not yet defined on chain
+[insert-vk:setFederationAuthority] loading full compiled contract...
+[insert-vk:setFederationAuthority] loading verifier key bytes...
+[insert-vk:setFederationAuthority] loaded 2119 verifier bytes from /home/pollpower/contracts/tariff-registry/build/keys/setFederationAuthority.verifier
+[insert-vk:setFederationAuthority] submitting InsertVerifierKey maintenance tx...
+[insert-vk:setFederationAuthority] InsertVerifierKey tx succeeded in 24.1s
+[insert-vk:setFederationAuthority] post-tx operation for setFederationAuthority: DEFINED ✅
+[insert-vk:setFederationAuthority] wrote manifest: /home/pollpower/contracts/tariff-registry/deploy/artifacts/vk-insert-monolith-setFederationAuthority-2026-07-31T16-45-03.json
+[insert-vk:setFederationAuthority] DONE
+[rollout] ✅ setFederationAuthority ok in 175s
+
+==================== setNationalContext ====================
+[rollout] 16:45:03 starting setNationalContext
+[insert-vk:setNationalContext] start: 2026-07-31T16:45:03.433Z
+[insert-vk:setNationalContext] mode: live preview
+[insert-vk:setNationalContext] circuit: setNationalContext
+[insert-vk:setNationalContext] loading providers...
+2026-07-31 16:45:11        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-07-31 16:45:11        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[insert-vk:setNationalContext] target contract: 556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[insert-vk:setNationalContext] target circuit:  setNationalContext
+[insert-vk:setNationalContext] confirming circuit is CURRENTLY undefined on chain...
+[insert-vk:setNationalContext] OK: circuit is not yet defined on chain
+[insert-vk:setNationalContext] loading full compiled contract...
+[insert-vk:setNationalContext] loading verifier key bytes...
+[insert-vk:setNationalContext] loaded 2119 verifier bytes from /home/pollpower/contracts/tariff-registry/build/keys/setNationalContext.verifier
+[insert-vk:setNationalContext] submitting InsertVerifierKey maintenance tx...
+[insert-vk:setNationalContext] InsertVerifierKey tx succeeded in 20.4s
+[insert-vk:setNationalContext] post-tx operation for setNationalContext: DEFINED ✅
+[insert-vk:setNationalContext] wrote manifest: /home/pollpower/contracts/tariff-registry/deploy/artifacts/vk-insert-monolith-setNationalContext-2026-07-31T16-47-57.json
+[insert-vk:setNationalContext] DONE
+[rollout] ✅ setNationalContext ok in 174s
+
+==================== resolvePath ====================
+[rollout] 16:47:57 starting resolvePath
+[insert-vk:resolvePath] start: 2026-07-31T16:47:57.833Z
+[insert-vk:resolvePath] mode: live preview
+[insert-vk:resolvePath] circuit: resolvePath
+[insert-vk:resolvePath] loading providers...
+2026-07-31 16:48:05        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-07-31 16:48:05        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[insert-vk:resolvePath] target contract: 556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[insert-vk:resolvePath] target circuit:  resolvePath
+[insert-vk:resolvePath] confirming circuit is CURRENTLY undefined on chain...
+[insert-vk:resolvePath] OK: circuit is not yet defined on chain
+[insert-vk:resolvePath] loading full compiled contract...
+[insert-vk:resolvePath] loading verifier key bytes...
+[insert-vk:resolvePath] loaded 2119 verifier bytes from /home/pollpower/contracts/tariff-registry/build/keys/resolvePath.verifier
+[insert-vk:resolvePath] submitting InsertVerifierKey maintenance tx...
+[insert-vk:resolvePath] InsertVerifierKey tx succeeded in 24.8s
+[insert-vk:resolvePath] post-tx operation for resolvePath: DEFINED ✅
+[insert-vk:resolvePath] wrote manifest: /home/pollpower/contracts/tariff-registry/deploy/artifacts/vk-insert-monolith-resolvePath-2026-07-31T16-50-57.json
+[insert-vk:resolvePath] DONE
+[rollout] ✅ resolvePath ok in 180s
+
+==================== resolveCurrent ====================
+[rollout] 16:50:57 starting resolveCurrent
+[insert-vk:resolveCurrent] start: 2026-07-31T16:50:57.715Z
+[insert-vk:resolveCurrent] mode: live preview
+[insert-vk:resolveCurrent] circuit: resolveCurrent
+[insert-vk:resolveCurrent] loading providers...
+2026-07-31 16:51:05        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-07-31 16:51:05        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[insert-vk:resolveCurrent] target contract: 556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[insert-vk:resolveCurrent] target circuit:  resolveCurrent
+[insert-vk:resolveCurrent] confirming circuit is CURRENTLY undefined on chain...
+[insert-vk:resolveCurrent] OK: circuit is not yet defined on chain
+[insert-vk:resolveCurrent] loading full compiled contract...
+[insert-vk:resolveCurrent] loading verifier key bytes...
+[insert-vk:resolveCurrent] loaded 2119 verifier bytes from /home/pollpower/contracts/tariff-registry/build/keys/resolveCurrent.verifier
+[insert-vk:resolveCurrent] submitting InsertVerifierKey maintenance tx...
+[insert-vk:resolveCurrent] InsertVerifierKey tx succeeded in 21.6s
+[insert-vk:resolveCurrent] post-tx operation for resolveCurrent: DEFINED ✅
+[insert-vk:resolveCurrent] wrote manifest: /home/pollpower/contracts/tariff-registry/deploy/artifacts/vk-insert-monolith-resolveCurrent-2026-07-31T16-53-51.json
+[insert-vk:resolveCurrent] DONE
+[rollout] ✅ resolveCurrent ok in 174s
+
+==================== resolveLane ====================
+[rollout] 16:53:51 starting resolveLane
+[insert-vk:resolveLane] start: 2026-07-31T16:53:51.664Z
+[insert-vk:resolveLane] mode: live preview
+[insert-vk:resolveLane] circuit: resolveLane
+[insert-vk:resolveLane] loading providers...
+2026-07-31 16:53:59        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-07-31 16:53:59        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[insert-vk:resolveLane] target contract: 556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[insert-vk:resolveLane] target circuit:  resolveLane
+[insert-vk:resolveLane] confirming circuit is CURRENTLY undefined on chain...
+[insert-vk:resolveLane] OK: circuit is not yet defined on chain
+[insert-vk:resolveLane] loading full compiled contract...
+[insert-vk:resolveLane] loading verifier key bytes...
+[insert-vk:resolveLane] loaded 2119 verifier bytes from /home/pollpower/contracts/tariff-registry/build/keys/resolveLane.verifier
+[insert-vk:resolveLane] submitting InsertVerifierKey maintenance tx...
+[insert-vk:resolveLane] InsertVerifierKey tx succeeded in 21.2s
+[insert-vk:resolveLane] post-tx operation for resolveLane: DEFINED ✅
+[insert-vk:resolveLane] wrote manifest: /home/pollpower/contracts/tariff-registry/deploy/artifacts/vk-insert-monolith-resolveLane-2026-07-31T16-56-44.json
+[insert-vk:resolveLane] DONE
+[rollout] ✅ resolveLane ok in 173s
+
+==================== resolveLanes ====================
+[rollout] 16:56:44 starting resolveLanes
+[insert-vk:resolveLanes] start: 2026-07-31T16:56:45.024Z
+[insert-vk:resolveLanes] mode: live preview
+[insert-vk:resolveLanes] circuit: resolveLanes
+[insert-vk:resolveLanes] loading providers...
+2026-07-31 16:56:52        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-07-31 16:56:52        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[insert-vk:resolveLanes] target contract: 556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[insert-vk:resolveLanes] target circuit:  resolveLanes
+[insert-vk:resolveLanes] confirming circuit is CURRENTLY undefined on chain...
+[insert-vk:resolveLanes] OK: circuit is not yet defined on chain
+[insert-vk:resolveLanes] loading full compiled contract...
+[insert-vk:resolveLanes] loading verifier key bytes...
+[insert-vk:resolveLanes] loaded 2119 verifier bytes from /home/pollpower/contracts/tariff-registry/build/keys/resolveLanes.verifier
+[insert-vk:resolveLanes] submitting InsertVerifierKey maintenance tx...
+[insert-vk:resolveLanes] InsertVerifierKey tx succeeded in 24.7s
+[insert-vk:resolveLanes] post-tx operation for resolveLanes: DEFINED ✅
+[insert-vk:resolveLanes] wrote manifest: /home/pollpower/contracts/tariff-registry/deploy/artifacts/vk-insert-monolith-resolveLanes-2026-07-31T16-59-44.json
+[insert-vk:resolveLanes] DONE
+[rollout] ✅ resolveLanes ok in 180s
+
+==================== isLaneActive ====================
+[rollout] 16:59:44 starting isLaneActive
+[insert-vk:isLaneActive] start: 2026-07-31T16:59:44.907Z
+[insert-vk:isLaneActive] mode: live preview
+[insert-vk:isLaneActive] circuit: isLaneActive
+[insert-vk:isLaneActive] loading providers...
+2026-07-31 16:59:50        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+2026-07-31 16:59:50        RPC-CORE: subscribeRuntimeVersion(): RuntimeVersion:: disconnected from wss://rpc.preview.midnight.network/: 1000:: Normal Closure
+[insert-vk:isLaneActive] target contract: 556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9
+[insert-vk:isLaneActive] target circuit:  isLaneActive
+[insert-vk:isLaneActive] confirming circuit is CURRENTLY undefined on chain...
+[insert-vk:isLaneActive] OK: circuit is not yet defined on chain
+[insert-vk:isLaneActive] loading full compiled contract...
+[insert-vk:isLaneActive] loading verifier key bytes...
+[insert-vk:isLaneActive] loaded 2119 verifier bytes from /home/pollpower/contracts/tariff-registry/build/keys/isLaneActive.verifier
+[insert-vk:isLaneActive] submitting InsertVerifierKey maintenance tx...
+2026-07-31 17:02:24        RPC-CORE: submitAndWatchExtrinsic(extrinsic: Extrinsic): ExtrinsicStatus:: 1010: Invalid Transaction: Custom error: 170
+2026-07-31 17:02:24        RPC-CORE: submitAndWatchExtrinsic(extrinsic: Extrinsic): ExtrinsicStatus:: 1010: Invalid Transaction: Custom error: 170
+[insert-vk:isLaneActive] FAILED after 5.8s
+  message: Transaction submission error
+  cause:   undefined
+  stack:   SubmissionError: Transaction submission error
+    at file:///home/pollpower/contracts/tariff-registry/node_modules/@midnight-ntwrk/wallet-sdk-capabilities/dist/submission/submissionService.js:30:279
+    at file:///home/pollpower/contracts/tariff-registry/node_modules/effect/dist/esm/internal/core.js:520:33
+    at file:///home/pollpower/contracts/tariff-registry/node_modules/effect/dist/esm/internal/fiberRuntime.js:945:41
+[insert-vk:isLaneActive] MAIN failed: Transaction submission error
+[rollout] ❌ isLaneActive FAILED after 160s, exit 1 — HALTING
+[rollout] end: 2026-07-31T17:02:24Z

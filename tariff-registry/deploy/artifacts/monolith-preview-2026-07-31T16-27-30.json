@@ -1,0 +1,97 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-31T16:27:30.180Z",
+  "network": "preview",
+  "contractKind": "monolith-ceremony",
+  "contractAddress": "556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9",
+  "deployTxHash": "002ecc9d7fbdb9c84d7faaf1745428ee6dbd2faf71973da9f9a95ef8a0c36fd738",
+  "deployElapsedMs": 23460,
+  "bootstrapActionLog": {
+    "shard1TxIds": [],
+    "shard2TxIds": [],
+    "shard3TxIds": []
+  },
+  "constructorArgs": {
+    "federationAuthorityHex": "f41fdb102441fda7eddd2d96e6920e6a9cd033ff110fc98c6594043c68391ba1",
+    "governanceRootHex": "4cb81c2f523a8c81cdddfc9a5a3bce6085bdd89b6822ca3b70ef7c315a37b40e",
+    "refRateFiatPerKwh": "28"
+  },
+  "governanceInit": {
+    "governanceRootHex": "4cb81c2f523a8c81cdddfc9a5a3bce6085bdd89b6822ca3b70ef7c315a37b40e",
+    "charterNodeIdHex": "96a0e3b3020797f3e5ffd0687834564427b88f084c5b3e424526b492a66a0d0c",
+    "federationAuthorityHex": "f41fdb102441fda7eddd2d96e6920e6a9cd033ff110fc98c6594043c68391ba1"
+  },
+  "circuits": {
+    "total": 18,
+    "keep": [
+      "bootstrapActionLog",
+      "advanceEpoch",
+      "registerSchedule",
+      "registerLane",
+      "isChartered",
+      "getActionEntry",
+      "getActionPayloadHash"
+    ],
+    "defer": [
+      "retireSchedule",
+      "setNationalContext",
+      "setFederationAuthority",
+      "retireLane",
+      "retuneClass",
+      "resolvePath",
+      "resolveCurrent",
+      "isScheduleActive",
+      "resolveLane",
+      "resolveLanes",
+      "isLaneActive"
+    ]
+  },
+  "auditWriter": {
+    "publicKeyHex": "3e64530c332524b85a8d4c53e2699392da6dc31a4080c5a2f1655261179ca6af",
+    "privateKeyPath": "/home/pollpower/contracts/tariff-registry/deploy/artifacts/audit-writer-2026-07-31T03-55-44-865Z.pem"
+  },
+  "deployWallet": {
+    "deployerBech32": {
+      "type": "addr",
+      "network": "preview",
+      "data": {
+        "type": "Buffer",
+        "data": [
+          102,
+          157,
+          22,
+          151,
+          33,
+          145,
+          95,
+          61,
+          115,
+          124,
+          53,
+          161,
+          234,
+          21,
+          65,
+          185,
+          47,
+          77,
+          138,
+          232,
+          231,
+          141,
+          170,
+          181,
+          29,
+          119,
+          134,
+          63,
+          104,
+          124,
+          238,
+          157
+        ]
+      }
+    }
+  },
+  "totalElapsedMs": 318516
+}

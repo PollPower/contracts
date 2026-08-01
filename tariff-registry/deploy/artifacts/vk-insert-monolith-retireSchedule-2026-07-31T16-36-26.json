@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-31T16:36:26.820Z",
+  "mode": "live",
+  "network": "preview",
+  "operation": "insertVerifierKey",
+  "contractAddress": "556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9",
+  "circuitId": "retireSchedule",
+  "txHash": "004dce3e7572df7df9b35d1fd6877789213253fcf9465d2852d7df58616018fcc2",
+  "txStatus": "SucceedEntirely",
+  "onChainStatus": "DEFINED",
+  "durSeconds": 21.9,
+  "entry": "insert-vk-retireSchedule.mjs"
+}

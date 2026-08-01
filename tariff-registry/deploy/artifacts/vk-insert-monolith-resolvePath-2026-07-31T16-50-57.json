@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-31T16:50:57.653Z",
+  "mode": "live",
+  "network": "preview",
+  "operation": "insertVerifierKey",
+  "contractAddress": "556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9",
+  "circuitId": "resolvePath",
+  "txHash": "0008157b68f4c634e07fa86e51009b13faeddeb5a8a5429be94b72836232b3a424",
+  "txStatus": "SucceedEntirely",
+  "onChainStatus": "DEFINED",
+  "durSeconds": 24.8,
+  "entry": "insert-vk-resolvePath.mjs"
+}
