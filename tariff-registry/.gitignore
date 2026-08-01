@@ -2,3 +2,10 @@ build/
 deployment.json
 node_modules/
 *.log
+
+# Ceremony rollout leftovers (regenerable / transient)
+midnight-level-db/
+build-ceremony/
+*.pre-*-backup
+*.preprod-backup
+deploy-v2-preview-status.json
