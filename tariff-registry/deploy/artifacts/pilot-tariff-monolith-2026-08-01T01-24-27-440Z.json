@@ -1,0 +1,89 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-08-01T01:24:27.441Z",
+  "mode": "live-preview-monolith",
+  "sourceDeployManifest": "monolith-preview-2026-07-31T16-27-30.json",
+  "contractAddress": "556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9",
+  "tariffSpec": {
+    "consumerTotalKes": 28,
+    "baseEnergyKes": 23,
+    "lanes": [
+      {
+        "role": "producer",
+        "laneKindByte": 0,
+        "bpsShare": 4643,
+        "kesPerKwh": 13
+      },
+      {
+        "role": "ops",
+        "laneKindByte": 1,
+        "bpsShare": 1643,
+        "kesPerKwh": 4.6
+      },
+      {
+        "role": "dividend",
+        "laneKindByte": 2,
+        "bpsShare": 1929,
+        "kesPerKwh": 5.4
+      },
+      {
+        "role": "statutory",
+        "laneKindByte": 3,
+        "bpsShare": 1785,
+        "kesPerKwh": 5
+      }
+    ],
+    "statutoryBreakdown": {
+      "rep": {
+        "kes": 1.2,
+        "ratePct": 5,
+        "base": 23
+      },
+      "epraWarma": {
+        "kes": 0.1,
+        "note": "combined EPRA+WARMA at 1-decimal display"
+      },
+      "vat": {
+        "kes": 3.7,
+        "ratePct": 16,
+        "base": 23
+      }
+    }
+  },
+  "scheduleId": "0a0ca2e41632da85802a34207c58883f54cc2a1375ca77887c7b8dc682df101a",
+  "scheduleTxHash": "0023f957e6ecdc80cc24985d84a16f67917d9670af0816069ef3218fb70bf12db8",
+  "laneTxHashes": [
+    {
+      "role": "producer",
+      "txHash": "006ea78e41591c09dd29f5b02666de9386201dd1506fd00a6cac9b569875b0b19b",
+      "bpsShare": 4643
+    },
+    {
+      "role": "ops",
+      "txHash": "00c19a8901928f67c4c366a2f2dd99be7780c49dad37c4abcdcf173b865bab233e",
+      "bpsShare": 1643
+    },
+    {
+      "role": "dividend",
+      "txHash": "00009a5e7444ff5cc87622c4494ab9ee688c83f4c2884af692318549f886aaea70",
+      "bpsShare": 1929
+    },
+    {
+      "role": "statutory",
+      "txHash": "00215c1478827e5b03684ff7500a1cec1b6eb0ca6364345e9dbd59901c58bb5e66",
+      "bpsShare": 1785
+    }
+  ],
+  "governanceInit": {
+    "governanceRootHex": "4cb81c2f523a8c81cdddfc9a5a3bce6085bdd89b6822ca3b70ef7c315a37b40e",
+    "charterNodeIdHex": "96a0e3b3020797f3e5ffd0687834564427b88f084c5b3e424526b492a66a0d0c",
+    "federationAuthorityHex": "f41fdb102441fda7eddd2d96e6920e6a9cd033ff110fc98c6594043c68391ba1"
+  },
+  "auditWriter": {
+    "publicKeyHex": "3e64530c332524b85a8d4c53e2699392da6dc31a4080c5a2f1655261179ca6af",
+    "privateKeyPath": "/home/pollpower/contracts/tariff-registry/deploy/artifacts/audit-writer-2026-07-31T03-55-44-865Z.pem"
+  },
+  "validatorAttestorHex": "3e64530c332524b85a8d4c53e2699392da6dc31a4080c5a2f1655261179ca6af",
+  "validatorAttestorNote": "PLACEHOLDER - audit-writer keypair used as WI-16 validator attestor. Rotate post-launch via owner op.",
+  "elapsedMs": 1138449
+}

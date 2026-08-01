@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-07-31T16:45:03.372Z",
+  "mode": "live",
+  "network": "preview",
+  "operation": "insertVerifierKey",
+  "contractAddress": "556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9",
+  "circuitId": "setFederationAuthority",
+  "txHash": "008d60244ae6984f61225fc4c962615f853309920d385a9b13013b7017b45353d0",
+  "txStatus": "SucceedEntirely",
+  "onChainStatus": "DEFINED",
+  "durSeconds": 24.1,
+  "entry": "insert-vk-setFederationAuthority.mjs"
+}

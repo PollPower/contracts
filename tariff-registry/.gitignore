@@ -9,3 +9,6 @@ build-ceremony/
 *.pre-*-backup
 *.preprod-backup
 deploy-v2-preview-status.json
+
+# Ceremony log evidence — force-include (overrides the blanket *.log rule above)
+!deploy/artifacts/*.log
