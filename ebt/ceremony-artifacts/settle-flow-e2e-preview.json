@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "1",
+  "title": "EBT v8 settle-flow E2E — Preview",
+  "completedAt": "2026-08-05",
+  "network": "preview",
+  "mode": "live-pilot-mutation",
+  "contracts": {
+    "ebt": "c9ee61713d07c6d6e6f3c0bbe119d281307c643caaaf8d785813a9fb52f036e3",
+    "registryMonolithCeremony": "556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9",
+    "meterAuthorityPubkey": "bf043807ba0112048d1ba073a47128bb094b3710036fe3da898fcd957fa6f09a",
+    "scheduleId": "0a0ca2e41632da85802a34207c58883f54cc2a1375ca77887c7b8dc682df101a",
+    "charterNodeId": "96a0e3b3020797f3e5ffd0687834564427b88f084c5b3e424526b492a66a0d0c",
+    "classPath": "c1a55a7400000000000000000000000000000000000000000000000000000001"
+  },
+  "coherentSplit": {
+    "statutoryTotalBps": 1785,
+    "producerShareBps": 4643,
+    "opsShareBps": 2000,
+    "ldShareBps": 1572,
+    "daoShareBps": 0,
+    "operatorMarginBps": 0,
+    "sumBps": 10000,
+    "settleAmount": 100000,
+    "slices": { "producer": 46430, "ops": 20000, "dividend": 15720, "dao": 0, "statutoryLane": 17850 },
+    "enumeratedLanes": [{ "leviedBy": "charterNodeId", "laneKindByte": 3, "bpsShare": 1785 }]
+  },
+  "settleHat": {
+    "sessionID": "5e771e0000000000000000000000000000000000000000000000000000005e01",
+    "payloadHash": "1d3fafe2398b30b36a150e76a2472f7cff79860e8952181507c3234e916624ab",
+    "domainSep": "pollpower:ebt:v8:epoch1",
+    "signedOnRelay": true,
+    "inCircuitMatchesPrecomputed": true,
+    "inCircuitVerify": true
+  },
+  "steps": [
+    { "step": "A",  "circuit": "retuneClass",              "contract": "registryMonolithCeremony", "txHash": "8c3187b042dae344726a93a53e0cca8fff12312d979610e13579be7a8a4c4c48", "effect": "actionSeq 5->6; registryActionLogRoot -> 5d3713d8...; classEntries 0->1" },
+    { "step": "B1", "circuit": "mirrorActionLogRoot",       "contract": "ebt", "txHash": "95419628ce8a63cc86361b60c7f13653ff0cd93af2feae7e5e6faac3b628a45e", "effect": "_registryActionLogRootMirror -> 5d3713d8..." },
+    { "step": "B2", "circuit": "mirrorClassStatutoryTotal", "contract": "ebt", "txHash": "b4ab6f9e4b1bcaf9bd42200f5263ce68ac44b979d692f0e963897d38fd8de62a", "effect": "_classStatutoryTotalBpsMirror[classKey] = 1785" },
+    { "step": "B3", "circuit": "mirrorActionLogHead",       "contract": "ebt", "txHash": "7983790beee66d2ae37c0db8f8f9ec9b642fbe115bd734ee92c1ffee9593d97b", "effect": "_registryActionLogHeadSeqMirror -> 5" },
+    { "step": "C",  "circuit": "settle",                    "contract": "ebt", "txHash": "16f160947b7302cb377e77ba610b20fe892b1fd0fa7eba2cfa5d8125724eb020", "effect": "_totalSupply 0 -> 100000 (real HAT sig)" },
+    { "step": "D",  "circuit": "revokeProducerOwnership",   "contract": "ebt", "txHash": "fed5b31edbb14695a1a87fb5e3e2e1009470c91cb8fd2403b243260d83fd39d7", "effect": "producer attestation active -> false" }
+  ],
+  "finalState": {
+    "registryActionSeq": 6,
+    "registryActionLogRoot": "5d3713d8afcc8cd8c415765824030a8e648aee8c1020eef19c7545b31e6347fd",
+    "ebtRegistryActionLogHeadSeqMirror": 5,
+    "ebtClassStatutoryTotalBpsMirrorSize": 1,
+    "ebtTotalSupply": 100000,
+    "producerAttestationActive": false
+  }
+}
