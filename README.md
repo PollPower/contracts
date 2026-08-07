@@ -1,8 +1,10 @@
 # PollPower Smart Contracts
 
-The smart contracts that govern the PollPower energy economy on the [Midnight Network](https://midnight.network).
+**The rules of a working energy economy, written as code and enforced by a blockchain.** These are the smart contracts behind PollPower — a renewable-energy economy for rural Kenya — running on the [Midnight Network](https://midnight.network).
 
-This repository contains the **canonical, on-chain source** for every contract PollPower currently runs — from the audit-hardened versions deployed on 2026-06-12, through the domain-bound v7.4.x generation deployed on Midnight Preview on 2026-07-05, to the **next-generation EBT v8 settlement contract whose full settle flow was proven end-to-end on Preview on 2026-08-05**.
+This isn't a whitepaper promise. Every contract here is **live, on-chain, and proven end-to-end on Midnight Preview**: a solar producer sells power, three independent parties sign off, tokens are minted directly to the producer's wallet, and every KYC-verified community member is paid their share — all without any single party (PollPower included) able to move value alone. On **2026-08-05** the next-generation **EBT v8** settlement contract closed its full economic loop on-chain for the first time: `retune → mirror → settle → revoke`, minting real supply against a live tariff registry with a real Meter-Authority signature.
+
+This repository is the **canonical, on-chain source** for every contract PollPower runs — from the audit-hardened suite deployed 2026-06-12, through the domain-bound v7.4.x generation live on Preview since 2026-07-05, to EBT v8 today. The whitepaper describes the vision; **this code is the vision, enforced.**
 
 ## 🏁 Latest milestone
 
