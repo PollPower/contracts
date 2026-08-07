@@ -6,9 +6,13 @@ This repository contains the **canonical, on-chain source** for every contract P
 
 > **Milestone (2026-07-05):** the **Living Dividend** — the mechanism that pays every KYC-verified member a share of every energy sale — has now completed its **full economic loop live on Preview**: five members joined a brand-new (zero-state) dividend pool, an energy sale minted the dividend, and **all five members claimed and were paid on-chain**. This is the first end-to-end join → earn → claim → get-paid cycle for a group of members from a true zero start. See [the v7.4 stack](#the-v74-contract-generation-2026-07-05) below.
 
-> ⚠️ **EBT v8 Preview pilot posture (T+0 target: 2026-08-02).** The v8 contract lineage introduces `settle` against a mirrored TariffRegistry root plus a weekly owner-advance ceremony. Its Preview admin set is **1 real Tangem ring + 4 pilot-mock keys, all held by Garrett**. External attackers can derive the four pilot-mock private keys from public seeds (this is the tracked **H-1** gap). This posture is intentional for the Preview pilot to prove the ceremony loop; **mainnet Phase 2 is hard-gated on a full Tangem ring swap** (WI-14.2). See [`ebt/WI-14-CEREMONY-SKELETON.md`](./ebt/WI-14-CEREMONY-SKELETON.md) §9 CAL-1 and [`ebt/VNEXT-MIGRATION.md`](./ebt/VNEXT-MIGRATION.md) for the cutover plan.
+> ⚠️ **EBT v8 Preview pilot posture.** The v8 contract lineage introduces `settle` against a mirrored TariffRegistry root plus a weekly owner-advance ceremony. Its Preview admin set is **1 real Tangem ring + 4 pilot-mock keys, all held by Garrett**. External attackers can derive the four pilot-mock private keys from public seeds (this is the tracked **H-1** gap). This posture is intentional for the Preview pilot to prove the ceremony loop; **mainnet Phase 2 is hard-gated on a full Tangem ring swap** (WI-14.2). See [`ebt/WI-14-CEREMONY-SKELETON.md`](./ebt/WI-14-CEREMONY-SKELETON.md) §9 CAL-1 and [`ebt/VNEXT-MIGRATION.md`](./ebt/VNEXT-MIGRATION.md) for the cutover plan.
 
-> 🔬 **EBT v8 ceremony rehearsal complete (2026-07-30).** The full 18-circuit v8 contract is **live on Midnight Preview** at `10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f`, deployed via a **ceremony-fenced approach** (v8's monolithic 18-circuit deploy tx exceeds Preview's per-tx block weight limit). The rehearsal deploys 8 ceremony-critical circuits in one tx, then adds the remaining 10 via `submitInsertVerifierKeyTx` maintenance txs — 10 sequential inserts, all `SucceedEntirely`, verified 18/18 DEFINED on-chain. Sunday's T+0 ceremony re-runs the same script against a fresh address. See [`ebt/V8-CEREMONY-FENCE.md`](./ebt/V8-CEREMONY-FENCE.md) for the design + rollout plan, and [`ebt/ceremony-artifacts/`](./ebt/ceremony-artifacts/) for the rehearsal manifests (10 tx hashes + T+0 pre-flight template).
+> ✅ **Milestone (2026-08-05): the full EBT v8 settle flow is proven end-to-end on Midnight Preview.** For the first time, the next-generation settlement contract ran its complete economic lifecycle on-chain: a tariff class was retuned on the live pilot TariffRegistry, that change was mirrored into the EBT contract's registry surface, `settle` was executed with a **real Meter-Authority (HAT) signature** — minting `_totalSupply` from **0 → 100,000** in exact policy slices — and the producer's ownership attestation was then revoked. **Six transactions, all landed** (`SucceedEntirely`), spanning ~38 minutes on 2026-08-05. This closes the loop the whole v8 line was built for: `retune → mirror → settle → revoke`, with a live HAT signature and a mirrored TariffRegistry root. See the [EBT v8 on-chain flow](#ebt-v8--full-settle-flow-2026-08-05) below and [`ebt/SETTLE-FLOW-E2E.md`](./ebt/SETTLE-FLOW-E2E.md) for the full runbook.
+
+> 🔬 **EBT v8 mirror daemon E2E (2026-08-04).** Ahead of the settle flow, the off-chain **mirror daemon** was validated end-to-end on Preview: the full tariff → mirror pipeline (registry action-log root → owner-advance → EBT registry-surface mirror) works on-chain, with **5/5 registry events mirrored** (schedule lifecycle + 4 lanes). The daemon reads the audit sibling's action-log climb and advances the EBT contract's mirrored root/head so `settle` can read a coherent registry state.
+
+> 🔧 **EBT v8 ceremony-fenced deploy + vk-insert rollout (2026-07-30).** The full 18-circuit v8 contract deploys via a **ceremony-fenced approach** — v8's monolithic 18-circuit deploy tx exceeds Preview's per-tx block-weight limit, so 8 ceremony-critical circuits go in one deploy tx, then the remaining 10 are added via `submitInsertVerifierKeyTx` maintenance txs (10 sequential inserts, all `SucceedEntirely`, verified 18/18 DEFINED on-chain). This deploy-then-vk-insert pattern is the proven workaround for any Compact contract that exceeds the block limit. See [`ebt/V8-CEREMONY-FENCE.md`](./ebt/V8-CEREMONY-FENCE.md) for the design + rollout plan.
 
 > **Released alongside the [PollPower White Paper v10.0](https://github.com/PollPower/whitepaper).**
 > The whitepaper describes the design rationale; this repository contains the code that enforces it.
@@ -19,7 +23,7 @@ This repository contains the **canonical, on-chain source** for every contract P
 
 | Contract | Purpose | Status |
 |---|---|---|
-| [`ebt/ebt-v8.compact`](./ebt/ebt-v8.compact) | **EBT v8 — next-generation settlement contract.** 18 exported circuits covering `settle` against a mirrored TariffRegistry root, full daemon-mirrored registry surface (register/retire lane, schedule lifecycle, class totals, action-log head/root), dual governance (`execMultisigOp` multisig-cosigned + `execOwnerOp` owner-signed), producer redemption, and break-glass emergency reissue. Carries forward the EBT-H-1 fix (5-field HAT signed payload includes `producerAddr` with domain sep `pollpower:ebt:v8:epoch1`). See [`ebt/VNEXT-DESIGN.md`](./ebt/VNEXT-DESIGN.md), [`ebt/VNEXT-MIGRATION.md`](./ebt/VNEXT-MIGRATION.md), and [`ebt/WI-14-CEREMONY-SKELETON.md`](./ebt/WI-14-CEREMONY-SKELETON.md). | 🚀 **PREVIEW (ceremony-fenced deploy)** — rehearsed live 2026-07-30 at `10158a54...ae474f`; T+0 ceremony 2026-08-02 |
+| [`ebt/ebt-v8.compact`](./ebt/ebt-v8.compact) | **EBT v8 — next-generation settlement contract.** 18 exported circuits covering `settle` against a mirrored TariffRegistry root, full daemon-mirrored registry surface (register/retire lane, schedule lifecycle, class totals, action-log head/root), dual governance (`execMultisigOp` multisig-cosigned + `execOwnerOp` owner-signed), producer redemption, and break-glass emergency reissue. Carries forward the EBT-H-1 fix (5-field HAT signed payload includes `producerAddr` with domain sep `pollpower:ebt:v8:epoch1`). See [`ebt/VNEXT-DESIGN.md`](./ebt/VNEXT-DESIGN.md), [`ebt/VNEXT-MIGRATION.md`](./ebt/VNEXT-MIGRATION.md), [`ebt/WI-14-CEREMONY-SKELETON.md`](./ebt/WI-14-CEREMONY-SKELETON.md), and [`ebt/SETTLE-FLOW-E2E.md`](./ebt/SETTLE-FLOW-E2E.md). | ✅ **PREVIEW — full settle flow proven on-chain 2026-08-05** (`retune → mirror → settle → revoke`, `_totalSupply` 0→100,000 with real HAT sig). Deployed ceremony-fenced 2026-07-30; all 18 circuits DEFINED. |
 | [`ebt/ebt-v8-ceremony.compact`](./ebt/ebt-v8-ceremony.compact) | **EBT v8 ceremony-fenced build** — 8-circuit subset of v8, byte-identical to v8 in the circuits it defines (`initialize`, `attestProducerOwnership`, `revokeProducerOwnership`, `mirrorActionLogHead`, `mirrorScheduleLifecycle`, `mirrorClassStatutoryTotal`, `mirrorRegisterLane`, `settle`). Deployed in a single tx; the remaining 10 v8 circuits are added post-deploy via `submitInsertVerifierKeyTx` maintenance txs. This split is the workaround for v8's monolithic deploy exceeding Preview's per-tx block weight limit. See [`ebt/V8-CEREMONY-FENCE.md`](./ebt/V8-CEREMONY-FENCE.md). | ✅ **PREVIEW** — deployed 2026-07-30 as the base of the full 18-circuit rollout |
 | [`ebt/ebt-v7.4.2.compact`](./ebt/ebt-v7.4.2.compact) | **EBT v7.4.2 — current settlement contract.** v7.1 lineage + domain-bound dividend salt (LD-1: contract address bound into the mint record so it can't be replayed across deployments), and the four multisig setters / two owner setters merged into `execMultisigOp(op,…)` / `execOwnerOp(op,…)` to fit the block-weight limit. Adds in-place `setMultisigAuthority` rotation so the pre-mainnet Tangem ring swap needs no redeploy. Carries forward all v5.2 audit hardening (C-1, M-1, M-4, L-1, L-3). | ✅ **PRODUCTION (Preview)** — deployed + validated end-to-end 2026-07-05 |
 | [`ebt/ebt-v7.compact`](./ebt/ebt-v7.compact) | The Energy-Backed Token (v7). Unshielded, contract-minted ledger token — `settle()` mints the producer slice directly to the producer's wallet; `claimSplit()` distributes the ops/dividend/DAO slices. Carries forward all v5.2 audit hardening (C-1, M-1, M-4, L-1, L-3). | ✅ **PRODUCTION** — active mint path since 2026-06-17; superseded on Preview by v7.4.2 |
@@ -45,9 +49,31 @@ This repository contains the **canonical, on-chain source** for every contract P
 
 ## On-chain addresses (Midnight Preview)
 
-### EBT v8 (rehearsal, T+0 ceremony 2026-08-02)
+### EBT v8 — full settle flow (2026-08-05) {#ebt-v8--full-settle-flow-2026-08-05}
 
-The full 18-circuit EBT v8 contract, deployed via the ceremony-fenced approach. The address below is the **rehearsal contract** from 2026-07-30; Sunday's T+0 ceremony re-runs the same deploy script against a fresh address, then rolls in the 10 deferred circuits on t+1..t+3.
+The complete `retune → mirror → settle → revoke` lifecycle, executed on-chain against the live pilot TariffRegistry. `settle` minted `_totalSupply` from **0 → 100,000** in exact policy slices with a **real Meter-Authority (HAT) signature**.
+
+| Contract | Address | Role |
+|---|---|---|
+| **EBT v8 (full 18 circuits)** | `c9ee61713d07c6d6e6f3c0bbe119d281307c643caaaf8d785813a9fb52f036e3` | Settlement contract — `settle`, mirror surface, all 18 circuits DEFINED |
+| **TariffRegistry (monolith-ceremony)** | `556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9` | Live pilot registry the mirror reads (all deferred circuits vk-inserted) |
+
+**On-chain transaction ledger (six txs, all `SucceedEntirely`, 2026-08-05):**
+
+| Step | Circuit | Contract | txHash |
+|---|---|---|---|
+| A | `retuneClass` | registry `556fe46f` | `8c3187b042dae344726a93a53e0cca8fff12312d979610e13579be7a8a4c4c48` |
+| B1 | `mirrorActionLogRoot` | EBT `c9ee6171` | `95419628ce8a63cc86361b60c7f13653ff0cd93af2feae7e5e6faac3b628a45e` |
+| B2 | `mirrorClassStatutoryTotal` | EBT | `b4ab6f9e4b1bcaf9bd42200f5263ce68ac44b979d692f0e963897d38fd8de62a` |
+| B3 | `mirrorActionLogHead` | EBT | `7983790beee66d2ae37c0db8f8f9ec9b642fbe115bd734ee92c1ffee9593d97b` |
+| C | `settle` (real HAT sig) | EBT | `16f160947b7302cb377e77ba610b20fe892b1fd0fa7eba2cfa5d8125724eb020` |
+| D | `revokeProducerOwnership` | EBT | `fed5b31edbb14695a1a87fb5e3e2e1009470c91cb8fd2403b243260d83fd39d7` |
+
+Final on-chain state: registry `_actionSeq=6`, EBT mirror head=5, **`_totalSupply=100,000`** (settle minted), producer attestation revoked. All six txs are resolvable on the public Preview explorer ([Night Scan](https://explorer.preview.midnight.network)). Full runbook + reusable scripts: [`ebt/SETTLE-FLOW-E2E.md`](./ebt/SETTLE-FLOW-E2E.md).
+
+### EBT v8 — ceremony-fenced deploy + vk-insert rollout (2026-07-30)
+
+The full 18-circuit EBT v8 contract, deployed via the ceremony-fenced approach (8 circuits in the deploy tx, 10 added post-deploy via `submitInsertVerifierKeyTx`). This is the rehearsal contract that proved the deploy-then-vk-insert pattern before the settle-flow work moved to the live pilot contract above.
 
 | Contract | Address | Deployed |
 |---|---|---|
@@ -178,6 +204,8 @@ EBT cannot be minted unless every party with a role agrees, by signature. No sin
 v7's unshielded contract-mint model means a third party (the producer) provably receives contract-minted value without trusting the submitter — the capability the earlier shielded design could not deliver. Three independent signing roles; no single party completes the path alone.
 
 **The dividend loop (EBT v7.4.2 + Living Dividend v2.2.1, validated live 2026-07-05):** on each sale, `claimSplit()` mints the dividend slice into the Living Dividend pool. A keeper bumps the pool's `accPerShare` accumulator across all living members, each member claims their accrued share on demand, and an off-chain batch payer settles the payouts. On 2026-07-05 this ran end-to-end from a zero-state pool — 5 members registered, 1 sale settled, and all 5 members claimed and were paid on-chain.
+
+**Next-generation path (EBT v8, proven on Preview 2026-08-05):** v8 replaces the in-contract slice policy with a `settle` that reads a **mirrored TariffRegistry root**. A tariff class is retuned on the registry (`retuneClass`), an off-chain daemon mirrors that change into the EBT contract's registry surface (`mirrorActionLogRoot` / `mirrorClassStatutoryTotal` / `mirrorActionLogHead`), and `settle` then verifies a **5-field HAT signature** (including `producerAddr`, the EBT-H-1 fix) against the mirrored class totals before minting. On 2026-08-05 the full `retune → mirror → settle → revoke` lifecycle ran on-chain end-to-end — `_totalSupply` 0 → 100,000 with a real Meter-Authority signature. See [EBT v8 on-chain flow](#ebt-v8--full-settle-flow-2026-08-05).
 
 ---
 
