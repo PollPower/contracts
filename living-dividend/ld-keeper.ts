@@ -206,7 +206,9 @@ async function loadRuntimeDependencies(config: KeeperConfig): Promise<{
   };
 
   const compiledContract = compact.CompiledContract.make('ld-v2.2.1', ldBuild.Contract).pipe(
-    compact.CompiledContract.withWitnesses(wrappedWitnesses),
+    // SDK generic collapses to `never` when Contract is `any`; cast the witness
+    // map to `never` (runtime shape is the real makeLdWitnesses map + blockTime wrapper).
+    compact.CompiledContract.withWitnesses(wrappedWitnesses as never),
     compact.CompiledContract.withCompiledFileAssets(config.ldBuildDir),
   );
 
@@ -230,12 +232,12 @@ async function loadRuntimeDependencies(config: KeeperConfig): Promise<{
     });
   }
 
-  const ldContract = await contracts.findDeployedContract(providers, {
+  const ldContract = (await contracts.findDeployedContract(providers, {
     contractAddress: config.ldContractAddress,
-    compiledContract,
+    compiledContract: compiledContract as any,
     privateStateId: config.ldPrivateStateId,
     initialPrivateState: {},
-  });
+  })) as unknown as LDDeployedContract;
 
   return {
     queryContractState: (address) => publicDataProvider.queryContractState(address),
