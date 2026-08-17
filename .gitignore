@@ -29,3 +29,8 @@ deployment.json
 CLAUDE.md
 
 .pr-body-*.md
+
+# Never commit — LD / multisig secrets + wallet state
+*multisig-keys.json
+midnight-level-db/
+*/midnight-level-db/

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1",
+  "generatedAt": "2026-08-17T10:35:06.322Z",
+  "mode": "dry-run",
+  "network": "preview",
+  "variant": "ld-v2.2.1",
+  "address": "0xefe86a6938fcabdabbff614731b4c03b82fe45b1",
+  "txHash": "0xefe86a6938fcabdabbff614731b4c03b82fe45b127c6017503d9a80d9b32d73c",
+  "constructorArgs": {
+    "ebtColorHex": "3862ec542440e4d3c591fa0c72c46cab0402b6f15114be6b0a51d1d341e6795c",
+    "multisigAuthorityHex": "cb564026d1028c0c7cd3c22512f0e302df28fd05ba8939bf230010546c479cb4"
+  },
+  "entry": "deploy-ld-v2.2.1.mjs"
+}

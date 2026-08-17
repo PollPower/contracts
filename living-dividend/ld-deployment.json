@@ -1,0 +1,24 @@
+{
+  "contractVariant": "ld-v2.2.1",
+  "network": "preview",
+  "contractAddress": "efccdb2348f98c496f8fd5925a6961c3d81966eab562b928ab9765264dc7fd30",
+  "txHash": "0094f17ac44e8e3d5de129b4032b8780aa8753c45d1ca39ff92eccc621f1f2a320",
+  "deployedAt": "2026-08-17T10:46:39.020Z",
+  "privateStateId": "ld-v2.2.1-state",
+  "circuits": [
+    "register",
+    "unregister",
+    "setMultisigAuthority",
+    "bumpOnMint",
+    "claim",
+    "executePayout",
+    "touchLiveness",
+    "proposePrune",
+    "executePrune"
+  ],
+  "constructorArgs": {
+    "ebtColorHex": "3862ec542440e4d3c591fa0c72c46cab0402b6f15114be6b0a51d1d341e6795c",
+    "multisigAuthorityHex": "cb564026d1028c0c7cd3c22512f0e302df28fd05ba8939bf230010546c479cb4",
+    "multisigAuthorityNote": "MOCK/TEST-ONLY ring authority (mock-multisig-keys.json)"
+  }
+}

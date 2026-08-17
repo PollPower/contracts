@@ -1,303 +1,406 @@
-// ld-keeper.ts
-// PollPower Living Dividend keeper service
-//
-// WebSocket-subscribed keeper. Uses the Midnight indexer's
-// `subscribeToContractActionEvents` GraphQL-over-WebSocket subscription (per
-// midnight-indexer 2.0.0+) to receive a push stream of contract actions on
-// EBT v7.1. For each ContractCall that touches `_dividendMintedLog`, the
-// keeper reads the new entries from contract state and submits idempotent
-// `bumpOnMint` transactions to the LD contract.
-//
-// Design (2026-07-01 iteration):
-//
-//   Path A (this file): keep v7.1's ledger-log design, upgrade keeper from
-//   poll to WebSocket subscribe. Latency drops from ~5s (poll interval) to
-//   sub-second (indexer push). No dependency on the buggy user-declared
-//   event emit path in compactc 0.31.0.
-//
-//   When compactc exposes user-declared MIP-0002 event types (Path C, "future
-//   polish"), swap `subscribeToContractActionEvents` for
-//   `queryContractEvents({ eventType: 'DividendMinted' })`. Small change on
-//   both sides; contract log map goes away.
-//
-// Failure semantics:
-//   - Keeper dies: dividends stop accruing but no funds lost. On restart,
-//     cursor picks up from `lastProcessedSeq + 1`; missed entries replay
-//     in order.
-//   - Two keepers running: LD's `_processedSalts` Set makes both idempotent.
-//     Safe to run redundant keepers.
-//   - Indexer unreachable: WebSocket auto-reconnects with exponential backoff.
-//     Cursor unchanged until connection restored.
-//   - v7.1 emits without LD-side effect (LD pointer unset): keeper filters
-//     entries by `recipient == ldContractAddress`; foreign entries advance
-//     the cursor but do nothing.
-//
-// STATUS: reference implementation. Wire against the operator's own
-// infra modules (`./state-store`, `./contracts/LivingDividend`, `./logger`).
+/**
+ * ## PORT NOTES
+ * - Poll vs WS: this port intentionally uses a poll loop over `queryContractState`; Preview WS subscription shape was not needed for correctness and poll is simpler/robust.
+ * - SDK plumbing: `CompiledContract.make(...).pipe(withWitnesses(makeLdWitnesses()), withCompiledFileAssets(...))` + `createWallet/createProviders/withZkConfigDir` + `findDeployedContract(...)`, matching `deploy-ld-v2.2.1.mjs` and `ld-register-members.mjs`.
+ * - `_dividendMintedLog` decode: uses EBT v8 build `ledger(state.data)` from `EBT_V8_BUILD_DIR/contract/index.js`, then drains typed map entries in ascending seq.
+ * - Witness time gate: keeper updates runtime block time before each `bumpOnMint` and passes `currentTime = blockTime - 120` so `witness_blockTimeGte(currentTime)` holds.
+ */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
-import {
-  findDeployedContract,
-} from '@midnight-ntwrk/midnight-js-contracts';
-import { IndexerWsClient } from '@midnight-ntwrk/midnight-indexer-ws-client';
-import { getPublicDataProvider } from '@midnight-ntwrk/midnight-js-http-client';
 import { readState, writeState } from './state-store';
-import { LivingDividendContract } from './contracts/LivingDividend';
-import { witnesses as ldWitnesses } from './witnesses';
 import { logger } from './logger';
-
-// ─── config ─────────────────────────────────────
+import { makeLdWitnesses, type LdPrivateState } from './witnesses';
+import {
+  type LivingDividendContract,
+  hasProcessedSaltIfAvailable,
+  getTxHashFromSubmission,
+} from './contracts/LivingDividend';
 
 interface KeeperConfig {
-  v7ContractAddress: string;         // EBT v7.1 address
-  ldContractAddress: string;         // Living Dividend address
-  indexerHttpUrl:    string;         // e.g. https://indexer.testnet-02.midnight.network
-  indexerWsUrl:      string;         // e.g. wss://indexer.testnet-02.midnight.network
-  proofServerUrl:    string;         // e.g. http://localhost:6300
-  keeperPrivateKey:  Uint8Array;
-  cursorFile:        string;         // persistent last-processed sequence
-  reconnectBaseMs:   number;         // WebSocket reconnect base delay
-  reconnectMaxMs:    number;         // WebSocket reconnect max delay
+  ebtV8ContractAddress: string;
+  ldContractAddress: string;
+  ldPrivateStateId: string;
+  ldBuildDir: string;
+  ebtV8BuildDir: string;
+  cursorFile: string;
+  pollIntervalMs: number;
+  ownerSeedHex: string;
 }
-
-// ─── event shape (from _dividendMintedLog) ─────
-
-interface DividendMintedRecord {
-  sourceTxSalt: Uint8Array;
-  amount:       bigint;
-  recipient:    string;    // hex-encoded ContractAddress
-  blockTime:    bigint;
-  epochColor:   Uint8Array;
-  seq:          bigint;    // log map key, monotone
-}
-
-// ─── keeper state ───────────────────────────────
 
 interface KeeperCursor {
-  lastProcessedSeq:  bigint;    // highest _dividendMintedLog key processed
-  lastActivityIso:   string;    // last successful subscription event
-  processedRecords:  number;    // total bumps applied since start
+  lastProcessedSeq: bigint;
+  lastActivityIso: string;
+  processedRecords: number;
 }
 
-// ─── main ────────────────────────────────────────
+interface DividendMintedRecord {
+  seq: bigint;
+  sourceTxSalt: Uint8Array;
+  amount: bigint;
+  recipientHex: string;
+}
+
+type QueryContractState = (address: string) => Promise<any>;
+type LDDeployedContract = LivingDividendContract & {
+  query?: Record<string, (...args: any[]) => Promise<any>>;
+};
 
 export async function runKeeper(config: KeeperConfig): Promise<never> {
   logger.info('[ld-keeper] starting', {
-    v7: config.v7ContractAddress,
+    ebtV8: config.ebtV8ContractAddress,
     ld: config.ldContractAddress,
-    indexerWs: config.indexerWsUrl,
+    pollIntervalMs: config.pollIntervalMs,
   });
 
-  const cursor: KeeperCursor = await readState(config.cursorFile, {
-    lastProcessedSeq: -1n,           // -1 so first entry at seq 0 is processed
+  const runtime = await loadRuntimeDependencies(config);
+  const cursor = await readState<KeeperCursor>(config.cursorFile, {
+    lastProcessedSeq: -1n,
     lastActivityIso: new Date(0).toISOString(),
     processedRecords: 0,
   });
-  logger.info('[ld-keeper] cursor loaded', { lastProcessedSeq: cursor.lastProcessedSeq.toString() });
-
-  const publicDataProvider = getPublicDataProvider(config.indexerHttpUrl);
-  const ldContract = await findDeployedContract<LivingDividendContract>({
-    contractAddress: config.ldContractAddress,
-    witnesses: ldWitnesses,
+  logger.info('[ld-keeper] cursor loaded', {
+    lastProcessedSeq: cursor.lastProcessedSeq.toString(),
+    processedRecords: cursor.processedRecords,
   });
 
-  // Reconnect loop: WebSocket connections drop; we resubscribe with the
-  // current cursor so we never miss an entry.
-  let reconnectDelay = config.reconnectBaseMs;
   while (true) {
     try {
-      logger.info('[ld-keeper] connecting to indexer WS', { url: config.indexerWsUrl });
-      const ws = new IndexerWsClient();
-      await ws.connectionInit(config.indexerWsUrl);
-      reconnectDelay = config.reconnectBaseMs;  // reset on successful connect
-
-      // Subscribe from cursor+1. `blockOffset` semantics per indexer 2.0.0:
-      // we set it to the last block we processed so the subscription replays
-      // from just after.
-      await runSubscription(ws, config, cursor, ldContract, publicDataProvider);
-
-      // If runSubscription returns, the socket was closed cleanly.
-      logger.info('[ld-keeper] subscription ended cleanly; reconnecting');
+      await pollOnce(runtime.queryContractState, runtime.decodeEbtLedger, runtime.ldContract, config, cursor, runtime.ldWitnessState);
     } catch (err) {
-      logger.error('[ld-keeper] subscription error; will reconnect', { err: String(err) });
-      // Exponential backoff, capped
-      await sleep(reconnectDelay);
-      reconnectDelay = Math.min(reconnectDelay * 2, config.reconnectMaxMs);
+      logger.error('[ld-keeper] poll iteration failed', { err: errorMessage(err) });
     }
+    await sleep(config.pollIntervalMs);
   }
 }
 
-// ─── subscription loop ──────────────────────────
-
-async function runSubscription(
-  ws: IndexerWsClient,
+async function pollOnce(
+  queryContractState: QueryContractState,
+  decodeEbtLedger: (data: unknown) => any,
+  ldContract: LDDeployedContract,
   config: KeeperConfig,
   cursor: KeeperCursor,
-  ldContract: Awaited<ReturnType<typeof findDeployedContract>>,
-  publicDataProvider: ReturnType<typeof getPublicDataProvider>,
+  ldWitnessState: LdPrivateState,
 ): Promise<void> {
-  let closeResolve: () => void;
-  const closePromise = new Promise<void>((r) => { closeResolve = r; });
-
-  const unsubscribe = ws.subscribeToContractActionEvents(
-    {
-      next: async (payload) => {
-        try {
-          // Every contract action on v7.1 is delivered here. We only care
-          // about ContractCalls to claimSplit (kind=1 dividend branch).
-          // Rather than parse call arguments off the wire, we take the
-          // authoritative path: read the CURRENT `_dividendMintedLog` state
-          // and drain entries newer than our cursor.
-          await drainNewLogEntries(
-            config,
-            cursor,
-            ldContract,
-            publicDataProvider,
-          );
-        } catch (err) {
-          logger.error('[ld-keeper] handler error', { err: String(err) });
-        }
-      },
-      error: (err) => {
-        logger.error('[ld-keeper] subscription onError', { err: String(err) });
-        closeResolve();
-      },
-      complete: () => {
-        logger.info('[ld-keeper] subscription complete frame');
-        closeResolve();
-      },
-    },
-    config.v7ContractAddress,
-    // Start from block offset 0 on cold start; the entry-level cursor
-    // (cursor.lastProcessedSeq) is the real dedup. Passing a fresh 0 means
-    // subscription state replays every action; we filter by seq.
-    { hash: undefined, height: 0 },
-  );
-
-  try {
-    await closePromise;
-  } finally {
-    unsubscribe();
+  const state = await queryContractState(config.ebtV8ContractAddress);
+  if (!state?.data) {
+    logger.warn('[ld-keeper] missing EBT state payload');
+    return;
   }
-}
 
-// ─── drain new _dividendMintedLog entries into LD ─
+  const ledger = decodeEbtLedger(state.data);
+  const records = collectNewRecords(ledger, cursor.lastProcessedSeq);
+  if (records.length === 0) {
+    return;
+  }
 
-async function drainNewLogEntries(
-  config: KeeperConfig,
-  cursor: KeeperCursor,
-  ldContract: Awaited<ReturnType<typeof findDeployedContract>>,
-  publicDataProvider: ReturnType<typeof getPublicDataProvider>,
-): Promise<void> {
-  const state = await publicDataProvider.queryContractState(config.v7ContractAddress);
-  if (!state) return;
-  const log = state.data.get('_dividendMintedLog');
-  if (!log) return;
-
-  // Collect new records in seq order.
-  const newRecords: DividendMintedRecord[] = [];
-  for (const [seqRaw, entryRaw] of log) {
-    const seq = BigInt(seqRaw);
-    if (seq <= cursor.lastProcessedSeq) continue;
-    if (entryRaw.recipient !== config.ldContractAddress) {
-      // Foreign target (LD address changed since this entry was written,
-      // or v7.1 pointed at a different LD contract). Advance cursor safely.
-      cursor.lastProcessedSeq = seq;
+  const ldHex = normalizeHex(config.ldContractAddress);
+  const blockTimeSec = extractChainTimeSec(state);
+  for (const rec of records) {
+    if (rec.seq <= cursor.lastProcessedSeq) {
       continue;
     }
-    newRecords.push({
-      sourceTxSalt: entryRaw.sourceTxSalt,
-      amount:       BigInt(entryRaw.amount),
-      recipient:    entryRaw.recipient,
-      blockTime:    BigInt(entryRaw.blockTime),
-      epochColor:   entryRaw.epochColor,
-      seq,
-    });
-  }
-  newRecords.sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0));
 
-  for (const rec of newRecords) {
-    // Belt-and-suspenders idempotency: check LD state before spending DUST.
-    const already = await ldContract.query.hasProcessedSalt(rec.sourceTxSalt);
-    if (already) {
+    if (rec.recipientHex !== ldHex) {
       cursor.lastProcessedSeq = rec.seq;
       continue;
     }
+
+    const alreadyProcessed = await hasProcessedSaltIfAvailable(ldContract, rec.sourceTxSalt);
+    if (alreadyProcessed) {
+      cursor.lastProcessedSeq = rec.seq;
+      continue;
+    }
+
+    ldWitnessState.blockTime = blockTimeSec;
+    const currentTime = blockTimeSec > 120n ? blockTimeSec - 120n : 0n;
 
     try {
-      const now = BigInt(Math.floor(Date.now() / 1000));
-      const tx = await ldContract.callTx.bumpOnMint(rec.sourceTxSalt, rec.amount, now);
-      logger.info('[ld-keeper] bumped', {
+      const tx = await ldContract.callTx.bumpOnMint(rec.sourceTxSalt, rec.amount, currentTime);
+      cursor.lastProcessedSeq = rec.seq;
+      cursor.lastActivityIso = new Date().toISOString();
+      cursor.processedRecords += 1;
+      logger.info('[ld-keeper] bump submitted', {
         seq: rec.seq.toString(),
         amount: rec.amount.toString(),
-        txHash: tx.public.txHash,
+        txHash: getTxHashFromSubmission(tx),
       });
-      cursor.lastProcessedSeq = rec.seq;
-      cursor.processedRecords += 1;
-      cursor.lastActivityIso = new Date().toISOString();
     } catch (err) {
       if (isAlreadyProcessedError(err)) {
-        // Race with another keeper; safe to advance.
-        logger.info('[ld-keeper] concurrent bump won; advancing cursor', { seq: rec.seq.toString() });
         cursor.lastProcessedSeq = rec.seq;
-      } else if (isTransientError(err)) {
-        // Do NOT advance cursor; next subscription frame will retry.
-        logger.warn('[ld-keeper] transient error; will retry on next frame', { err: String(err) });
-        break;
-      } else {
-        // Unknown error. Log loudly. Don't advance. Human intervention.
-        logger.error('[ld-keeper] hard failure; halting drain', { err: String(err), seq: rec.seq.toString() });
+        logger.info('[ld-keeper] salt already processed; advancing cursor', { seq: rec.seq.toString() });
+        continue;
+      }
+      if (isTransientError(err)) {
+        logger.warn('[ld-keeper] transient error; retrying next poll', {
+          seq: rec.seq.toString(),
+          err: errorMessage(err),
+        });
         break;
       }
+      logger.error('[ld-keeper] hard failure; stopping drain for this poll', {
+        seq: rec.seq.toString(),
+        err: errorMessage(err),
+      });
+      break;
     }
   }
 
   await writeState(config.cursorFile, cursor);
 }
 
-// ─── helpers ────────────────────────────────────
+function collectNewRecords(ledger: any, afterSeq: bigint): DividendMintedRecord[] {
+  const rawLog = ledger?._dividendMintedLog;
+  if (!rawLog || typeof rawLog[Symbol.iterator] !== 'function') {
+    return [];
+  }
 
-function isAlreadyProcessedError(err: unknown): boolean {
-  const msg = String((err as Error)?.message ?? '');
-  return msg.includes('salt already processed');
+  const out: DividendMintedRecord[] = [];
+  for (const [rawSeq, rawEntry] of rawLog as Iterable<[unknown, any]>) {
+    const seq = toBigInt(rawSeq);
+    if (seq <= afterSeq) {
+      continue;
+    }
+
+    const sourceTxSalt = toBytes32(rawEntry?.sourceTxSalt);
+    const amount = toBigInt(rawEntry?.amount);
+    const recipientHex = normalizeHex(toHexString(rawEntry?.recipient));
+
+    out.push({ seq, sourceTxSalt, amount, recipientHex });
+  }
+  out.sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0));
+  return out;
 }
 
-function isTransientError(err: unknown): boolean {
-  const msg = String((err as Error)?.message ?? '');
-  return (
-    msg.includes('ECONNREFUSED') ||
-    msg.includes('ETIMEDOUT') ||
-    msg.includes('proof server') ||
-    msg.includes('indexer temporarily unavailable')
+async function loadRuntimeDependencies(config: KeeperConfig): Promise<{
+  queryContractState: QueryContractState;
+  decodeEbtLedger: (data: unknown) => any;
+  ldContract: LDDeployedContract;
+  ldWitnessState: LdPrivateState;
+}> {
+  const network = await import('@midnight-ntwrk/midnight-js-network-id');
+  network.setNetworkId('preview');
+
+  const compact = await import('@midnight-ntwrk/compact-js');
+  const contracts = await import('@midnight-ntwrk/midnight-js-contracts');
+  const utilsRuntime = await import(pathToFileURL(path.join(__dirname, '_refs', 'utils-runtime.js')).href);
+  const refsConfig = await import(pathToFileURL(path.join(__dirname, '_refs', 'config.js')).href);
+
+  const ldBuild = await import(pathToFileURL(path.join(config.ldBuildDir, 'contract', 'index.js')).href);
+  const ebtBuild = await import(pathToFileURL(path.join(config.ebtV8BuildDir, 'contract', 'index.js')).href);
+
+  if (typeof ebtBuild.ledger !== 'function') {
+    throw new Error(`EBT build does not export ledger(): ${config.ebtV8BuildDir}`);
+  }
+
+  const ldWitnessState: LdPrivateState = {};
+  const baseWitnesses = makeLdWitnesses<LdPrivateState>();
+  const wrappedWitnesses = {
+    ...baseWitnesses,
+    witness_blockTimeGte: (ctx: any, t: bigint) => {
+      const merged = { ...(ctx?.privateState ?? {}), ...ldWitnessState };
+      return baseWitnesses.witness_blockTimeGte({ ...ctx, privateState: merged }, t);
+    },
+  };
+
+  const compiledContract = compact.CompiledContract.make('ld-v2.2.1', ldBuild.Contract).pipe(
+    compact.CompiledContract.withWitnesses(wrappedWitnesses),
+    compact.CompiledContract.withCompiledFileAssets(config.ldBuildDir),
   );
+
+  const walletCtx = await utilsRuntime.createWallet(config.ownerSeedHex);
+  let providers = await utilsRuntime.createProviders(walletCtx, path.join(__dirname, 'build'));
+  providers = utilsRuntime.withZkConfigDir(providers, config.ldBuildDir);
+
+  const publicDataProvider = providers.publicDataProvider;
+  if (!publicDataProvider?.queryContractState) {
+    throw new Error('publicDataProvider.queryContractState not available');
+  }
+
+  // Ensure provider URLs match Preview refs if caller did not override helpers.
+  const expectedIndexer = refsConfig?.CONFIG?.indexer;
+  if (expectedIndexer) {
+    logger.info('[ld-keeper] runtime endpoints', {
+      indexer: refsConfig.CONFIG.indexer,
+      indexerWs: refsConfig.CONFIG.indexerWS,
+      node: refsConfig.CONFIG.node,
+      proof: refsConfig.CONFIG.proofServer,
+    });
+  }
+
+  const ldContract = await contracts.findDeployedContract(providers, {
+    contractAddress: config.ldContractAddress,
+    compiledContract,
+    privateStateId: config.ldPrivateStateId,
+    initialPrivateState: {},
+  });
+
+  return {
+    queryContractState: (address) => publicDataProvider.queryContractState(address),
+    decodeEbtLedger: (data) => ebtBuild.ledger(data),
+    ldContract,
+    ldWitnessState,
+  };
+}
+
+function loadConfigFromEnv(): KeeperConfig {
+  const deploymentSeed = readSeedFromDeploymentJson(
+    process.env.DEPLOYMENT_JSON_PATH ?? '/home/pollpower/contracts/ebt/deployment.json',
+  );
+  const ownerSeedHex = process.env.OWNER_SEED ?? deploymentSeed;
+  if (!ownerSeedHex) {
+    throw new Error('OWNER_SEED is required (or provide DEPLOYMENT_JSON_PATH with a seed field)');
+  }
+
+  return {
+    ebtV8ContractAddress:
+      process.env.EBT_V8_CONTRACT_ADDR ??
+      'c9ee61713d07c6d6e6f3c0bbe119d281307c643caaaf8d785813a9fb52f036e3',
+    ldContractAddress:
+      process.env.LD_CONTRACT_ADDR ??
+      'efccdb2348f98c496f8fd5925a6961c3d81966eab562b928ab9765264dc7fd30',
+    ldPrivateStateId: process.env.LD_PRIVATE_STATE_ID ?? 'ld-v2.2.1-state',
+    ldBuildDir: process.env.LD_BUILD_DIR ?? '/home/pollpower/contracts/living-dividend/build/v2.2.1',
+    ebtV8BuildDir: process.env.EBT_V8_BUILD_DIR ?? '/home/pollpower/contracts/ebt/build/v8',
+    cursorFile: process.env.CURSOR_FILE ?? path.join(__dirname, 'data', 'ld-keeper.cursor.json'),
+    pollIntervalMs: parseInt(process.env.POLL_INTERVAL_MS ?? '5000', 10),
+    ownerSeedHex,
+  };
+}
+
+function readSeedFromDeploymentJson(filePath: string): string | undefined {
+  try {
+    const text = fs.readFileSync(filePath, 'utf8');
+    const parsed = JSON.parse(text) as { seed?: string };
+    return parsed.seed;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractChainTimeSec(state: any): bigint {
+  const candidates: unknown[] = [
+    state?.block?.timestamp,
+    state?.block?.time,
+    state?.timestamp,
+    state?.blockTimestamp,
+    state?.slotTime,
+  ];
+  for (const c of candidates) {
+    if (c === undefined || c === null) {
+      continue;
+    }
+    const v = toBigInt(c);
+    if (v > 1000000000000n) {
+      return v / 1000n;
+    }
+    if (v > 0n) {
+      return v;
+    }
+  }
+  return BigInt(Math.floor(Date.now() / 1000));
+}
+
+function toBigInt(value: unknown): bigint {
+  if (typeof value === 'bigint') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new Error(`cannot convert non-finite number to bigint: ${value}`);
+    }
+    return BigInt(Math.trunc(value));
+  }
+  if (typeof value === 'string') {
+    return BigInt(value);
+  }
+  if (value && typeof value === 'object') {
+    const maybe = value as { value?: unknown; toString?: () => string };
+    if (maybe.value !== undefined) {
+      return toBigInt(maybe.value);
+    }
+    if (typeof maybe.toString === 'function') {
+      return BigInt(maybe.toString());
+    }
+  }
+  throw new Error(`cannot convert value to bigint: ${String(value)}`);
+}
+
+function toBytes32(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return hexToBytes(value);
+  }
+  if (value && typeof value === 'object') {
+    const maybe = value as { bytes?: unknown };
+    if (maybe.bytes !== undefined) {
+      return toBytes32(maybe.bytes);
+    }
+  }
+  throw new Error(`cannot convert to bytes: ${String(value)}`);
+}
+
+function toHexString(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value).toString('hex');
+  }
+  if (value && typeof value === 'object') {
+    const maybe = value as { bytes?: unknown; toString?: () => string };
+    if (maybe.bytes !== undefined) {
+      return toHexString(maybe.bytes);
+    }
+    if (typeof maybe.toString === 'function') {
+      return maybe.toString();
+    }
+  }
+  throw new Error(`cannot convert value to hex string: ${String(value)}`);
+}
+
+function normalizeHex(value: string): string {
+  return value.replace(/^0x/i, '').toLowerCase();
 }
 
 function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  const bytes = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+  const clean = normalizeHex(hex);
+  if (clean.length % 2 !== 0) {
+    throw new Error(`hex string must have even length: ${clean}`);
   }
-  return bytes;
+  return Uint8Array.from(Buffer.from(clean, 'hex'));
 }
 
-// ─── entrypoint ─────────────────────────────────
+function isAlreadyProcessedError(err: unknown): boolean {
+  const msg = errorMessage(err).toLowerCase();
+  return msg.includes('already processed') || msg.includes('salt already');
+}
+
+function isTransientError(err: unknown): boolean {
+  const msg = errorMessage(err).toLowerCase();
+  return (
+    msg.includes('econnrefused') ||
+    msg.includes('etimedout') ||
+    msg.includes('network') ||
+    msg.includes('proof server') ||
+    msg.includes('temporarily unavailable')
+  );
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
+}
 
 if (require.main === module) {
-  const config: KeeperConfig = {
-    v7ContractAddress: process.env.V7_CONTRACT_ADDR!,
-    ldContractAddress: process.env.LD_CONTRACT_ADDR!,
-    indexerHttpUrl:    process.env.INDEXER_HTTP_URL ?? 'https://indexer.testnet-02.midnight.network',
-    indexerWsUrl:      process.env.INDEXER_WS_URL   ?? 'wss://indexer.testnet-02.midnight.network',
-    proofServerUrl:    process.env.PROOF_SERVER_URL ?? 'http://localhost:6300',
-    keeperPrivateKey:  hexToBytes(process.env.KEEPER_SK!),
-    cursorFile:        process.env.CURSOR_FILE ?? './data/ld-keeper.cursor.json',
-    reconnectBaseMs:   parseInt(process.env.WS_RECONNECT_BASE_MS ?? '1000', 10),
-    reconnectMaxMs:    parseInt(process.env.WS_RECONNECT_MAX_MS  ?? '60000', 10),
-  };
-
-  runKeeper(config).catch((err) => {
-    logger.error('[ld-keeper] fatal', { err: String(err) });
+  runKeeper(loadConfigFromEnv()).catch((err) => {
+    logger.error('[ld-keeper] fatal', { err: errorMessage(err) });
     process.exit(1);
   });
 }

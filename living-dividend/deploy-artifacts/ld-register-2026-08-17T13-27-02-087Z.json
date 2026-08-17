@@ -1,0 +1,15 @@
+{
+  "ldAddr": "efccdb2348f98c496f8fd5925a6961c3d81966eab562b928ab9765264dc7fd30",
+  "currentTime": "1786972493",
+  "mock": true,
+  "results": [
+    {
+      "idx": 3,
+      "id": "48bc0774-7ff6-eb2f-fff4-3a9eddcdaa1d",
+      "member": "65db91aded297917ae713d75616584fe1f89c578885f7b5bddfc50fbaf3e4e86",
+      "kycHash": "9beb4e8d017a3b2bdf281b475233b7a6c6cafde3f26386d51b4c8d7831c8c7ae",
+      "txHash": "e54c411115e678b543de4da23feffba14e5bcfe564842441b611304482000e07",
+      "payloadHex": "1f4e43b217d5537f4cd0f724a1538ce79c757fc7f5da5aac423b39bf213c3e3a"
+    }
+  ]
+}
