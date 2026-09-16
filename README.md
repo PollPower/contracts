@@ -236,6 +236,72 @@ Each subdirectory contains a `README.md` and supporting docs.
 
 ---
 
+## Setup, build & testing
+
+Everything in this repository is verifiable from a clean checkout. You need
+the **Compact** compiler (for building the contracts) and **Node.js ≥ 20**
+(for the offline test suites). No live chain, wallet, or network access is
+required to build a contract or run the tests.
+
+### Prerequisites
+
+- **Node.js ≥ 20** — `node --version`
+- **Compact toolchain** — the Midnight smart-contract compiler. Install the
+  Compact developer tools and add them to your `PATH`:
+
+  ```bash
+  # Install the Compact toolchain (developer tools + compiler manager)
+  curl --proto '=https' --tlsv1.2 -LsSf https://github.com/midnightntwrk/compact/releases/latest/download/compact-installer.sh | sh
+  export PATH="$HOME/.compact/bin:$PATH"
+
+  # Install and select a compiler version, then verify
+  compact update
+  compact --version        # e.g. compact 0.5.1
+  compact compile --help
+  ```
+
+  See the [Midnight docs](https://docs.midnight.network/develop/tutorial/building)
+  for the authoritative install instructions.
+
+### Build (compile a contract)
+
+`compact compile <source.compact> <output-dir>` type-checks the contract and
+emits the compiler artifacts, the ZK keys, and the ZKIR:
+
+```bash
+# From the repo root
+compact compile community-poll/community-poll-v2.compact ./out/community-poll-v2
+compact compile producer-registry/producer-registry-v2.compact ./out/producer-registry-v2
+```
+
+A successful build prints `Compiling N circuits:` and writes
+`compiler/`, `contract/`, `keys/`, and `zkir/` into the output directory. Any
+contract in the [What's here](#whats-here) table compiles the same way.
+
+> Tip: `--skip-zk` type-checks and compiles without generating ZK keys, which is
+> much faster when you only want to confirm a contract is well-formed.
+
+### Test
+
+The contracts ship with **offline test suites** that mirror each `.compact`
+contract byte-for-byte (same domain tags, field order, revert messages) and
+exercise the security invariants without a live chain. They use Node's built-in
+`node:test` runner and `node:crypto` — **no `npm install` required**.
+
+```bash
+# EBT vNext (EBT v8) settlement invariants — 37 tests
+node --test ebt/tests/vnext/*.test.mjs
+
+# TariffRegistry action-log + payload-hash invariants — 44 tests
+node --test tariff-registry/tests/registry.test.mjs tariff-registry/tests/wi13.2/action-log.test.mjs
+```
+
+Expected result: `# pass 37` / `# fail 0` and `# pass 44` / `# fail 0`
+respectively. See [`tariff-registry/tests/README.md`](./tariff-registry/tests/README.md)
+for a per-test breakdown of which invariant each case pins.
+
+---
+
 ## What's **not** here
 
 This repository intentionally does **not** contain:
