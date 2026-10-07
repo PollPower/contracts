@@ -201,20 +201,22 @@ Why this shape? Threshold quorums **compose multiplicatively** — controlling `
 
 EBT cannot be minted unless every party with a role agrees, by signature. No single key — including any held by PollPower — can produce a mint by itself.
 
-**Current path (EBT v7, active since 2026-06-17):**
+**Current path (EBT v8, proven end-to-end on Preview 2026-08-05):**
+
+v8 moves the slice policy out of the contract and onto a **mirrored TariffRegistry root**, so tariff classes can be retuned by council governance without redeploying the settlement contract. Each mint proceeds:
 
 1. A consumer pays KES at a metered outlet.
-2. The **gateway hardware** signs the meter reading with its Ed25519 key. The signature covers session ID, hardware pubkey, amount, AND the producer's wallet address (C-1 fix — the producer is bound into the signature).
-3. The **Meter Authority** (whose pubkey is set by the council) attests that the gateway is currently approved.
-4. The **ProducerRegistry** (3-of-5 council multi-sig-gated) confirms the meter is registered.
-5. `settle()` verifies both signatures, the attestation binding (M-1), the slice policy, and the session replay guard, then mints the producer's EBT slice **as an unshielded ledger token directly to the producer's wallet** — the recipient owns the minted UTXO on chain, not the submitter.
-6. `claimSplit()` distributes the operations / dividend / DAO slices per the BPS policy.
+2. The **gateway hardware** signs the meter reading with its Ed25519 key. The signature covers session ID, hardware pubkey, amount, AND the producer's wallet address.
+3. The **Meter Authority (HAT)** (whose pubkey is set by the council) signs a **5-field HAT payload** that binds `producerAddr` — the mint target — with domain separator `pollpower:ebt:v8:epoch1` (the EBT-H-1 fix, closing the mint-redirection gap).
+4. Tariff policy is sourced from the **TariffRegistry**, not hardcoded in the contract. A class is retuned on the registry (`retuneClass`), and an off-chain **mirror daemon** advances that change into the EBT contract's registry surface (`mirrorActionLogRoot` / `mirrorClassStatutoryTotal` / `mirrorActionLogHead`), so `settle` reads a coherent mirrored class total.
+5. `settle()` verifies the gateway + HAT signatures, the attestation binding, and the mirrored class totals, then mints `_totalSupply` **as an unshielded ledger token directly to the producer's wallet** in exact policy slices — the recipient owns the minted UTXO on chain, not the submitter.
+6. `claimSplit()` distributes the operations / dividend / DAO slices per the mirrored policy; `redeem()` handles producer KES/kWh redemption; `revokeProducerOwnership()` closes the producer attestation.
 
-v7's unshielded contract-mint model means a third party (the producer) provably receives contract-minted value without trusting the submitter — the capability the earlier shielded design could not deliver. Three independent signing roles; no single party completes the path alone.
+On **2026-08-05** the full `retune → mirror → settle → revoke` lifecycle ran on-chain end-to-end — `_totalSupply` **0 → 100,000** with a real Meter-Authority signature, six transactions all `SucceedEntirely`. See [EBT v8 on-chain flow](#ebt-v8--full-settle-flow-2026-08-05) for the tx ledger and [`ebt/SETTLE-FLOW-E2E.md`](./ebt/SETTLE-FLOW-E2E.md) for the runbook. Three independent signing roles (gateway, Meter Authority, council-governed registry); no single party completes the path alone.
 
-**The dividend loop (EBT v7.4.2 + Living Dividend v2.2.1, validated live 2026-07-05):** on each sale, `claimSplit()` mints the dividend slice into the Living Dividend pool. A keeper bumps the pool's `accPerShare` accumulator across all living members, each member claims their accrued share on demand, and an off-chain batch payer settles the payouts. On 2026-07-05 this ran end-to-end from a zero-state pool — 5 members registered, 1 sale settled, and all 5 members claimed and were paid on-chain.
+**The dividend loop (Living Dividend v2.2.1, validated live 2026-07-05):** on each sale, `claimSplit()` mints the dividend slice into the Living Dividend pool. A keeper bumps the pool's `accPerShare` accumulator across all living members, each member claims their accrued share on demand, and an off-chain batch payer settles the payouts. On 2026-07-05 this ran end-to-end from a zero-state pool — 5 members registered, 1 sale settled, and all 5 members claimed and were paid on-chain.
 
-**Next-generation path (EBT v8, proven on Preview 2026-08-05):** v8 replaces the in-contract slice policy with a `settle` that reads a **mirrored TariffRegistry root**. A tariff class is retuned on the registry (`retuneClass`), an off-chain daemon mirrors that change into the EBT contract's registry surface (`mirrorActionLogRoot` / `mirrorClassStatutoryTotal` / `mirrorActionLogHead`), and `settle` then verifies a **5-field HAT signature** (including `producerAddr`, the EBT-H-1 fix) against the mirrored class totals before minting. On 2026-08-05 the full `retune → mirror → settle → revoke` lifecycle ran on-chain end-to-end — `_totalSupply` 0 → 100,000 with a real Meter-Authority signature. See [EBT v8 on-chain flow](#ebt-v8--full-settle-flow-2026-08-05).
+**Predecessor path (EBT v7, active 2026-06-17 → superseded on Preview by v8):** before v8, the slice policy lived *inside* the contract. `settle()` verified the gateway + Meter-Authority signatures, the attestation binding (M-1), an in-contract BPS slice policy, and the session replay guard, then minted the producer's slice directly to their wallet; `claimSplit()` distributed the ops / dividend / DAO slices. v7 introduced the unshielded contract-mint model (a third party provably receives contract-minted value without trusting the submitter) and the C-1 producer-binding fix. It remains on chain for provenance. The key v7 → v8 change: **tariff policy moved from a hardcoded in-contract BPS split to a council-governed, daemon-mirrored TariffRegistry root, and the HAT signature grew to bind `producerAddr` (EBT-H-1).**
 
 ---
 
