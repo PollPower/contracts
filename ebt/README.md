@@ -8,7 +8,7 @@ EBT is the unit of account for the PollPower energy economy. One token represent
 
 | File | Status |
 |---|---|
-| [`ebt-v8.compact`](./ebt-v8.compact) | 🚀 **PREVIEW (rehearsed, T+0 ceremony 2026-08-02)** — next-generation 18-circuit contract with TariffRegistry-mirrored `settle`, full daemon-mirror surface, dual governance, EBT-H-1 fix. Deployed 2026-07-30 via ceremony-fenced approach at `10158a54...ae474f`. |
+| [`ebt-v8.compact`](./ebt-v8.compact) | ✅ **PREVIEW (active pilot)** — next-generation 18-circuit contract with TariffRegistry-mirrored `settle`, full daemon-mirror surface, dual governance, EBT-H-1 fix. Live pilot deployment at `c9ee6171...f036e3` (full settle flow proven on-chain 2026-08-05; Milestone II hardware-metered settlement since 2026-08-16). The ceremony-fenced rehearsal at `10158a54...ae474f` (2026-07-30) is superseded. See [DEPLOYMENTS.md](../DEPLOYMENTS.md) for the full address register. |
 | [`ebt-v8-ceremony.compact`](./ebt-v8-ceremony.compact) | ✅ **PREVIEW** — 8-circuit fenced build (byte-identical subset of v8), the base of the ceremony deploy. Remaining 10 circuits added post-deploy via `submitInsertVerifierKeyTx`. See [`V8-CEREMONY-FENCE.md`](./V8-CEREMONY-FENCE.md). |
 | [`ebt-v7.4.2.compact`](./ebt-v7.4.2.compact) | ✅ **PRODUCTION (Preview)** — v7.1 lineage + domain-bound dividend salt + merged `execMultisigOp`/`execOwnerOp` setters. Deployed 2026-07-05. Current settlement contract until v8 cutover post-ceremony. |
 | [`ebt-v7.1.compact`](./ebt-v7.1.compact) | 🟡 **SUPERSEDED** — v7 + `DividendMintedEntry` event log + 3-of-5 multisig setters for Living Dividend. Design basis for v7.4.2. |
@@ -19,10 +19,11 @@ EBT is the unit of account for the PollPower energy economy. One token represent
 
 ---
 
-## EBT v8 (Preview rehearsal, T+0 ceremony 2026-08-02) — TariffRegistry-mirrored settlement
+## EBT v8 (Preview, active pilot) — TariffRegistry-mirrored settlement
 
-**Address (Midnight Preview, rehearsal):** `10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f`
-**Deployed:** 2026-07-30 (ceremony-fenced deploy + full vk-insert rollout of 18 circuits)
+**Address (Midnight Preview, active pilot):** `c9ee61713d07c6d6e6f3c0bbe119d281307c643caaaf8d785813a9fb52f036e3` (live pilot, Milestone II hardware-metered settlement; see [DEPLOYMENTS.md](../DEPLOYMENTS.md))
+**Address (Midnight Preview, ceremony rehearsal, superseded):** `10158a544233f7590ae00fd34255c3646aa25fe75375eab00d76582647ae474f`
+**Deployed:** 2026-07-30 (rehearsal: ceremony-fenced deploy + full vk-insert rollout of 18 circuits); 2026-08-16 (active pilot `c9ee6171...`)
 **Design:** [`VNEXT-DESIGN.md`](./VNEXT-DESIGN.md) · [`VNEXT-MIGRATION.md`](./VNEXT-MIGRATION.md) · [`WI-14-CEREMONY-SKELETON.md`](./WI-14-CEREMONY-SKELETON.md) · [`V8-CEREMONY-FENCE.md`](./V8-CEREMONY-FENCE.md)
 **Rehearsal artifacts:** [`ceremony-artifacts/`](./ceremony-artifacts/) — deploy manifest + 10 vk-insert tx receipts + T+0 pre-flight template
 

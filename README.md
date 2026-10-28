@@ -6,6 +6,8 @@ This isn't a whitepaper promise. Every contract here is **live, on-chain, and pr
 
 This repository is the **canonical, on-chain source** for every contract PollPower runs — from the audit-hardened suite deployed 2026-06-12, through the domain-bound v7.4.x generation live on Preview since 2026-07-05, to EBT v8 today. The whitepaper describes the vision; **this code is the vision, enforced.**
 
+> 📒 **See [DEPLOYMENTS.md](./DEPLOYMENTS.md) for the single-table register of every deployed contract address, status, and consumer.** All addresses are on the Midnight Preview testnet; no PollPower contracts are deployed on mainnet.
+
 ## 🏁 Latest milestone
 
 > ✅ **The full EBT v8 settle flow is proven end-to-end on Midnight Preview (2026-08-05).** For the first time, the next-generation settlement contract ran its complete economic lifecycle on-chain: a tariff class was retuned on the live pilot TariffRegistry, that change was mirrored into the EBT contract's registry surface, `settle` was executed with a **real Meter-Authority (HAT) signature** — minting `_totalSupply` from **0 → 100,000** in exact policy slices — and the producer's ownership attestation was then revoked. **Six transactions, all landed** (`SucceedEntirely`), spanning ~38 minutes. This closes the loop the whole v8 line was built for: `retune → mirror → settle → revoke`, with a live HAT signature and a mirrored TariffRegistry root. See the [EBT v8 on-chain flow](#ebt-v8--full-settle-flow-2026-08-05) below and [`ebt/SETTLE-FLOW-E2E.md`](./ebt/SETTLE-FLOW-E2E.md) for the full runbook.
