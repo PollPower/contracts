@@ -61,6 +61,18 @@ recommend the firmware change before Preprod.
   Built only through `tooling/council/council-keys-guard.mjs`, which
   hard-refuses the devnet council test keys (marked: x starts 0xDE7E) on any
   network but the local devnet.
+- **Exact-length event decoding everywhere events are read** (watcher, LD v3
+  relayer, any indexer consumer), via `tooling/events/event-codec.mjs`: each
+  event is restored to its exact expected length per type/version (the runtime
+  drops trailing zero bytes; shorter data is zero-padded), longer data and
+  unknown framing are refused, and signatures/digests are verified over the
+  restored full-length bytes. Proven by W-4 (strictness) and W-5 (uptime 0 and
+  nonce 0: trimmed on the wire, restored, re-encoded byte-exact, chip
+  signature verifies). Done in tooling; the devnet run must confirm it against
+  the indexer's real `raw` framing, and the relayer must use the codec.
+- **Devnet council test keys hard-blocked off-devnet** (done, CK-1..CK-3):
+  marked keys (x starts 0xDE7E) are refused by the constructor builder on any
+  network but `undeployed`, whatever the configuration says.
 - Done already: Gap C council gate on `manualReissue`, native attestation in
   meter-authority-service, epoch-0 retire fix, chip registry + nonce set.
 
