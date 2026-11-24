@@ -196,6 +196,7 @@ const STAGES = {
       const { address } = await deploy(dn, 'multisig-v8', buildCouncilConstructorArgs(COUNCIL.map((k) => k.point), 2n, dn.net.networkId));
       S.council = address;
       save();
+      dn.bind(address, 'multisig-v8');   // callers (TR, EBT, LD) resolve the council's code
     }
     if (!S.councilLocked) {
       await finalizeContract(dn, 'multisig-v8', S.council);   // full deploy: lock the authority
