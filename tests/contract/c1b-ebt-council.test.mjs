@@ -9,11 +9,12 @@
 //
 // Interface under test:
 //   constructor(ownerPk, meterAuthorityPubkey, council: Council, opsRecipient,
-//               dividendRecipient, daoRecipient, escrowAttestorPubkey, registryActionLogRoot)
-//   pure councilActionHash(self, op, ldAddr, newRecipient, newEscrowAttestor, currentTime) -> Bytes<32>
-//   execMultisigOp(op, ldAddr, newRecipient, newEscrowAttestor, currentTime)
-//     op 0 setLD, 1 clearLD, 2 setDividendRecipient, 4 setEscrowAttestor; op 3 (authority
-//     rotation) removed: the council rotates inside Multisig v8.
+//               daoRecipient, escrowAttestorPubkey, registryActionLogRoot)
+//   pure councilActionHash(self, op, ldAddr, newEscrowAttestor, currentTime) -> Bytes<32>
+//   execMultisigOp(op, ldAddr, newEscrowAttestor, currentTime)
+//     op 0 bindLivingDividend (once), 4 setEscrowAttestor. Op 3 (authority rotation)
+//     removed in C-1b (the council rotates inside Multisig v8); ops 1 (clear LD) and
+//     2 (dividend recipient) removed with LD v3 (tests/contract/ld3-ebt-side.test.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -28,7 +29,6 @@ const unused = (n) => () => { throw new Error(`witness ${n} must not be called`)
 const NOT_APPROVED = /Council has not approved/;
 
 const LD = { bytes: b32(0x4d) };
-const RECIP = { bytes: b32(0x5e) };
 const ATTESTOR = newMachineKey().pk; // WI16-C-1c: the escrow attestor is a Jubjub key
 
 async function setup() {
@@ -41,19 +41,19 @@ async function setup() {
   const council = await deployCouncil();
   const deployEbt = async (councilHandle) => deploy(ebt, { signature_valid: unused('signature_valid') }, [
     newOwnerKey().pk, newMachineKey().pk, { bytes: councilHandle.addressBytes },
-    { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, newMachineKey().pk, b32(0xa4),
+    { bytes: b32(0x21) }, { bytes: b32(0x23) }, newMachineKey().pk, b32(0xa4),
   ], {}, { world });
   const e = await deployEbt(council);
 
   const actionHash = (target, op, time, args = {}) => ebt.pureCircuits.councilActionHash(
-    target.addressBytes, op, args.ld ?? LD, args.recipient ?? RECIP, args.attestor ?? ATTESTOR, time);
+    target.addressBytes, op, args.ld ?? LD, args.attestor ?? ATTESTOR, time);
   const approve = async (hash, slots = [0, 1], on = council) => {
     for (const i of slots) {
       await on.call('approve', hash, BigInt(i), signDigest(approvalDigest(ms, on.addressBytes, hash, 0n), keys[i].sk));
     }
   };
   const exec = (op, time, args = {}, target = e) =>
-    target.call('execMultisigOp', op, args.ld ?? LD, args.recipient ?? RECIP, args.attestor ?? ATTESTOR, time);
+    target.call('execMultisigOp', op, args.ld ?? LD, args.attestor ?? ATTESTOR, time);
   return { ebt, e, council, deployCouncil, deployEbt, actionHash, approve, exec };
 }
 
@@ -70,7 +70,7 @@ test('C1b-EBT-0: no council witness left; the council is a sealed contract refer
 
 test('C1b-EBT-1 (negative, PoC): no approvals, no execution', { skip }, async () => {
   const { exec, e } = await setup();
-  for (const op of [0n, 1n, 2n, 4n]) await assert.rejects(exec(op, 1000n), NOT_APPROVED, `op ${op}`);
+  for (const op of [0n, 4n]) await assert.rejects(exec(op, 1000n), NOT_APPROVED, `op ${op}`);
   assert.equal(e.ledger()._livingDividendAddress.is_some, false);
 });
 
@@ -84,9 +84,9 @@ test('C1b-EBT-3 (negative): an approval binds every argument and the time', { sk
   const { exec, actionHash, approve, e } = await setup();
   await approve(actionHash(e, 0n, 1000n));
   await assert.rejects(exec(0n, 1000n, { ld: { bytes: b32(0x99) } }), NOT_APPROVED, 'other LD address');
-  await assert.rejects(exec(2n, 1000n), NOT_APPROVED, 'other op');
+  await assert.rejects(exec(4n, 1000n), NOT_APPROVED, 'other op');
   await assert.rejects(exec(0n, 1001n), NOT_APPROVED, 'other time');
-  await assert.rejects(exec(0n, 1000n, { recipient: { bytes: b32(0x98) } }), NOT_APPROVED, 'unused field still bound');
+  await assert.rejects(exec(0n, 1000n, { attestor: newMachineKey().pk }), NOT_APPROVED, 'unused field still bound');
 });
 
 test('C1b-EBT-4 (negative): an approval for another EBT deployment cannot be used here', { skip }, async () => {
@@ -111,9 +111,9 @@ test('C1b-EBT-6 (negative): an executed approval cannot be replayed', { skip }, 
   await assert.rejects(exec(0n, 1000n), /Action already executed/);
 });
 
-test('C1b-EBT-7 (negative): op 3 (authority rotation) is gone; unknown ops rejected', { skip }, async () => {
+test('C1b-EBT-7 (negative): ops 1, 2 (LD v3) and 3 (authority rotation) are gone; unknown ops rejected', { skip }, async () => {
   const { exec, actionHash, approve, e } = await setup();
-  for (const op of [3n, 5n]) {
+  for (const op of [1n, 2n, 3n, 5n]) {
     await approve(actionHash(e, op, 1000n));
     await assert.rejects(exec(op, 1000n), /execMultisigOp: bad op/, `op ${op}`);
   }
@@ -132,15 +132,7 @@ test('C1b-EBT-9: 2-of-3 approval executes each council operation', { skip }, asy
   await exec(0n, 1000n);
   assert.equal(hex(e.ledger()._livingDividendAddress.value.bytes), hex(LD.bytes));
 
-  await approve(actionHash(e, 2n, 1001n));
-  await exec(2n, 1001n);
-  assert.equal(hex(e.ledger()._dividendRecipient.bytes), hex(RECIP.bytes));
-
   await approve(actionHash(e, 4n, 1002n));
   await exec(4n, 1002n);
   assert.deepEqual(e.ledger()._escrowAttestorPubkey, ATTESTOR);
-
-  await approve(actionHash(e, 1n, 1003n));
-  await exec(1n, 1003n);
-  assert.equal(e.ledger()._livingDividendAddress.is_some, false);
 });

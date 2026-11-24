@@ -43,6 +43,8 @@ export function createWorld() {
   const entries = new Map(); // address -> { mod, handle, buildName }
   return {
     register(handle, mod, buildName) { entries.set(handle.address, { mod, handle, buildName }); return handle; },
+    /** Writes a callee's post-call state back to its handle, as the chain would. */
+    absorb(address, queryContext) { entries.get(address)?.handle.absorb(queryContext); },
     crossContract: {
       stateProvider: {
         async getContractState(_blockHash, address) {
@@ -78,11 +80,23 @@ export async function deploy(mod, witnesses, ctorArgs = [], privateState = {}, o
     ...(opts.world ? { parentBlockHash: PARENT_BLOCK, crossContract: opts.world.crossContract } : {}),
   });
   let balance = null;
+  let lastEvents = [];
+  let time = null;
   return {
     contract,
     address,
     /** Sets the contract's public token balances seen by later calls (Map<TokenType, bigint>). */
     setBalance(b) { balance = b; },
+    /** Adopts the state this contract reached as a callee in another contract's call. */
+    absorb(queryContext) {
+      const q = new RT.QueryContext(queryContext.state, address);
+      q.block = ctx.callContext.currentQueryContext.block;
+      ctx = { ...ctx, callContext: { ...ctx.callContext, currentQueryContext: q }, queryContexts: { ...ctx.queryContexts, [address]: q } };
+    },
+    /** Sets the block time (seconds) seen by later calls; null = wall clock. */
+    setTime(t) { time = t; },
+    /** Events (MIP-0002 log items) emitted by the last successful call, whole call tree. */
+    events() { return lastEvents; },
     /** The contract address as the 32 bytes `kernel.self().bytes` sees. */
     addressBytes: Uint8Array.from(Buffer.from(String(address).replace(/^0x/, ''), 'hex')),
     async call(circuitId, ...args) {
@@ -99,12 +113,19 @@ export async function deploy(mod, witnesses, ctorArgs = [], privateState = {}, o
         callProofDataTrace: [],
         events: [],
       };
-      if (balance) {
+      if (balance || time !== null) {
         const q = at.callContext.currentQueryContext;
-        q.block = { ...q.block, balance };
+        q.block = { ...q.block, ...(balance ? { balance } : {}), ...(time !== null ? { secondsSinceEpoch: BigInt(time) } : {}) };
       }
       const r = await contract.impureCircuits[circuitId](at, ...args);
       ctx = r.context;
+      lastEvents = r.context.events ?? [];
+      // Callees changed their own state during this call: persist it.
+      if (opts.world) {
+        for (const [addr, qc] of Object.entries(r.context.queryContexts ?? {})) {
+          if (addr !== String(address)) opts.world.absorb(addr, qc);
+        }
+      }
       return r.result;
     },
     ledger() { return mod.ledger(ctx.callContext.currentQueryContext.state); },

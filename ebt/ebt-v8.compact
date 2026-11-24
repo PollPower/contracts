@@ -162,15 +162,6 @@ struct RedemptionEntry {
   tpFiatValueAtMint: Uint<64>,
 }
 
-// LD ledger-log entry — preserved byte-for-byte (I-14-H).
-struct DividendMintedEntry {
-  sourceTxSalt: Bytes<32>,
-  amount:       Uint<128>,
-  recipient:    ContractAddress,
-  blockTime:    Uint<64>,
-  epochColor:   Bytes<32>,
-}
-
 // --- net-new for vNext -----------------------------------------------------
 
 // Per-coin fiat metadata (WI-06 A2 → I-14-E). Event-side state (design §2.3).
@@ -286,7 +277,6 @@ export ledger _settledSessions: Set<Bytes<32>>;
 // time. The recipient fields remain: the non-statutory ops/ld/dao slices still
 // accrue to pending and are minted via claimSplit (LD binding preserved).
 export ledger _operationsRecipient: UserAddress;
-export ledger _dividendRecipient: UserAddress;
 export ledger _daoRecipient: UserAddress;
 
 export ledger producerAttestations: Map<Bytes<32>, AttestationStatus>;
@@ -299,20 +289,23 @@ export ledger _redemptionCount: Counter;
 export ledger _redemptionLog: Map<Uint<64>, RedemptionEntry>;
 
 export ledger _pendingOps: Uint<128>;
-export ledger _pendingDiv: Uint<128>;
+// LD v3: the dividend slice is a budget; members claim it through LD v3.
+export ledger _dividendAccrued: Uint<128>;
+export ledger _dividendMinted: Uint<128>;
 export ledger _pendingDao: Uint<128>;
 export ledger _splitClaimCount: Counter;
 
 export ledger _livingDividendAddress: Maybe<ContractAddress>;
-export ledger _dividendEventSeq: Counter;
-export ledger _dividendMintedLog: Map<Uint<64>, DividendMintedEntry>;
 
 // --- net-new for vNext -----------------------------------------------------
 
 // Registry-mirror maps (design §2.2). Key derivations are byte-identical to
 // TariffRegistry's own state.
 export ledger _registeredLanesMirror:        Map<Bytes<32>, MirroredLaneRecord>;
-export ledger _classStatutoryTotalBpsMirror: Map<Bytes<32>, Uint<16>>;
+// WI16-E-1: the whole class split is mirrored; settle must use it.
+export ledger _classSplitMirror: Map<Bytes<32>, SplitShares>;
+// WI16-E-2: last applied registry actionSeq per mirrored item.
+export ledger _mirrorSeq: Map<Bytes<32>, Uint<64>>;
 export ledger _scheduleLiveMirror:           Map<Bytes<32>, Boolean>;
 
 // Trust anchors for the registry-side event commitment (design §3, §7.1).
@@ -580,7 +573,38 @@ circuit reconstructActionLogRoot(
 // must equal the proof leaf; (2) the reconstructed root must equal the mirrored
 // registryActionLogRoot. The per-kind recHash == entry.payloadHash cross-check
 // (design §7.2) is applied by each mirror-write circuit against its record.
+// WI16-E-3: an EventProof's actionSeq must be the leaf position its path
+// bits encode (bit i = level-i right child), as TariffRegistry appends it.
+pure circuit ACTION_LOG_POWERS(): Vector<24, Field> {
+  return [
+    1 as Field,        2 as Field,        4 as Field,        8 as Field,
+    16 as Field,       32 as Field,       64 as Field,       128 as Field,
+    256 as Field,      512 as Field,      1024 as Field,     2048 as Field,
+    4096 as Field,     8192 as Field,     16384 as Field,    32768 as Field,
+    65536 as Field,    131072 as Field,   262144 as Field,   524288 as Field,
+    1048576 as Field,  2097152 as Field,  4194304 as Field,  8388608 as Field,
+  ];
+}
+
+pure circuit actionLogBitAccum(acc: Field, bit: Boolean, pow: Field): Field {
+  return acc + (bit ? pow : (0 as Field));
+}
+
+// WI16-E-2: mirror writes are monotonic per mirrored item. The registry log is
+// append-only, so an older entry stays provable forever; without this, anyone
+// could re-mirror it and roll a class, lane or schedule back.
+circuit advanceMirror(key: Bytes<32>, seq: Uint<64>): [] {
+  const k = disclose(key);
+  const s = disclose(seq);
+  if (_mirrorSeq.member(k)) {
+    assert(s > _mirrorSeq.lookup(k), "MIRROR_STALE_ENTRY");
+  }
+  _mirrorSeq.insert(k, s);
+}
+
 circuit verifyEventProof(entry: RegistryActionEntry, proof: EventProof): [] {
+  assert(fold(actionLogBitAccum, 0 as Field, disclose(proof.merkleSiblings), ACTION_LOG_POWERS())
+           == (disclose(proof.actionSeq) as Field), "EVENT_PROOF_INVALID");
   assert(disclose(entry.payloadHash) == disclose(proof.payloadHash),
          "EVENT_PROOF_INVALID");
   const reconstructedRoot = reconstructActionLogRoot(
@@ -614,7 +638,6 @@ constructor(
   meterAuthorityPubkey:  JubjubPoint,
   council:               Council,
   operationsRecipient:   UserAddress,
-  dividendRecipient:     UserAddress,
   daoRecipient:          UserAddress,
   escrowAttestorPubkey:  JubjubPoint,
   registryActionLogRoot: Bytes<32>,   // bootstrap: registry post-WI-13.2 root
@@ -624,7 +647,6 @@ constructor(
   _council = disclose(council);
 
   _operationsRecipient = disclose(operationsRecipient);
-  _dividendRecipient = disclose(dividendRecipient);
   _daoRecipient = disclose(daoRecipient);
 
   _lastReissueTime = 0 as Uint<64>;
@@ -674,18 +696,18 @@ export circuit execOwnerOp(
 // those the op ignores, so one approval names exactly one call) and the
 // approved time. councilActionHash is an exported pure circuit: the admin app
 // computes the same bytes from the compiled contract.
-//   op 0 = setLivingDividendAddress   op 1 = clearLivingDividendAddress
-//   op 2 = setDividendRecipient       op 4 = setEscrowAttestor
+//   op 0 = bindLivingDividend (once; LD v3)   op 4 = setEscrowAttestor
+//   ops 1 (clear LD) and 2 (dividend recipient) were removed with LD v3.
 //   op 3 (setMultisigAuthority) is removed: the council rotates inside
 //   Multisig v8, at the same address.
 
 export pure circuit councilActionHash(
-  self: Bytes<32>, op: Uint<8>, ldAddr: ContractAddress, newRecipient: UserAddress,
+  self: Bytes<32>, op: Uint<8>, ldAddr: ContractAddress,
   newEscrowAttestor: JubjubPoint, currentTime: Uint<64>,
 ): Bytes<32> {
-  return persistentHash<Vector<8, Bytes<32>>>([
+  return persistentHash<Vector<7, Bytes<32>>>([
     pad(32, "pp:ebt:v9:council"), self, (op as Field) as Bytes<32>, ldAddr.bytes,
-    newRecipient.bytes, jubjubPointX(newEscrowAttestor) as Bytes<32>,
+    jubjubPointX(newEscrowAttestor) as Bytes<32>,
     jubjubPointY(newEscrowAttestor) as Bytes<32>, (currentTime as Field) as Bytes<32>,
   ]);
 }
@@ -700,33 +722,27 @@ circuit requireCouncil(actionHash: Bytes<32>): [] {
 export circuit execMultisigOp(
   op:                Uint<8>,
   ldAddr:            ContractAddress,
-  newRecipient:      UserAddress,
   newEscrowAttestor: JubjubPoint,
   currentTime:       Uint<64>,
 ): [] {
   assert(disclose(blockTimeGte(disclose(currentTime))),
          "execMultisigOp: timestamp cannot be in the future");
   const k = disclose(op);
-  assert(k == 0 as Uint<8> || k == 1 as Uint<8> || k == 2 as Uint<8> || k == 4 as Uint<8>,
+  assert(k == 0 as Uint<8> || k == 4 as Uint<8>,
          "execMultisigOp: bad op");
-  requireCouncil(councilActionHash(kernel.self().bytes, k, disclose(ldAddr), disclose(newRecipient),
+  requireCouncil(councilActionHash(kernel.self().bytes, k, disclose(ldAddr),
                                    disclose(newEscrowAttestor), disclose(currentTime)));
 
   if (k == 0 as Uint<8>) {
+    // LD v3: bind once. The dividend budget is only ever minted through this
+    // LD; rebinding would let a second LD re-distribute it.
+    assert(!_livingDividendAddress.is_some, "Living Dividend already bound");
     _livingDividendAddress = some<ContractAddress>(disclose(ldAddr));
   } else {
-    if (k == 1 as Uint<8>) {
-      _livingDividendAddress = none<ContractAddress>();
-    } else {
-      if (k == 2 as Uint<8>) {
-        _dividendRecipient = disclose(newRecipient);
-      } else {
-        // op 4: escrow-attestor rotation (design §6.4).
-        const disclosedAttestor = disclose(newEscrowAttestor);
-        assert(disclosedAttestor != _escrowAttestorPubkey, "setEscrowAttestor: no-op rotation");
-        _escrowAttestorPubkey = disclosedAttestor;
-      }
-    }
+    // op 4: escrow-attestor rotation (design §6.4).
+    const disclosedAttestor = disclose(newEscrowAttestor);
+    assert(disclosedAttestor != _escrowAttestorPubkey, "setEscrowAttestor: no-op rotation");
+    _escrowAttestorPubkey = disclosedAttestor;
   }
 }
 
@@ -847,6 +863,7 @@ export circuit mirrorRegisterLane(
   assert(disclose(recHash) == disclose(entry.payloadHash), "EVENT_PROOF_INVALID");
   const key = laneKey(disclose(laneRecord.scheduleId), disclose(laneRecord.leviedBy),
                       disclose(laneRecord.laneKindByte));
+  advanceMirror(key, proof.actionSeq);
   const mirrored = MirroredLaneRecord {
     record:         disclose(laneRecord),
     writeActionSeq: disclose(proof.actionSeq),
@@ -867,6 +884,7 @@ export circuit mirrorRetireLane(
   assert(disclose(recHash) == disclose(entry.payloadHash), "EVENT_PROOF_INVALID");
   const key = laneKey(disclose(laneRecord.scheduleId), disclose(laneRecord.leviedBy),
                       disclose(laneRecord.laneKindByte));
+  advanceMirror(key, proof.actionSeq);
   const mirrored = MirroredLaneRecord {
     record:         disclose(laneRecord),
     writeActionSeq: disclose(proof.actionSeq),
@@ -887,6 +905,7 @@ export circuit mirrorScheduleLifecycle(
   const recHash = scheduleActionPayloadHash(k, scheduleRecord);
   assert(disclose(recHash) == disclose(entry.payloadHash), "EVENT_PROOF_INVALID");
   // Live iff retiredEpoch == 0 (four-part predicate, part 4).
+  advanceMirror(scheduleRecord.scheduleId, proof.actionSeq);
   const isLive = disclose(scheduleRecord.retiredEpoch) == 0 as Uint<64>;
   _scheduleLiveMirror.insert(disclose(scheduleRecord.scheduleId), disclose(isLive));
 }
@@ -908,8 +927,8 @@ export circuit mirrorClassStatutoryTotal(
                                           rateFiatPerKwh, lastUpdatedAt);
   assert(disclose(recHash) == disclose(entry.payloadHash), "EVENT_PROOF_INVALID");
   const cKey = classKey(scheduleId, classPath);
-  _classStatutoryTotalBpsMirror.insert(disclose(cKey),
-                                       disclose(split.statutoryTotalBps));
+  advanceMirror(cKey, proof.actionSeq);
+  _classSplitMirror.insert(disclose(cKey), disclose(split));
 }
 
 // =============================================================================
@@ -1031,8 +1050,13 @@ export circuit settle(
 
   // 6. CLASS STATUTORY TOTAL — mirror lookup for I-14-K.
   const cKey = classKey(scheduleId, classPath);
-  assert(_classStatutoryTotalBpsMirror.member(disclose(cKey)), "CLASS_NOT_LIVE");
-  const statutoryTotalBps = _classStatutoryTotalBpsMirror.lookup(disclose(cKey));
+  assert(_classSplitMirror.member(disclose(cKey)), "CLASS_NOT_LIVE");
+  const classSplit = _classSplitMirror.lookup(disclose(cKey));
+  const statutoryTotalBps = classSplit.statutoryTotalBps;
+  // WI16-E-1: the dividend, ops and DAO shares are the class's, not the
+  // submitter's (the producer slice is then fixed by the 10000-bps sum).
+  assert(disclose(ldBps) == classSplit.ldShareBps && disclose(opsBps) == classSplit.opsShareBps
+         && disclose(daoBps) == classSplit.daoShareBps, "SPLIT_OFF_CLASS");
 
   // 7. FIAT SANITY BAND — CAL-2 (scaffold).
   assert(disclose(fiatValueAtMint) >= CAL_2_FIAT_FLOOR(), "FIAT_VALUE_OUT_OF_BAND");
@@ -1158,7 +1182,7 @@ export circuit settle(
   }
 
   _pendingOps = disclose((_pendingOps + opsAmt) as Uint<128>);
-  _pendingDiv = disclose((_pendingDiv + divAmt) as Uint<128>);
+  _dividendAccrued = disclose((_dividendAccrued + divAmt) as Uint<128>);   // LD v3 budget
   _pendingDao = disclose((_pendingDao + daoAmt) as Uint<128>);
 
   // 16. STATE UPDATES + per-coin tariff-path event (I-14-E).
@@ -1219,41 +1243,42 @@ export circuit claimSplit(kind: Uint<8>, currentTime: Uint<64>,
                         right<ContractAddress, UserAddress>(_operationsRecipient));
     _pendingOps = disclose(0 as Uint<128>);
   } else {
-    if (k == 1 as Uint<8>) {
-      assert(_pendingDiv > 0 as Uint<128>, "No pending dividend split");
-      const divAmount = _pendingDiv;
-      mintUnshieldedToken(disclose(domainSep), disclose(divAmount) as Uint<64>,
-                          right<ContractAddress, UserAddress>(_dividendRecipient));
-      _pendingDiv = disclose(0 as Uint<128>);
-
-      if (disclose(_livingDividendAddress.is_some)) {
-        const seq = _dividendEventSeq.read();
-        const seqBytes = (seq as Field) as Bytes<32>;
-        const selfBytes = disclose(kernel.self()).bytes;
-        const salt = persistentHash<Vector<3, Bytes<32>>>([
-          pad(32, "pollpower:dividend:v8"),
-          selfBytes,
-          seqBytes,
-        ]);
-        const entry = DividendMintedEntry {
-          sourceTxSalt: disclose(salt),
-          amount: disclose(divAmount),
-          recipient: disclose(_livingDividendAddress.value),
-          blockTime: disclose(currentTime),
-          epochColor: disclose(ebtColor()),
-        };
-        _dividendMintedLog.insert(disclose(seq) as Uint<64>, disclose(entry));
-        _dividendEventSeq.increment(1);
-      }
-    } else {
-      assert(k == 2 as Uint<8>, "Bad split kind");
-      assert(_pendingDao > 0 as Uint<128>, "No pending dao split");
-      mintUnshieldedToken(disclose(domainSep), disclose(_pendingDao) as Uint<64>,
-                          right<ContractAddress, UserAddress>(_daoRecipient));
-      _pendingDao = disclose(0 as Uint<128>);
-    }
+    // kind 1 (dividend) removed in LD v3: the dividend stays in EBT as a
+    // budget and members claim it through Living Dividend v3.
+    assert(k == 2 as Uint<8>, "Bad split kind");
+    assert(_pendingDao > 0 as Uint<128>, "No pending dao split");
+    mintUnshieldedToken(disclose(domainSep), disclose(_pendingDao) as Uint<64>,
+                        right<ContractAddress, UserAddress>(_daoRecipient));
+    _pendingDao = disclose(0 as Uint<128>);
   }
   _splitClaimCount.increment(1);
+}
+
+// =============================================================================
+// Living Dividend v3 callees (witness-free; reached only by cross-contract call)
+// =============================================================================
+// The dividend slice of every settle stays here as a budget
+// (_dividendAccrued). Members claim through LD v3, which calls mintDividend;
+// EBT mints straight to the member's payout address. EBT never calls LD.
+
+export circuit dividendAccrued(): Uint<128> {
+  return _dividendAccrued;
+}
+
+export circuit mintDividend(member: UserAddress, amount: Uint<128>): [] {
+  // kernel.caller() is read only here, where the call must come from a
+  // contract (the stdlib warns it is unreliable for top-level calls).
+  const c = kernel.caller();
+  assert(_livingDividendAddress.is_some && c.is_some && c.value.is_left
+         && c.value.left == _livingDividendAddress.value,
+         "Only the bound Living Dividend contract");
+  const a = disclose(amount);
+  assert(a > 0 as Uint<128>, "mintDividend: amount must be positive");
+  assert((_dividendMinted + a) as Uint<128> <= _dividendAccrued, "Exceeds dividend budget");
+  _dividendMinted = disclose((_dividendMinted + a) as Uint<128>);
+  // Same token (domain separator) as every other EBT mint.
+  mintUnshieldedToken(pad(32, "pollpower:ebt:v8:epoch1"), a as Uint<64>,
+                      right<ContractAddress, UserAddress>(disclose(member)));
 }
 
 // =============================================================================

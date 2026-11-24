@@ -300,6 +300,23 @@ Tests: `tests/contract/c1c-ebt-machine-signers.test.mjs` (18, 12 negative),
 `tests/contract/c1c-tariff-signers.test.mjs` (11, 7 negative); the PoC (a
 lying `signature_valid` witness) is supplied in every case.
 
+### Settle path findings (found while building LD v3's tests, 2026-11-24)
+
+Building a full in-memory settle (real TariffRegistry schedule and class,
+mirrored into EBT through action-log proofs) for the LD v3 tests showed three
+pre-existing gaps on the path that feeds the dividend budget. Each was shown
+on the pre-fix build, then fixed test-first (`tests/contract/ld3-ebt-side.test.mjs`).
+
+| ID | Severity | Gap | Fix |
+|---|---|---|---|
+| WI16-E-1 | High | `settle` took `ldBps`, `opsBps`, `daoBps` as free arguments, checked only to sum to 10000 with the mirrored statutory total. Any HAT holder could settle with the dividend, ops and DAO shares at 0 and give them to the producer. | The class mirror stores the whole `SplitShares` (`_classSplitMirror`); settle asserts the three shares equal the class's (`SPLIT_OFF_CLASS`). |
+| WI16-E-2 | High | Mirror writes were not monotonic. The registry log is append-only, so an older entry stays provable: re-mirroring it rolled a class back to an old split (shown: statutory 500 → 0, then a settle skipped the statutory lane) or a retired schedule back to live. | `_mirrorSeq` per mirrored item; a write needs a strictly newer `actionSeq` (`MIRROR_STALE_ENTRY`). Applies to classes, schedules and lanes. |
+| WI16-E-3 | Medium | `EventProof.actionSeq` was not tied to the Merkle path, so any sequence number could be claimed (it drives lane freshness, and now E-2). | `verifyEventProof` rebuilds the leaf index from the path bits and requires it to equal `actionSeq`. |
+
+Also noted, not fixed (Low): TariffRegistry `retireSchedule` at epoch 0
+records `retiredEpoch = 0`, which every reader treats as "live", so a
+retirement before the first epoch advance does nothing.
+
 ## C-2: EBT owner gate
 
 Replace `assertOnlyOwner()` (`ownPublicKey() == _owner`) in the six owner-gated

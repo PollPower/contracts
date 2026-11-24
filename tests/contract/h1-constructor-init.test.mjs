@@ -30,7 +30,6 @@ const ebtArgs = () => [
   AUTH.pk,                  // meterAuthorityPubkey
   { bytes: b32(0xa2) },     // council (Multisig v8 address; WI16-C-1b)
   { bytes: b32(0x21) },     // operationsRecipient
-  { bytes: b32(0x22) },     // dividendRecipient
   { bytes: b32(0x23) },     // daoRecipient
   ESCROW.pk,                // escrowAttestorPubkey
   b32(0xa4),                // registryActionLogRoot
@@ -53,7 +52,6 @@ for (const name of EBT) {
     assert.deepEqual(L._meterAuthorityPubkey, AUTH.pk);
     assert.equal(hex(L._council.bytes), hex(b32(0xa2)));
     assert.equal(hex(L._operationsRecipient.bytes), hex(b32(0x21)));
-    assert.equal(hex(L._dividendRecipient.bytes), hex(b32(0x22)));
     assert.equal(hex(L._daoRecipient.bytes), hex(b32(0x23)));
     assert.deepEqual(L._escrowAttestorPubkey, ESCROW.pk);
     assert.equal(hex(L._registryActionLogRootMirror), hex(b32(0xa4)));

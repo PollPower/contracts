@@ -1,0 +1,26 @@
+// Test fixture (never deployed): a contract that calls EBT's dividend callees
+// directly, so the tests can check EBT's own guards (caller binding, budget)
+// independently of Living Dividend v3.
+pragma language_version >= 0.28;
+
+import CompactStandardLibrary;
+
+contract EbtDividend {
+  circuit dividendAccrued(): Uint<128>;
+  circuit mintDividend(member: UserAddress, amount: Uint<128>): [];
+}
+
+export sealed ledger _ebt: EbtDividend;
+export ledger lastRead: Uint<128>;
+
+constructor(ebt: EbtDividend) {
+  _ebt = disclose(ebt);
+}
+
+export circuit pull(member: UserAddress, amount: Uint<128>): [] {
+  _ebt.mintDividend(disclose(member), disclose(amount));
+}
+
+export circuit read(): [] {
+  lastRead = _ebt.dividendAccrued();
+}

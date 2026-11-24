@@ -20,6 +20,9 @@ export const CONTRACTS = {
   'multisig-v6.2': 'multisig/multisig-v6.2-ed25519.compact',
   'multisig-v8': 'multisig/multisig-v8-secp256k1.compact',
   'tangem-verify': 'tooling/tangem/tangem-verify.compact',
+  'living-dividend-v3': 'living-dividend/living-dividend-v3.compact',
+  // Test fixture (never deployed): calls EBT's dividend callees directly.
+  'fixture-dividend-caller': 'tests/fixtures/dividend-caller.compact',
 };
 export const BUILD_DIR = path.join(ROOT, 'build', 'l9');
 const EXPECTED = { compiler: '0.36.1', language: '0.28.0', runtime: '0.21.0' };

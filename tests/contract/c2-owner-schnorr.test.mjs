@@ -28,7 +28,7 @@ const ESCROW = newMachineKey();
 const ONLY_OWNER = /Only owner/;
 
 const ctorArgs = (ownerPk) => [
-  ownerPk, AUTH.pk, { bytes: b32(0xa2) }, { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, ESCROW.pk, b32(0xa4),
+  ownerPk, AUTH.pk, { bytes: b32(0xa2) }, { bytes: b32(0x21) }, { bytes: b32(0x23) }, ESCROW.pk, b32(0xa4),
 ];
 async function setup() {
   const mod = await loadContract(NAME);

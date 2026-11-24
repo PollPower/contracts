@@ -43,7 +43,7 @@ async function setup() {
   const deployEbt = async () => {
     const c = await deploy(mod, witnesses, [
       OWNER.pk, HAT.pk, { bytes: b32(0xa2) },
-      { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, ESCROW.pk, b32(0xa4),
+      { bytes: b32(0x21) }, { bytes: b32(0x23) }, ESCROW.pk, b32(0xa4),
     ]);
     return Object.assign(c, { mod });
   };
