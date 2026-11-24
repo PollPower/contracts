@@ -49,6 +49,15 @@ SHA-256 with an expiry; devnet chips (`PPDEV`) refused off-devnet; the contract
 cannot tell native attestations from SIGN_HASH (ledger 9 has no Ed25519):
 recommend the firmware change before Preprod.
 
+**Devnet run progress (kenya local devnet, 2026-11-24):** council (Multisig v8,
+marked devnet keys) -> TR staged deploy + registerSchedule via TR->Council
+cross-contract call with real proofs + retuneClass -> EBT staged deploy (14
+VK inserts, 16-20 s each) + mirrors + producer attestation + council chip
+registration -> first settle on chain (154 s; supply 10000, dividend accrued
+1000) -> watcher verified the chip signature on the indexer-read event (OK).
+Next: LD v3 deploy/bind/register/claim (mint inside a cross-contract call),
+two EBT calls in one tx, LD events via the indexer, deploy-size measurement.
+
 **Preprod gates (all must hold before any Preprod deploy):**
 - Every step passes on the local devnet, and Joi confirms kenya is fully synced.
 - Council rotation (72 h delay) implemented (design doc, "Council rotation").
@@ -69,7 +78,10 @@ recommend the firmware change before Preprod.
   restored full-length bytes. Proven by W-4 (strictness) and W-5 (uptime 0 and
   nonce 0: trimmed on the wire, restored, re-encoded byte-exact, chip
   signature verifies). Done in tooling; the devnet run must confirm it against
-  the indexer's real `raw` framing, and the relayer must use the codec.
+  the indexer (done 2026-11-24: events are read through the provider's decoded
+  Misc `name` + `payload`, restored by `restoreIndexerMiscEvent`; the `raw`
+  field is the whole log item, 373 B with framing + metadata, and is never
+  decoded as the event; W-6). The LD relayer must use the codec.
 - **Devnet council test keys hard-blocked off-devnet** (done, CK-1..CK-3):
   marked keys (x starts 0xDE7E) are refused by the constructor builder on any
   network but `undeployed`, whatever the configuration says.

@@ -26,7 +26,7 @@ import { ActionLogTree } from '../../tests/contract/settle-world.mjs';
 import { signSettle, settleHatArgs, chipHwId, sessionFrom16 } from '../../tests/contract/hat-signer.mjs';
 import { submitSettleWithRetry } from '../settle/submit-settle.mjs';
 import { findSettleChipEvents, decodeSettleChipEvent, verifySettleChipEvent, SETTLE_CHIP_EVENT } from '../watcher/settle-watcher-lib.mjs';
-import { nameField } from '../events/event-codec.mjs';
+import { restoreIndexerMiscEvent } from '../events/event-codec.mjs';
 
 const big = (/** @type {Uint8Array} */ b) => b.reduce((a, x) => (a << 8n) | BigInt(x), 0n);
 const label = (/** @type {string} */ s) => new Uint8Array(createHash('sha256').update(`pollpower wi16 devnet ${s} (test key, not a secret)`).digest());
@@ -86,25 +86,21 @@ async function ledgerOf(dn, name, address) {
  * the exact indexer format is confirmed on the devnet.
  */
 async function watchEvents(dn, tag) {
-  const q = `query($a: HexEncoded!) { contractEvents(filter: { contractAddress: $a }) { id raw } }`;
-  const res = await fetch(dn.net.indexer, { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query: q, variables: { a: S.ebt } }) });
-  const body = await res.json();
-  if (body.errors) { console.log(`[watch:${tag}] indexer error: ${JSON.stringify(body.errors).slice(0, 300)}`); return; }
-  const evs = body.data?.contractEvents ?? [];
-  console.log(`[watch:${tag}] indexer returned ${evs.length} EBT event(s)`);
-  const NAME = nameField(SETTLE_CHIP_EVENT);
+  // The indexer provider decodes Misc events into name + payload (hex). `raw`
+  // is the whole VersionedLogItem (framing + metadata), not our event bytes.
+  const evs = await /** @type {any} */ (dn.providersFor('ebt-v8')).publicDataProvider.queryContractEvents({ contractAddress: S.ebt, types: ['Misc'] });
+  console.log(`[watch:${tag}] indexer returned ${evs.length} Misc event(s) for EBT`);
   const L = await ledgerOf(dn, 'ebt-v8', S.ebt);
   for (const e of evs) {
-    const raw = Buffer.from(String(e.raw).replace(/^0x/, ''), 'hex');
-    const at = raw.indexOf(NAME);
-    console.log(`[watch:${tag}]   event ${e.id}: raw ${raw.length} B, settleChip name at offset ${at}, prefix ${raw.subarray(0, Math.max(0, at)).toString('hex')}`);
-    if (at < 0) continue;
-    const [full] = findSettleChipEvents([raw.subarray(at)]);
-    const ev = decodeSettleChipEvent(full);
+    console.log(`[watch:${tag}]   event ${e.id}: name ${String(e.name).length / 2} B, payload ${String(e.payload).length / 2} B (raw log item ${String(e.raw).length / 2} B, not decoded)`);
+    let restored;
+    try { restored = restoreIndexerMiscEvent(e); } catch (err) { console.log(`[watch:${tag}]   REFUSED: ${/** @type {any} */ (err).message}`); continue; }
+    console.log(`[watch:${tag}]   ${restored.name}: restored to ${restored.bytes.length} B`);
+    if (restored.name !== SETTLE_CHIP_EVENT) continue;
+    const ev = decodeSettleChipEvent(restored.bytes);
     const chip = L._chips.member(ev.chipPubkey) ? L._chips.lookup(ev.chipPubkey) : null;
     const r = verifySettleChipEvent(ev, chip);
-    console.log(`[watch:${tag}]   watcher: ${r.ok ? 'OK' : 'ALERT ' + r.problems.join(',')} (uWh ${ev.sessionUwh}, nonce ${ev.nonce})`);
+    console.log(`[watch:${tag}]   watcher: ${r.ok ? 'OK' : 'ALERT ' + r.problems.join(',')} (uWh ${ev.sessionUwh}, uptime ${ev.uptimeMs}, nonce ${ev.nonce})`);
   }
 }
 
@@ -257,6 +253,9 @@ const STAGES = {
       console.log(`[stack] devnet chip registered (ieee ${Buffer.from(CHIP.ieee).toString('hex')})`);
     }
   },
+
+  // Re-run the watcher over the events already on chain.
+  async watch(dn) { await watchEvents(dn, 'watch'); },
 
   // One metered settle: chip native attestation (software chip) -> meter-
   // authority countersign -> submit with retry; then the watcher re-verifies

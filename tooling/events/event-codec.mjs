@@ -51,3 +51,24 @@ export function restoreEventValue(bytes, expectedName) {
 
 /** The 32-byte words of a restored event's payload. */
 export const payloadWords = (full) => Array.from({ length: (full.length - 32) / 32 }, (_, i) => full.subarray(32 + 32 * i, 64 + 32 * i));
+
+/**
+ * Restores an event read through the midnight-js indexer provider
+ * (queryContractEvents, eventType 'Misc': `name` and `payload` hex). The
+ * provider's `raw` field is the whole VersionedLogItem (framing + metadata),
+ * NOT the event bytes: never decode it as an event (devnet, 2026-11-24: a
+ * 288-byte settleChip arrives as raw 373 B, name at offset 26).
+ */
+export function restoreIndexerMiscEvent(e, expectedName) {
+  if (e.eventType !== undefined && e.eventType !== 'Misc') throw new Error(`not a Misc event: ${e.eventType}`);
+  const hex = (x, what) => {
+    const h = String(x).replace(/^0x/, '');
+    if (!/^[0-9a-f]*$/i.test(h) || h.length % 2) throw new Error(`event ${what} is not hex`);
+    return Buffer.from(h, 'hex');
+  };
+  const name = hex(e.name, 'name');
+  if (name.length > 32) throw new Error('event name longer than 32 bytes');
+  const name32 = Buffer.alloc(32);
+  name.copy(name32);
+  return restoreEventValue(Buffer.concat([name32, hex(e.payload, 'payload')]), expectedName);
+}
