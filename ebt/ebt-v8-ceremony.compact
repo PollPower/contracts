@@ -15,7 +15,8 @@
 // Registry: tariff-registry/tariff-registry-v1.compact @ c6f7c55 (WI-13.2:
 //          LaneRecord, laneKey, RegistryActionEntry.payloadHash,
 //          registryActionLogRoot, actionLogNode Merkle scheme).
-// Tooling: compactc 0.30.0, language 0.16..0.22 (WI-13 pin; 0.31.0 deferred).
+// Tooling: Compact toolchain 0.36.1, language 0.28 (WI-16 ledger 9 pin;
+//          was compactc 0.30.0 / language 0.22 through the Preview pilot).
 //
 // =============================================================================
 // WHAT CHANGES FROM V7.4.2  (WI-14 vNext — this is v8, a total break)
@@ -75,7 +76,7 @@
 //
 // =============================================================================
 
-pragma language_version >= 0.16 && <= 0.22;
+pragma language_version 0.28;
 
 import CompactStandardLibrary;
 
