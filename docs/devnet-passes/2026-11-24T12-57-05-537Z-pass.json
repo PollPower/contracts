@@ -1,0 +1,88 @@
+{
+  "startedAt": "2026-11-24T12:57:05.537Z",
+  "gitCommit": "7177dd115c1d71dd39ae492a7842ce279ff16abc",
+  "gitClean": true,
+  "manifest": {
+    "builds": {
+      "multisig-v8": "cde0fdb3e70df14784718aa913e5f3451a7567a2e464912ea386000ba7729b84",
+      "tariff-registry-v1": "aeefa611ae35509788a72cf1590eac0598a20ba94234187396d4d664a8e57e35",
+      "tariff-registry-v1-ceremony": "7d4b5029d1d516731fb92c95604b4f2cd4bdfdb14bc6fcc8a09d4008b891ab24",
+      "ebt-v8": "1cf3b7a136856ee987098ce360ee68bbe444b775f5588a165055ddf9ee714546",
+      "ebt-v8-ceremony": "bec0cebc1c25b903e9fd02e3ca9c539a6320df9b22bc07da322af070861d215d",
+      "living-dividend-v3": "6115257c515b88664fb32245db56858ea824e70d37b2b6b5d69e49d3de279959"
+    },
+    "deployCode": {
+      "tooling/deploy/deploy-suite.mjs": "f588163045962f50da13f40bd7492f5c5412522d0fcf9924a2120304abf45f66",
+      "tooling/deploy/network.mjs": "a5ef486e87a3c602e17bafa9201209578cb70db3a821aaf0b1e111f6c2d87d92",
+      "tooling/deploy/finalize.mjs": "dce85202097ee40c50f40cdd383e0c87c92eef7d87e95bdba8fa36cd246738de",
+      "tooling/council/council-keys-guard.mjs": "93bb4e2cfcbe08437c2f5719c1660e1c0ba1b9688f2676c14ea6999131588193",
+      "tooling/midnight-providers.mjs": "a0db98c5eeeb48350c570ef0377a72901b923d9a479d9c8baa7b750a8cffd8c3"
+    }
+  },
+  "network": "undeployed",
+  "stages": [
+    {
+      "stage": "council",
+      "ok": true,
+      "seconds": 140
+    },
+    {
+      "stage": "tariff",
+      "ok": true,
+      "seconds": 805
+    },
+    {
+      "stage": "ebt",
+      "ok": true,
+      "seconds": 641
+    },
+    {
+      "stage": "settle",
+      "ok": true,
+      "seconds": 120
+    },
+    {
+      "stage": "ld",
+      "ok": true,
+      "seconds": 299
+    },
+    {
+      "stage": "settle",
+      "ok": true,
+      "seconds": 115
+    },
+    {
+      "stage": "claim",
+      "ok": true,
+      "seconds": 53
+    },
+    {
+      "stage": "service",
+      "ok": true,
+      "seconds": 199
+    },
+    {
+      "stage": "relay",
+      "ok": true,
+      "seconds": 173
+    },
+    {
+      "stage": "watcher",
+      "ok": true,
+      "seconds": 115
+    },
+    {
+      "stage": "attacks",
+      "ok": true,
+      "seconds": 537
+    }
+  ],
+  "result": "pass",
+  "finishedAt": "2026-11-24T13:50:22.380Z",
+  "addresses": {
+    "council": "65b7b800a721d51dbddbc11046da192ede046b5d85de61a4f938fd78db106010",
+    "tariffRegistry": "cb4cc4f09f072d527677dc951241c449b36511e156fc4ba78ba4e5ece8d63e08",
+    "ebt": "ff6cf6016b994cebb00278a14defd812e731554607a92ae5ee52abc362f240e7",
+    "livingDividend": "a6bc302eb8a7189ba927e6948fac1206b2f3fdac8acfafbcd991787ae1511d3e"
+  }
+}

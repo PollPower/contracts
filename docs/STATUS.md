@@ -140,6 +140,20 @@ locked authorities, changing the chip registry means redeploying EBT and
 migrating balances), not headroom. Recommendation: no split before Preprod;
 revisit if the ceremony set nears ~60% or chip-registry changes are expected.
 
+**Full devnet pass from fresh state: PASS (2026-11-24, commit 7177dd1, 53 min;
+record `docs/devnet-passes/2026-11-24T12-57-05-537Z-pass.json`).** One
+uninterrupted run, fresh council / keys / contracts, clean tree: council,
+TariffRegistry, EBT and LD v3 deployed by the shared deploy suite and each
+finalized with its authority locked; two metered settles (watcher OK on both
+from the indexer); LD register + claim (mint inside a cross-contract call,
+two EBT calls in one tx, LD events via the indexer); pp-settle-service submit
++ crash replay; LD relayer (4 actions, replay refused); watcher alerted all 3
+council members for a forged-chip-signature settle; staged-deploy attacks
+12/12. Only a fresh-state run counts (`stack.mjs all` refuses existing
+state); the Preprod ceremony (`tooling/deploy/preprod-ceremony.mjs`, manual,
+not run) uses the same deploy suite and refuses builds or deploy code that
+differ from a passing record.
+
 **Step 4 item 4: code complete, each part run on kenya's devnet (2026-11-24).**
 - pp-settle-service on-chain submit (`wi16-hat-v9`): split planned from EBT's
   live mirrors (`tooling/settle/settle-plan.mjs`), retry, never resubmits a
