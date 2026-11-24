@@ -8,43 +8,58 @@
 // to all council members (revocation is 2-of-3; there is no single-member
 // suspend).
 //
-// Event payload (8 x 32 bytes, see EBT settle): sessionID, chipPubkey,
-// chipSigR, chipSigS, chipHwId, chipSessionUwh, chipUptimeMs, chipNonce
-// (integers little-endian). Chip pre-image (firmware pp_attest.h):
-//   "pollpower:hat:attest:v1" || ieee(8) || userid(4 BE) || sessionID[0..16]
-//   || uwh(8 BE) || uptime_ms(8 BE) || nonce(8 BE), signed as SHA-512 digest.
+// Event (exact layout 288 bytes, tooling/events/event-codec.mjs): name(32) ||
+// sessionID, chipPubkey, chipSigR, chipSigS, chipHwId, chipSessionUwh,
+// chipUptimeMs, chipNonce (32 bytes each; integers little-endian). The runtime
+// drops trailing zero bytes, so events are restored to exactly 288 bytes (and
+// refused if longer) before decoding; the signature is checked over the
+// pre-image rebuilt from the restored fields. Chip pre-image (firmware
+// pp_attest.h): "pollpower:hat:attest:v1" || ieee(8) || userid(4 BE) ||
+// sessionID[0..16] || uwh(8 BE) || uptime_ms(8 BE) || nonce(8 BE), signed as
+// its SHA-512 digest.
 import crypto from 'node:crypto';
 import { ed25519 } from '@noble/curves/ed25519.js';
+import { restoreEventValue, payloadWords, nameField } from '../events/event-codec.mjs';
 
 export const SETTLE_CHIP_EVENT = 'pp:ebt:v9:settleChip';
-const NAME = (() => { const b = Buffer.alloc(32); b.write(SETTLE_CHIP_EVENT, 'utf8'); return b; })();
+const NAME = nameField(SETTLE_CHIP_EVENT);
 const le = (b) => { let x = 0n; for (let i = b.length - 1; i >= 0; i--) x = (x << 8n) | BigInt(b[i]); return x; };
+const le32 = (x) => { const b = Buffer.alloc(32); let v = BigInt(x); for (let i = 0; i < 32; i++) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; };
 const be = (x, n) => { const b = Buffer.alloc(n); let v = BigInt(x); for (let i = n - 1; i >= 0; i--) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; };
 const same = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)) === 0;
 
-/** Finds settleChip name+payload blocks (288 bytes) in event byte strings:
- *  local runtime events (name || payload) or indexer `raw` VersionedLogItem bytes. */
-export function findSettleChipEvents(byteStrings) {
+/**
+ * settleChip events, restored to exactly 288 bytes. Each input is one event
+ * value (name || payload, possibly trimmed of trailing zeros). An input that
+ * holds the event name at offset 0 but is longer than 288 bytes is refused.
+ * Inputs whose event is a different type are skipped.
+ */
+export function findSettleChipEvents(values) {
   const out = [];
-  for (const raw of byteStrings) {
-    const b = Buffer.from(raw);
-    // The runtime's value encoding drops trailing zero bytes (a 288-byte event
-    // can arrive shorter), so zero-pad each block back to 288 bytes.
-    for (let i = b.indexOf(NAME); i >= 0; i = b.indexOf(NAME, i + 1)) {
-      const block = Buffer.alloc(288);
-      b.copy(block, 0, i, Math.min(i + 288, b.length));
-      out.push(block);
+  for (const v of values) {
+    const b = Buffer.from(v);
+    if (b.length < 32 || !b.subarray(0, 32).equals(NAME)) {
+      if (b.length >= 32 && b.indexOf(NAME) > 0) throw new Error('settleChip name not at offset 0: unknown framing, refusing to guess');
+      continue;
     }
+    out.push(restoreEventValue(b, SETTLE_CHIP_EVENT).bytes);
   }
   return out;
 }
 
-export function decodeSettleChipEvent(block) {
-  const w = (i) => Buffer.from(block.subarray(32 + 32 * i, 64 + 32 * i));
+export function decodeSettleChipEvent(full) {
+  if (full.length !== 288) throw new Error(`settleChip must be 288 bytes, got ${full.length}`);
+  const w = payloadWords(full).map((x) => Buffer.from(x));
   return {
-    sessionId: w(0), chipPubkey: w(1), chipSig: Buffer.concat([w(2), w(3)]), chipHwId: w(4),
-    sessionUwh: le(w(5)), uptimeMs: le(w(6)), nonce: le(w(7)),
+    sessionId: w[0], chipPubkey: w[1], chipSig: Buffer.concat([w[2], w[3]]), chipHwId: w[4],
+    sessionUwh: le(w[5]), uptimeMs: le(w[6]), nonce: le(w[7]),
   };
+}
+
+/** The exact 288-byte event the contract emits for these fields (round-trip checks). */
+export function encodeSettleChipEvent(ev) {
+  return Buffer.concat([NAME, Buffer.from(ev.sessionId), Buffer.from(ev.chipPubkey), Buffer.from(ev.chipSig),
+    Buffer.from(ev.chipHwId), le32(ev.sessionUwh), le32(ev.uptimeMs), le32(ev.nonce)]);
 }
 
 export function attestDigest(ev) {

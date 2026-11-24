@@ -159,7 +159,7 @@ export async function settleWorld(opts = {}) {
    * Settles `amount` with the given bps split (default: the class split) and
    * slice amounts computed by floor; the producer slice takes the rounding.
    */
-  /** over: { chip, chipNonce, session } override the chip key, its nonce or the session index. */
+  /** over: { chip, chipNonce, chipUptimeMs, session } override the chip key, its nonce or the session index. */
   const settle = async (amount, bps = {}, over = {}) => {
     const chipKey = over.chip ?? keys.chip;
     const sessionIndex = over.session ?? session;
@@ -176,7 +176,7 @@ export async function settleWorld(opts = {}) {
     const fields = {
       sessionID: sessionFrom16(new Uint8Array(16).fill(0x80 + (sessionIndex % 120))), amount, producerKey,
       producerAddr: { bytes: b32(0x64) }, meterKeyHash, chipHwId: chipHwId(chipKey),
-      chipSessionUwh: amount * 1000n + 123n, chipUptimeMs: 60_000n + BigInt(sessionIndex) * 1000n,
+      chipSessionUwh: amount * 1000n + 123n, chipUptimeMs: over.chipUptimeMs ?? 60_000n + BigInt(sessionIndex) * 1000n,
       chipNonce: over.chipNonce ?? BigInt(sessionIndex + 1),
     };
     if (over.session === undefined) session++;

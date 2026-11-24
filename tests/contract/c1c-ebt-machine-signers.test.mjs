@@ -33,6 +33,7 @@ import { newMachineKey, signMessage } from './machine-signer.mjs';
 import { newChipKey, signSettle, settleHatArgs, chipHwId, attestDigest, sessionFrom16 } from './hat-signer.mjs';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { settleWorld } from './settle-world.mjs';
+import { restoreEventValue } from '../../tooling/events/event-codec.mjs';
 import { createWorld } from '../parity/harness.mjs';
 import { newCouncilKey, approvalDigest, signDigest } from './council-signer.mjs';
 
@@ -363,8 +364,8 @@ test('C1c-EBT-P1: the signed messages are the pure circuits the services call (l
 test('C1c-EBT-S8: a completed settle records the chip attestation; the chip signature re-verifies from the event alone', { skip }, async () => {
   const w = await settleWorld();
   const { chip, fields } = await w.settle(10000n);
-  const ev = w.ebt.events().map((x) => Buffer.from(x.data.content.value[0]))
-    .find((b) => b.subarray(0, 32).toString('utf8').replace(/\0+$/, '') === 'pp:ebt:v9:settleChip');
+  const ev = w.ebt.events().map((x) => restoreEventValue(x.data.content.value[0]))
+    .find((e) => e.name === 'pp:ebt:v9:settleChip')?.bytes;   // restored to its exact 288 bytes
   assert.ok(ev, 'settleChip event');
   const word = (i) => ev.subarray(32 + 32 * i, 64 + 32 * i);
   assert.equal(hex(word(0)), hex(fields.sessionID));

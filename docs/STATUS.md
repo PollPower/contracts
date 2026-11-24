@@ -58,6 +58,9 @@ recommend the firmware change before Preprod.
 - Settle-event watcher running and alerting all council members
   (`docs/runbooks/hat-settle-watcher.md`).
 - Real ring keys (Garrett, Jonathan, Timothy) in the Multisig v8 constructor.
+  Built only through `tooling/council/council-keys-guard.mjs`, which
+  hard-refuses the devnet council test keys (marked: x starts 0xDE7E) on any
+  network but the local devnet.
 - Done already: Gap C council gate on `manualReissue`, native attestation in
   meter-authority-service, epoch-0 retire fix, chip registry + nonce set.
 
@@ -79,10 +82,13 @@ recommend the firmware change before Preprod.
    **Core done** (`tooling/watcher/settle-watcher-lib.mjs`, tests W-1..W-4):
    W-2 shows the contract accepting a countersigned SIGN_HASH-style signature
    and the watcher flagging it. Still to do: the indexer subscription + alert
-   sink (all council members), run on the devnet. Note: the runtime's value
-   encoding drops trailing zero bytes of event payloads (288 -> 257 here);
-   every event decoder must zero-pad (the devnet run must confirm the
-   indexer's `raw` form).
+   sink (all council members), run on the devnet. The runtime's value
+   encoding drops trailing zero bytes of event payloads (288 -> 257 here):
+   `tooling/events/event-codec.mjs` restores each event to its exact layout
+   length per type (shorter: zero-padded; longer: refused), the watcher
+   verifies over the restored fields, and W-5 round-trips an event whose last
+   fields are genuinely zero. The devnet run must still confirm the indexer's
+   `raw` framing.
 4. Devnet scripts (deploy, mirror, settle submit with retry), LD v3 relayer
    (`/api/ld/v3/*`), Gap A session linking; then the devnet run.
 

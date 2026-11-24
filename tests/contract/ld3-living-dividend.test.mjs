@@ -25,6 +25,7 @@ import { BUILD, buildExists, loadContract, deploy, b32, hex, padTag } from '../p
 import { garbageSignature } from './owner-signer.mjs';
 import { newMachineKey, signMessage } from './machine-signer.mjs';
 import { settleWorld, T0 } from './settle-world.mjs';
+import { restoreEventValue, payloadWords } from '../../tooling/events/event-codec.mjs';
 
 const NAME = 'living-dividend-v3';
 const need = [NAME, 'ebt-v8', 'tariff-registry-v1', 'multisig-v8'];
@@ -70,11 +71,10 @@ async function setup({ bind = true } = {}) {
     (opts.target ?? ld).call('touchLiveness', m.id, time, opts.sig ?? sign(m, 'touchLiveness', P.timeDigest(time), opts));
   const member = (m, target = ld) => target.ledger()._members.lookup(m.id);
   /** Events of the last call on `target`, as {name, words: [hex x8]}. */
+  // Events restored to their exact layout (the runtime drops trailing zeros).
   const events = (target = ld) => target.events().map((e) => {
-    const bytes = Buffer.from(e.data.content.value[0]);
-    const name = bytes.subarray(0, 32).toString('utf8').replace(/\0+$/, '');
-    const words = Array.from({ length: 8 }, (_, i) => bytes.subarray(32 + 32 * i, 64 + 32 * i));
-    return { name, words };
+    const { name, bytes } = restoreEventValue(e.data.content.value[0]);
+    return { name, words: payloadWords(bytes) };
   });
   return Object.assign(w, { mod, P, ld, deployLd, newMember, register, nonce, sign, claim, touch, member, events });
 }
