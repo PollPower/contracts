@@ -1,3 +1,4 @@
+// @ts-nocheck: behaviour is pinned by tests/parity/tangem-secp256k1.test.mjs.
 // WI-16 Tangem test: decode what a ring returns and check it the way the
 // Compact stdlib secp256k1EcdsaVerify will. No network, no keys stored.
 //
