@@ -16,7 +16,7 @@
 // constructor at the Preprod ceremony.
 import { createHash } from 'node:crypto';
 import * as RT from '@midnight-ntwrk/compact-runtime';
-import { openDevnet, deploy, join, loadModule, insertMissingVks, state } from './devnet-lib.mjs';
+import { openDevnet, deploy, join, loadModule, insertMissingVks, liveState, state } from './devnet-lib.mjs';
 import { devnetCouncilKey, buildCouncilConstructorArgs } from '../council/council-keys-guard.mjs';
 import { signDigest } from '../../tests/contract/council-signer.mjs';
 import { signMessage } from '../../tests/contract/machine-signer.mjs';
@@ -75,7 +75,7 @@ export const SPLIT = { producerShareBps: 6000n, ldShareBps: 1000n, opsShareBps: 
 /** Current ledger of a deployed contract (via the indexer). */
 async function ledgerOf(dn, name, address) {
   const mod = await loadModule(name);
-  const st = await dn.providersFor(name).publicDataProvider.queryContractState(address);
+  const st = await liveState(dn, name, address);
   if (!st) throw new Error(`${name} at ${address}: no state from the indexer`);
   return mod.ledger(st.data);
 }
@@ -120,7 +120,16 @@ async function approve(dn, actionHash, slots = [0, 1]) {
   for (const i of slots) {
     const digest = ms.pureCircuits.approvalDigest(self, actionHash, epoch);
     const t0 = Date.now();
-    await council.callTx.approve(actionHash, BigInt(i), signDigest(digest, COUNCIL[i].sk));
+    try {
+      await council.callTx.approve(actionHash, BigInt(i), signDigest(digest, COUNCIL[i].sk));
+    } catch (e) {
+      // A resumed run may repeat an approval that already landed.
+      if (/already approved/i.test(String(/** @type {any} */ (e)?.message ?? e) + String(/** @type {any} */ (e)?.cause?.message ?? ''))) {
+        console.log(`[stack]   council slot ${i}: already approved`);
+        continue;
+      }
+      throw e;
+    }
     console.log(`[stack]   council slot ${i} approved ${Buffer.from(actionHash).toString('hex').slice(0, 16)}… (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
   }
 }
@@ -136,8 +145,8 @@ const STAGES = {
     const probe = label('council probe action');
     await approve(dn, probe, [0]);
     const ms = await join(dn, 'multisig-v8', S.council);
-    const st = await dn.providersFor('multisig-v8').publicDataProvider.queryContractState(S.council);
-    console.log(`[stack] council at ${S.council}; probe approval recorded: ${st ? 'yes' : '?'}`);
+    const st = await liveState(dn, 'multisig-v8', S.council);
+    console.log(`[stack] council at ${S.council}; live state read back: ${st ? 'yes' : 'no'}`);
     void ms;
     S.councilProbe = true;
     save();
@@ -151,6 +160,7 @@ const STAGES = {
         [{ bytes: hexToBytes(S.council) }, charterRoot, 100n, VALIDATOR.pk], TR_WITNESSES);
       S.tr = address;
       save();
+      dn.bind(address, 'tariff-registry-v1');
     }
     if (!S.trVks) {
       S.trVks = await insertMissingVks(dn, 'tariff-registry-v1', S.tr, TR_WITNESSES);
@@ -203,6 +213,7 @@ const STAGES = {
       S.ebt = address;
       S.ebtRoot = Buffer.from(root).toString('hex');
       save();
+      dn.bind(address, 'ebt-v8');
     }
     if (!S.ebtVks) {
       S.ebtVks = await insertMissingVks(dn, 'ebt-v8', S.ebt);
@@ -292,6 +303,11 @@ const wanted = process.argv.slice(2);
 if (!wanted.length) { console.error(`usage: stack.mjs <${Object.keys(STAGES).join('|')}|all> ...`); process.exit(2); }
 const order = wanted.includes('all') ? Object.keys(STAGES) : wanted;
 const dn = await openDevnet();
+// Bind every deployed contract's build for cross-contract calls (TR/EBT -> Council, LD -> EBT).
+if (S.council) dn.bind(S.council, 'multisig-v8');
+if (S.tr) dn.bind(S.tr, 'tariff-registry-v1');
+if (S.ebt) dn.bind(S.ebt, 'ebt-v8');
+if (S.ld) dn.bind(S.ld, 'living-dividend-v3');
 for (const st of order) {
   if (!STAGES[st]) throw new Error(`unknown stage ${st}`);
   console.log(`[stack] === ${st}`);

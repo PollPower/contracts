@@ -14,6 +14,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
+import { ContractState } from '@midnight-ntwrk/compact-runtime';
+import { ZKConfigRegistry } from '@midnight-ntwrk/midnight-js-types';
+import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
+import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 import { deployContract, findDeployedContract, submitInsertVerifierKeyTx } from '@midnight-ntwrk/midnight-js-contracts';
 import { loadNetworkConfig, describeNetwork } from '../midnight-network.mjs';
 import { createProviders, withZkConfigDir } from '../midnight-providers.mjs';
@@ -63,8 +67,27 @@ export async function openDevnet() {
     privateStateStoreName: 'wi16-devnet-stack',
     privateStatePassword: process.env.MIDNIGHT_PRIVATE_STATE_PASSWORD ?? 'Local-Devnet-Only-1',   // local devnet only
   });
-  const providersFor = (name) => withZkConfigDir(base, net, buildDir(name));
-  return { net, ctx, providersFor };
+  // Cross-contract callees: address -> build name (midnight-js 5 has no default
+  // module provider; a call to an unbound address fails naming the call).
+  const modules = new Map();
+  const contractModuleProvider = {
+    resolve(/** @type {string} */ address) {
+      const name = modules.get(String(address).replace(/^0x/, '').toLowerCase());
+      return name ? () => loadModule(name) : undefined;
+    },
+  };
+  // Proving: a cross-contract call carries one proof per contract in the call
+  // tree, so the proof provider resolves keys through a registry over this
+  // build AND every bound callee's build (matched by deployed verifier key).
+  const providersFor = (name) => {
+    const own = withZkConfigDir(base, net, buildDir(name));
+    const sources = [own.zkConfigProvider, ...[...new Set(modules.values())].filter((n) => n !== name).map((n) => new NodeZkConfigProvider(buildDir(n)))];
+    const registry = new ZKConfigRegistry(sources);
+    return { ...own, proofProvider: httpClientProofProvider({ url: net.proofServer, zkConfigProvider: registry }), contractModuleProvider };
+  };
+  /** Registers the build behind a deployed address, for cross-contract calls into it. */
+  const bind = (/** @type {string} */ address, /** @type {string} */ name) => { modules.set(address.replace(/^0x/, '').toLowerCase(), name); };
+  return { net, ctx, providersFor, bind };
 }
 
 /** Deploys build `name` (or `deployAs`, e.g. a ceremony variant) with constructor args. */
@@ -85,6 +108,15 @@ export async function join(dn, name, address, witnesses = null) {
 }
 
 /**
+ * A deployed contract's live state from the indexer, decoded with our own
+ * runtime (midnight-js 5 hands out SerializedContractState). Null if absent.
+ */
+export async function liveState(dn, name, address) {
+  const read = await /** @type {any} */ (dn.providersFor(name)).publicDataProvider.queryContractState(address);
+  return read ? read.contractState.deserialize({ v9: ContractState }) : null;
+}
+
+/**
  * Staged deploy, second half: insert every verifier key of the FULL build that
  * the (ceremony-deployed) contract does not have yet, one maintenance tx each.
  * Returns the circuit ids inserted.
@@ -92,12 +124,13 @@ export async function join(dn, name, address, witnesses = null) {
 export async function insertMissingVks(dn, fullName, address, witnesses = null) {
   const providers = /** @type {any} */ (dn.providersFor(fullName));
   const c = await compiled(fullName, witnesses);
-  const live = await providers.publicDataProvider.queryContractState(address);
+  const live = await liveState(dn, fullName, address);
+  if (!live) throw new Error(`${fullName} at ${address}: no state from the indexer`);
   const dir = path.join(buildDir(fullName), 'keys');
   const inserted = [];
   for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.verifier')).sort()) {
     const id = f.slice(0, -'.verifier'.length);
-    if (live?.operation(id) !== undefined) continue;
+    if (live.operation(id) !== undefined) continue;
     const vk = fs.readFileSync(path.join(dir, f));
     const t0 = Date.now();
     await submitInsertVerifierKeyTx(providers, /** @type {any} */ (c), address, id, vk);
