@@ -115,7 +115,7 @@ keep their sealed `_council` reference.
 5. **Cancel.** A council-approved `cancelRotation(rotationHash)` before
    execution.
 
-**Proposed `ROTATION_DELAY`: 72 hours.** Reasons: the council spans JST and
+**`ROTATION_DELAY`: 72 hours (approved by Garrett, 2026-11-24).** Reasons: the council spans JST and
 EAT, and 72 h gives every member at least one working day to see a pending
 rotation even across a weekend; it is long enough for Joi's monitoring and the
 dependent apps to alert, and short enough that replacing a lost or
@@ -126,6 +126,53 @@ threshold approval, since the honest majority can cancel within the window.
 Cost: one extra secp256k1-free circuit pair (schedule/execute) and a
 `cancelRotation`; no change to `approve` or `isApproved`, because the epoch is
 already in the approval layout from the demo version.
+
+#### Council make-up and standby (decided 2026-11-24)
+
+- **Council: 2-of-3**, three members each holding their own Tangem ring
+  (secp256k1 wallet). Constructor at the Preprod deploy:
+  `adminCount = 3, threshold = 2`, slots 0–2 = the three ring keys, slots 3–6
+  filler.
+- **Standby:** one further ring holder is the pre-agreed replacement if a
+  member's ring is lost or a member leaves. The standby is **not a council
+  member and has no on-chain role** until rotated in.
+- **Records are off-chain.** Which ring belongs to whom, the card IDs and the
+  collected public keys live in the council-keys file kept outside every
+  repository (on throne: `%UserProfile%\PollPower-council\council-keys.json`),
+  never in this repo or on chain beyond the public keys in the constructor.
+- **Devnet:** 2-of-3 test keys until the real rings are scanned; the real keys
+  go into the constructor only at the Preprod deploy.
+- **Ring readiness** before the Preprod deploy: every member's and the
+  standby's ring holds a secp256k1 wallet, checked with the admin app's ring
+  test, and each public key is verified with a signature (as in the
+  2026-11-24 test) before it is written into the council-keys file. No
+  permanent key is created on a ring without Garrett's approval.
+
+**Standby procedure (one ring lost, or a member leaves):**
+
+1. The holder (or any member) reports it to the council at once. A lost ring
+   alone cannot approve anything: it needs its access code, and 2-of-3 needs a
+   second ring.
+2. Confirm the standby ring's secp256k1 public key against the council-keys
+   file (re-run the ring test if it hasn't been verified recently).
+3. Build the new council: the standby key takes the departing member's slot;
+   the other slots, `adminCount = 3` and `threshold = 2` stay the same.
+4. **The two remaining members both approve** the rotation hash (2-of-3).
+5. Anyone schedules the rotation; **the 72-hour delay applies**. During the
+   window either remaining member can still have it cancelled with a
+   council-approved cancel if something is wrong.
+6. After the delay, anyone executes it. The epoch increments, so any approval
+   the lost ring gave before the change no longer counts. Update the
+   council-keys file (standby → member, departing ring retired) and tell Joi.
+
+Risk to know: from the loss until the rotation executes, the council runs on
+exactly two rings and needs both. If a second ring is lost in that window the
+council cannot act (no recovery path in v8). Mitigation: start the procedure
+immediately; a second standby or a higher council size would remove this,
+at the cost of more rings to manage.
+
+A member who leaves on good terms follows the same steps; their ring can still
+be one of the two approvals, but the rotation should not rely on it.
 
 #### Tangem ring test (2026-11-24): PASS
 
@@ -298,5 +345,5 @@ review pass are done.
 1. Approve this design (or the hash-preimage alternative for C-2).
 2. ~~Can the Tangem rings sign secp256k1?~~ **Yes**, verified on the devnet 2026-11-24 (C-1a stays on hardware).
 3. ~~`_council` sealed or rotatable?~~ **Sealed for the Nov 30 devnet demo; rotatable (72 h delay, proposed) before any Preprod deploy.**
-5. **Council make-up** (size, holders, threshold): not yet given; the devnet uses 3 test keys at 2-of-3.
+5. ~~Council make-up~~ **2-of-3, three ring holders, plus one standby; 72 h rotation delay approved** (see "Council make-up and standby").
 4. Schedule option A or B.
