@@ -28,6 +28,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DEPLOY_CODE = [
   path.join(HERE, 'deploy-suite.mjs'), path.join(HERE, 'network.mjs'), path.join(HERE, 'finalize.mjs'),
   path.join(HERE, '..', 'council', 'council-keys-guard.mjs'), path.join(HERE, '..', 'midnight-providers.mjs'),
+  path.join(HERE, '..', 'proving', 'serial-proof-provider.mjs'),
 ];
 
 const sha = (/** @type {Buffer | string} */ b) => crypto.createHash('sha256').update(b).digest('hex');

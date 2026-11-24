@@ -27,7 +27,7 @@ import {
   createKeystore,
 } from '@midnightntwrk/wallet-sdk';
 import { createLedger9MidnightProvider, createLedger9WalletProvider } from '@midnight-ntwrk/midnight-js-types';
-import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
+import { serialProofProvider } from './proving/serial-proof-provider.mjs';   // one proof at a time (job capacity 1)
 import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
 import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
@@ -118,7 +118,7 @@ export async function createProviders(ctx, net, opts) {
     // docs prescribe for Node.js.
     publicDataProvider: indexerPublicDataProvider({ queryURL: net.indexer, subscriptionURL: net.indexerWS }),
     zkConfigProvider,
-    proofProvider: httpClientProofProvider({ url: net.proofServer, zkConfigProvider }),
+    proofProvider: serialProofProvider({ url: net.proofServer, zkConfigProvider }),
     walletProvider,
     midnightProvider,
     config: { networkId: net.networkId, ttlSeconds: net.ttlSeconds },
@@ -135,5 +135,5 @@ export async function createProviders(ctx, net, opts) {
  */
 export function withZkConfigDir(providers, net, zkConfigDir) {
   const zkConfigProvider = new NodeZkConfigProvider(zkConfigDir);
-  return { ...providers, zkConfigProvider, proofProvider: httpClientProofProvider({ url: net.proofServer, zkConfigProvider }) };
+  return { ...providers, zkConfigProvider, proofProvider: serialProofProvider({ url: net.proofServer, zkConfigProvider }) };
 }

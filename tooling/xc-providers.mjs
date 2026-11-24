@@ -11,7 +11,7 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ZKConfigRegistry } from '@midnight-ntwrk/midnight-js-types';
-import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
+import { serialProofProvider } from './proving/serial-proof-provider.mjs';   // one proof at a time (job capacity 1)
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 
 const norm = (/** @type {string} */ a) => String(a).replace(/^0x/, '').toLowerCase();
@@ -35,7 +35,7 @@ export function withCrossContract(providers, net, { ownBuildDir, callees }) {
   return {
     ...providers,
     zkConfigProvider: own,
-    proofProvider: httpClientProofProvider({ url: net.proofServer, zkConfigProvider: registry }),
+    proofProvider: serialProofProvider({ url: net.proofServer, zkConfigProvider: registry }),
     contractModuleProvider,
   };
 }

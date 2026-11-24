@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
 import { ContractState } from '@midnight-ntwrk/compact-runtime';
 import { ZKConfigRegistry } from '@midnight-ntwrk/midnight-js-types';
-import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
+import { serialProofProvider } from '../proving/serial-proof-provider.mjs';   // one proof at a time (job capacity 1)
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 import { deployContract, findDeployedContract, submitInsertVerifierKeyTx } from '@midnight-ntwrk/midnight-js-contracts';
 import { createProviders, withZkConfigDir } from '../midnight-providers.mjs';
@@ -59,7 +59,7 @@ export async function openNetwork({ net, ctx, storeName, password, log = console
     const own = withZkConfigDir(base, net, buildDir(name));
     const sources = [own.zkConfigProvider, ...[...new Set(modules.values())].filter((n) => n !== name).map((n) => new NodeZkConfigProvider(buildDir(n)))];
     const registry = new ZKConfigRegistry(sources);
-    return { ...own, proofProvider: httpClientProofProvider({ url: net.proofServer, zkConfigProvider: registry }), contractModuleProvider };
+    return { ...own, proofProvider: serialProofProvider({ url: net.proofServer, zkConfigProvider: registry }), contractModuleProvider };
   };
   /** Registers the build behind a deployed address, for cross-contract calls into it. */
   const bind = (/** @type {string} */ address, /** @type {string} */ name) => { modules.set(address.replace(/^0x/, '').toLowerCase(), name); };
