@@ -29,15 +29,19 @@ export async function loadContract(name) {
 export async function deploy(mod, witnesses, ctorArgs = [], privateState = {}) {
   const contract = new mod.Contract(witnesses);
   const ctor = await contract.initialState(RT.createConstructorContext(privateState, COIN), ...ctorArgs);
+  const address = RT.sampleContractAddress();
   let ctx = RT.createCircuitContext({
     circuitId: 'constructor',
-    contractAddress: RT.sampleContractAddress(),
+    contractAddress: address,
     coinPublicKeyOrZswapState: COIN,
     contractState: ctor.currentContractState,
     privateState,
   });
   return {
     contract,
+    address,
+    /** The contract address as the 32 bytes `kernel.self().bytes` sees. */
+    addressBytes: Uint8Array.from(Buffer.from(String(address).replace(/^0x/, ''), 'hex')),
     async call(circuitId, ...args) {
       const at = { ...ctx, callContext: { ...ctx.callContext, circuitId } };
       const r = await contract.impureCircuits[circuitId](at, ...args);

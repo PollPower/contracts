@@ -273,7 +273,9 @@ struct EventProof {
 // =============================================================================
 
 // --- preserved from v7.4.2 -------------------------------------------------
-export ledger _owner: Either<ZswapCoinPublicKey, ContractAddress>;
+// WI16-C-2: the owner is a Jubjub Schnorr key; _ownerNonce stops signature replay.
+export ledger _ownerPk: JubjubPoint;
+export ledger _ownerNonce: Counter;
 export ledger _meterAuthorityPubkey: Bytes<32>;
 export ledger _multisigAuthority: Bytes<32>;
 export ledger _authorityRotationNonce: Counter;
@@ -338,10 +340,75 @@ export ledger _mirrorClimb: Bytes<32>;
 // Helpers
 // =============================================================================
 
-circuit assertOnlyOwner(): [] {
-  assert(_owner.is_left, "Owner is contract address; not supported");
-  const caller = ownPublicKey();
-  assert(caller == _owner.left, "Only owner");
+// =============================================================================
+// WI16-C-2: owner authorization. The owner proves a Jubjub key with a Schnorr
+// signature over the exact action, verified in-circuit. (Before WI-16 this
+// compared ownPublicKey() -- a witness the submitter controls -- with a public
+// field, so anyone passed.) The message binds the action name, this contract's
+// address, a digest of the circuit's arguments and the owner nonce, so a
+// signature cannot be reused for other arguments, another contract or twice.
+// The digest/message helpers are exported pure circuits: the off-chain signer
+// calls the same compiled code, so signer and circuit agree by construction.
+// =============================================================================
+
+export pure circuit ownerActionMessage(
+  self: Bytes<32>, action: Bytes<32>, argsDigest: Bytes<32>, nonce: Uint<64>,
+): Field {
+  return transientHash<Vector<5, Bytes<32>>>([
+    pad(32, "pp:ebt:v9:owner"), self, action, argsDigest, (nonce as Field) as Bytes<32>,
+  ]);
+}
+
+circuit requireOwner(action: Bytes<32>, argsDigest: Bytes<32>, ownerSig: JubjubSchnorrSignature): [] {
+  const msg: Vector<1, Field> = [ownerActionMessage(
+    kernel.self().bytes, action, disclose(argsDigest), _ownerNonce.read() as Uint<64>)];
+  assert(jubjubSchnorrVerify<1>(msg, disclose(ownerSig), _ownerPk), "Only owner");
+  _ownerNonce.increment(1);
+}
+
+export pure circuit ownerDigest_attestProducerOwnership(
+  attestationKey: Bytes<32>, producerBytes: Bytes<32>, meterKeyHash: Bytes<32>,
+  reasonCode: Uint<8>, evidenceHash: Bytes<32>, currentTime: Uint<64>,
+): Bytes<32> {
+  return persistentHash<Vector<6, Bytes<32>>>([
+    attestationKey, producerBytes, meterKeyHash, (reasonCode as Field) as Bytes<32>,
+    evidenceHash, (currentTime as Field) as Bytes<32>,
+  ]);
+}
+
+export pure circuit ownerDigest_revokeProducerOwnership(
+  attestationKey: Bytes<32>, reasonCode: Uint<8>, evidenceHash: Bytes<32>, currentTime: Uint<64>,
+): Bytes<32> {
+  return persistentHash<Vector<4, Bytes<32>>>([
+    attestationKey, (reasonCode as Field) as Bytes<32>, evidenceHash, (currentTime as Field) as Bytes<32>,
+  ]);
+}
+
+export pure circuit ownerDigest_claimSplit(kind: Uint<8>, currentTime: Uint<64>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([(kind as Field) as Bytes<32>, (currentTime as Field) as Bytes<32>]);
+}
+
+export pure circuit ownerDigest_execOwnerOp(
+  op: Uint<8>, newOwnerPk: JubjubPoint, newAuthorityPubkey: Bytes<32>,
+): Bytes<32> {
+  return persistentHash<Vector<4, Bytes<32>>>([
+    (op as Field) as Bytes<32>, jubjubPointX(newOwnerPk) as Bytes<32>,
+    jubjubPointY(newOwnerPk) as Bytes<32>, newAuthorityPubkey,
+  ]);
+}
+
+export pure circuit ownerDigest_manualReissue(
+  producerKey: Bytes<32>, producerAddr: UserAddress, amount: Uint<128>, reasonCode: Uint<8>,
+  evidenceHash: Bytes<32>, sourceTariffPath: TariffPath, currentTime: Uint<64>,
+): Bytes<32> {
+  return persistentHash<Vector<7, Bytes<32>>>([
+    producerKey, producerAddr.bytes, (amount as Field) as Bytes<32>, (reasonCode as Field) as Bytes<32>,
+    evidenceHash, persistentHash<TariffPath>(sourceTariffPath), (currentTime as Field) as Bytes<32>,
+  ]);
+}
+
+export pure circuit ownerDigest_mirrorActionLogRoot(newRoot: Bytes<32>, sampleEntry: RegistryActionEntry): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([newRoot, persistentHash<RegistryActionEntry>(sampleEntry)]);
 }
 
 // Token color — v8 domain (I-14-A / design §2.4). Distinct color from v7.4.2.
@@ -511,9 +578,9 @@ circuit assertSliceOnPolicy(amt: Uint<128>, amount: Uint<128>, bps: Uint<16>): [
 
 // WI16-H-1: every authority is set here, in the deploy transaction. There is
 // no exported initialize circuit, so nobody can front-run the ceremony and
-// make themselves owner. (The owner becomes a Schnorr key in WI16-C-2.)
+// make themselves owner. (The owner is a Jubjub Schnorr key: WI16-C-2.)
 constructor(
-  owner:                 ZswapCoinPublicKey,
+  ownerPk:               JubjubPoint,
   meterAuthorityPubkey:  Bytes<32>,
   multisigAuthorityHash: Bytes<32>,
   operationsRecipient:   UserAddress,
@@ -522,11 +589,7 @@ constructor(
   escrowAttestorPubkey:  Bytes<32>,
   registryActionLogRoot: Bytes<32>,   // bootstrap: registry post-WI-13.2 root
 ) {
-  _owner = disclose(Either<ZswapCoinPublicKey, ContractAddress> {
-    is_left: true,
-    left: owner,
-    right: default<ContractAddress>,
-  });
+  _ownerPk = disclose(ownerPk);
   _meterAuthorityPubkey = disclose(meterAuthorityPubkey);
   _multisigAuthority = disclose(multisigAuthorityHash);
 
@@ -555,14 +618,14 @@ constructor(
 // redemptions can drain the escrow, so its rotation MUST be multisig-gated.)
 export circuit execOwnerOp(
   op: Uint<8>,
-  newOwner: Either<ZswapCoinPublicKey, ContractAddress>,
+  newOwnerPk: JubjubPoint,
   newAuthorityPubkey: Bytes<32>,
+  ownerSig: JubjubSchnorrSignature,
 ): [] {
-  assertOnlyOwner();
+  requireOwner(pad(32, "execOwnerOp"), ownerDigest_execOwnerOp(op, newOwnerPk, newAuthorityPubkey), ownerSig);
   const k = disclose(op);
   if (k == 0 as Uint<8>) {
-    assert(newOwner.is_left, "owner must be a public key, not contract address");
-    _owner = disclose(newOwner);
+    _ownerPk = disclose(newOwnerPk);
   } else {
     assert(k == 1 as Uint<8>, "execOwnerOp: bad op");
     _meterAuthorityPubkey = disclose(newAuthorityPubkey);
@@ -689,8 +752,9 @@ export circuit attestProducerOwnership(
   reasonCode: Uint<8>,
   evidenceHash: Bytes<32>,
   currentTime: Uint<64>,
+  ownerSig: JubjubSchnorrSignature,
 ): [] {
-  assertOnlyOwner();
+  requireOwner(pad(32, "attestProducerOwnership"), ownerDigest_attestProducerOwnership(attestationKey, producerBytes, meterKeyHash, reasonCode, evidenceHash, currentTime), ownerSig);
   const expectedKey = persistentHash<Vector<2, Bytes<32>>>([
     disclose(producerBytes),
     disclose(meterKeyHash),
@@ -712,8 +776,9 @@ export circuit revokeProducerOwnership(
   reasonCode: Uint<8>,
   evidenceHash: Bytes<32>,
   currentTime: Uint<64>,
+  ownerSig: JubjubSchnorrSignature,
 ): [] {
-  assertOnlyOwner();
+  requireOwner(pad(32, "revokeProducerOwnership"), ownerDigest_revokeProducerOwnership(attestationKey, reasonCode, evidenceHash, currentTime), ownerSig);
   assert(producerAttestations.member(disclose(attestationKey)), "No such attestation");
   const current = producerAttestations.lookup(disclose(attestationKey));
   assert(current.active, "Already revoked");
@@ -745,8 +810,9 @@ export circuit mirrorActionLogRoot(
   newRoot:     Bytes<32>,
   sampleEntry: RegistryActionEntry,
   proof:       EventProof,
+  ownerSig: JubjubSchnorrSignature,
 ): [] {
-  assertOnlyOwner();
+  requireOwner(pad(32, "mirrorActionLogRoot"), ownerDigest_mirrorActionLogRoot(newRoot, sampleEntry), ownerSig);
   // (1) The entry's committed payloadHash must equal the proof leaf.
   assert(disclose(sampleEntry.payloadHash) == disclose(proof.payloadHash),
          "EVENT_PROOF_INVALID");
@@ -1156,8 +1222,10 @@ circuit settleCheckSlot(m: MirroredLaneRecord, epoch: Uint<64>, headSeq: Uint<64
 // domain tags bump to v8). LD binding shape UNCHANGED (I-14-H).
 // =============================================================================
 
-export circuit claimSplit(kind: Uint<8>, currentTime: Uint<64>): [] {
-  assertOnlyOwner();
+export circuit claimSplit(kind: Uint<8>, currentTime: Uint<64>,
+  ownerSig: JubjubSchnorrSignature,
+): [] {
+  requireOwner(pad(32, "claimSplit"), ownerDigest_claimSplit(kind, currentTime), ownerSig);
   assert(disclose(blockTimeGte(disclose(currentTime))),
          "timestamp cannot be in the future");
 
@@ -1298,8 +1366,9 @@ export circuit manualReissue(
   sourceTariffPath: TariffPath,
   currentTime: Uint<64>,
   authoritySig: Bytes<64>,
+  ownerSig: JubjubSchnorrSignature,
 ): [] {
-  assertOnlyOwner();
+  requireOwner(pad(32, "manualReissue"), ownerDigest_manualReissue(producerKey, producerAddr, amount, reasonCode, evidenceHash, sourceTariffPath, currentTime), ownerSig);
   assert(amount > 0 as Uint<128>, "Must reissue > 0");
   assert(amount <= 1000000 as Uint<128>, "Exceeds max reissue per call");
 

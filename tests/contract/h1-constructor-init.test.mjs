@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { BUILD, buildExists, loadContract, deploy, b32, hex } from '../parity/harness.mjs';
+import { newOwnerKey, signOwnerAction } from './owner-signer.mjs';
 
 const circuitsOf = (name) =>
   JSON.parse(fs.readFileSync(path.join(BUILD, name, 'compiler', 'contract-info.json'), 'utf8')).circuits.map((c) => c.name);
@@ -18,9 +19,10 @@ const unused = (n) => () => { throw new Error(`witness ${n} must not be called`)
 
 // ---------------------------------------------------------------- EBT
 const EBT = ['ebt-v8', 'ebt-v8-ceremony'];
-const OWNER = { bytes: new Uint8Array(32) }; // the harness's coin public key (all zero)
+// Since WI16-C-2 the owner is a Jubjub Schnorr key.
+const OWNER = newOwnerKey();
 const ebtArgs = () => [
-  OWNER,                    // owner
+  OWNER.pk,                 // ownerPk
   b32(0xa1),                // meterAuthorityPubkey
   b32(0xa2),                // multisigAuthorityHash
   { bytes: b32(0x21) },     // operationsRecipient
@@ -42,8 +44,8 @@ for (const name of EBT) {
     const mod = await loadContract(name);
     const c = await deploy(mod, ebtWitnesses, ebtArgs());
     const L = c.ledger();
-    assert.equal(L._owner.is_left, true);
-    assert.equal(hex(L._owner.left.bytes), hex(OWNER.bytes));
+    assert.deepEqual(L._ownerPk, OWNER.pk);
+    assert.equal(L._ownerNonce, 0n);
     assert.equal(hex(L._meterAuthorityPubkey), hex(b32(0xa1)));
     assert.equal(hex(L._multisigAuthority), hex(b32(0xa2)));
     assert.equal(hex(L._operationsRecipient.bytes), hex(b32(0x21)));
@@ -62,8 +64,10 @@ for (const name of EBT) {
     const producer = Buffer.alloc(32, 0x51);
     const meter = Buffer.alloc(32, 0x52);
     const { createHash } = await import('node:crypto');
-    const key = createHash('sha256').update(Buffer.concat([producer, meter])).digest();
-    await c.call('attestProducerOwnership', new Uint8Array(key), producer, meter, 1n, b32(0x53), 0n);
+    const key = new Uint8Array(createHash('sha256').update(Buffer.concat([producer, meter])).digest());
+    const args = [key, producer, meter, 1n, b32(0x53), 0n];
+    const sig = signOwnerAction(mod, c, 'attestProducerOwnership', args, { sk: OWNER.sk });
+    await c.call('attestProducerOwnership', ...args, sig);
     assert.equal(c.ledger().producerAttestations.member(new Uint8Array(key)), true);
   });
 }

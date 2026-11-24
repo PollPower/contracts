@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as M from '../../ebt/tests/lib.mjs';
 import { buildExists, loadContract, deploy, b32, hex, runtimePersistentHash, padTag, RTlib } from './harness.mjs';
+import { newOwnerKey, signOwnerAction } from '../contract/owner-signer.mjs';
 
 const NAME = 'ebt-v8';
 const skip = buildExists(NAME) ? false : 'build/l9/ebt-v8 missing: run `npm run build:contracts`';
@@ -23,12 +24,16 @@ async function setup(captured) {
     multisig_signature_valid: () => { throw new Error('multisig witness must not be reached'); },
   };
   const mod = await loadContract(NAME);
-  // WI16-H-1: authorities are constructor arguments (owner = the harness coin key).
-  return deploy(mod, witnesses, [
-    { bytes: new Uint8Array(32) }, b32(0xa1), b32(0xa2),
+  // WI16-H-1: authorities are constructor arguments; WI16-C-2: the owner is a Jubjub key.
+  const c = await deploy(mod, witnesses, [
+    OWNER.pk, b32(0xa1), b32(0xa2),
     { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, b32(0xa3), b32(0xa4),
   ]);
+  return Object.assign(c, { mod });
 }
+const OWNER = newOwnerKey();
+const ownerCall = (c, circuit, args) =>
+  c.call(circuit, ...args, signOwnerAction(c.mod, c, circuit, args, { sk: OWNER.sk }));
 
 test('EBT-1: attestationKey computed in JS is the key the circuit derives', { skip }, async () => {
   const c = await setup([]);
@@ -36,11 +41,11 @@ test('EBT-1: attestationKey computed in JS is the key the circuit derives', { sk
   const meterKeyHash = Buffer.alloc(32, 0x52);
   const key = M.persistentHash([producerBytes, meterKeyHash]);
   // The circuit asserts attestationKey == persistentHash<Vector<2>>([producerBytes, meterKeyHash]).
-  await c.call('attestProducerOwnership', new Uint8Array(key), producerBytes, meterKeyHash, 1n, b32(0x53), 0n);
+  await ownerCall(c, 'attestProducerOwnership', [new Uint8Array(key), producerBytes, meterKeyHash, 1n, b32(0x53), 0n]);
   assert.equal(c.ledger().producerAttestations.member(new Uint8Array(key)), true);
   // And a wrong key is refused, so the assert is really comparing.
   await assert.rejects(
-    c.call('attestProducerOwnership', b32(0x99), producerBytes, Buffer.alloc(32, 0x54), 1n, b32(0x53), 0n),
+    ownerCall(c, 'attestProducerOwnership', [b32(0x99), producerBytes, Buffer.alloc(32, 0x54), 1n, b32(0x53), 0n]),
     /attestation\/producer mismatch/,
   );
 });
