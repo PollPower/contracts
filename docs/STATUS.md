@@ -1,7 +1,7 @@
 # WI-16 ledger 9 status
 
 Branch `wi16-ledger9`. Updated at the end of each task.
-Last update: 2026-11-24, Multisig v8 (C-1a) done; C-1b next.
+Last update: 2026-11-24, C-1 council (Multisig v8, EBT, TariffRegistry) done, two days ahead. Next: C-1c machine signers.
 
 ## Day-by-day plan vs actual
 
@@ -18,7 +18,7 @@ calendar days. It only holds if each step lands in about a day.
 |---|---|---|---|
 | Tue 24 | **H-1** (EBT, Multisig: constructor sets all authorities) · Tangem test tooling + admin-app "sign hash" · local devnet up | **H-1 done**: 9 contract tests (3 negative) green; EBT 18→17, ceremony 8→7, Multisig 12→11 circuits. Tangem tooling + software-key pipeline (5 tests) `3d29984`; admin app ring test `e77521b` (monorepo, branch `wi16-ledger9`); devnet up on kenya (node 2.1.101, indexer 4.4.101, proof 9.0.2; offset ports). **Waiting on:** ring signature (needs `read:packages` token for the APK build) | H-1 ✅ · Tangem ⏳ |
 | Wed 25 | **C-2** (EBT owner Schnorr) + Schnorr signer lib + parity · **Tangem ring verified on devnet** | **C-2 done early (Tue 24)** `d170a9f`: 13 contract tests (11 negative) green; owner = Jubjub key, in-circuit `jubjubSchnorrVerify` over (contract, circuit, args digest, nonce); signer uses the contract's exported pure helpers. Devnet path for the ring proven with a software key, low-S and high-S both verified on chain (`61cf805`). **Tangem ring verified (Tue 24):** real ring secp256k1 signature (compressed 33-byte key, raw 64-byte r‖s, low-S) accepted by `@noble/curves`, the compiled circuit and **on chain with a real proof** (devnet block 627); wrong digest rejected. Council keys stay on the rings | C-2 ✅ · Tangem ✅ |
-| Thu 26 | **C-1 council**: Multisig secp256k1 `approve` + `isApproved`; EBT/TR/LD `requireCouncil` + replay records | **Started early (Tue 24).** Multisig v8 done `6e818e3`: in-circuit `secp256k1EcdsaVerify`, no witnesses; approvals per (action, slot) under a council epoch; constructor for ≤7 slots with H-3 bounds and duplicate-key rejection. 14 tests (10 negative) green, incl. the PoC replayed against v6.2 (control: still vulnerable) and v8 (rejected). Council rotation designed (72 h delay) as a **Preprod gate**. **Next:** C-1b, EBT + TariffRegistry `requireCouncil` via cross-contract `isApproved` with per-contract replay records (LD with LD v3) | Multisig v8 ✅ · C-1b ⏳ |
+| Thu 26 | **C-1 council**: Multisig secp256k1 `approve` + `isApproved`; EBT/TR/LD `requireCouncil` + replay records | **Started early (Tue 24).** Multisig v8 done `6e818e3`: in-circuit `secp256k1EcdsaVerify`, no witnesses; approvals per (action, slot) under a council epoch; constructor for ≤7 slots with H-3 bounds and duplicate-key rejection. 14 tests (10 negative) green, incl. the PoC replayed against v6.2 (control: still vulnerable) and v8 (rejected). Council rotation designed (72 h delay) as a **Preprod gate**. **C-1b done (Tue 24):** EBT `1f9cf27` (10 tests, 8 negative) and TariffRegistry `de37277` (8 tests, 6 negative) check approval through a ledger 9 cross-contract call to `isApproved` on a real Multisig v8 (verifier keys checked), with their own replay records; council witnesses, EBT op 3 and TR `setFederationAuthority` removed (council rotates in place). LD gets the same with LD v3. Council 2-of-3 + standby procedure documented `14b3fde` | C-1 council ✅ (LD with LD v3) |
 | Fri 27 | **C-1 machine signers**: HAT, escrow attestor, schedule operators → Jubjub Schnorr; meter-authority-service signer | | |
 | Sat 28 | **LD v3** + EBT `dividendAccrued` / `mintDividend` callee | | |
 | Sun 29 | **Full local-devnet run** of the whole stack (fenced deploys, settle, claim) | | |
@@ -53,9 +53,9 @@ Tailscale addresses.
 
 | ID | Severity | Summary | State |
 |---|---|---|---|
-| WI16-C-1 | Critical | Every signature/council check in all four contracts is a prover-supplied witness | Confirmed (runtime PoC on Multisig v6.2; source elsewhere). **Fix designed, awaiting approval** |
-| WI16-C-2 | Critical | EBT v8 owner gate uses `ownPublicKey()` | Confirmed by source. **Fix designed** |
-| WI16-H-1 | High | EBT v8 and Multisig v6.2 `initialize` front-runnable | Confirmed by source. **Fix designed** |
+| WI16-C-1 | Critical | Every signature/council check in all four contracts is a prover-supplied witness | Confirmed (runtime PoC). **Council part fixed** (Multisig v8 in-circuit secp256k1; EBT + TR via cross-contract `isApproved`). **Open:** machine signers (C-1c: HAT `settle`, escrow attestor `redeem`, `manualReissue` co-sign, TR validator/operator) and LD (v3) |
+| WI16-C-2 | Critical | EBT v8 owner gate uses `ownPublicKey()` | **Fixed** `d170a9f` (owner Jubjub Schnorr, in-circuit) |
+| WI16-H-1 | High | EBT v8 and Multisig v6.2 `initialize` front-runnable | **Fixed** `9a1d7c0` (constructor sets every authority; Multisig v8 likewise) |
 | LD-H-3 | High | v2.2.2's keeper gate is itself a C-1 witness | Removed structurally in the LD v3 design |
 
 Designs: [`design/WI16-auth-fix-design.md`](design/WI16-auth-fix-design.md),
@@ -158,3 +158,15 @@ claim with a view call and a minting call. No fix grows a verifier key past
   and the new addresses after the redeploy, together with the C-1a signing
   change (secp256k1 approvals replace the `PollPowerMultiSig.v5` Ed25519
   action hashes in `services/actionHash.ts`).
+
+## Known gaps after C-1 council (tracked)
+
+- **JS mirror** (`ebt/tests/lib.mjs`, `ebt/tests/vnext/T20…`) still models
+  the old witness-based council checks; the contract tests are the reference
+  for this path now. Mirror to be updated or retired for it.
+- **Off-chain tooling** still on the old interfaces: `ebt/settle-flow/ceremony.mjs`,
+  `retune.mjs`, the EBT and TR ceremony deploy scripts (both refuse to run).
+  Rewritten for the Sunday devnet run.
+- **TariffRegistry action hashes** are computed inside each circuit; there is
+  no exported pure helper per op yet for the admin app (the tests compute them
+  with the runtime's `persistentHash`). Add with the admin-app switch.
