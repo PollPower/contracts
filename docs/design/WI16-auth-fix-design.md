@@ -52,22 +52,80 @@ returns a yes/no. Witnesses may still supply *data* the circuit then checks
 which is the safe use. Each remaining witness gets a one-line comment saying
 what the circuit checks about its output.
 
-### C-1a: council approvals (Multisig v6.2 → "v7-L9")
+### C-1a: council approvals (Multisig v6.2 → Multisig v8)
+
+Named **v8** (`multisig/multisig-v8-secp256k1.compact`) because v7 is the live
+Preview Ed25519 contract.
 
 - Admin keys are **secp256k1 public keys**, set in the constructor (H-1).
   **Confirmed 2026-11-24: council keys can stay on the Tangem rings** (see
   "Tangem ring test" below).
-- `approve(actionHash, adminIndex, sig: Secp256k1EcdsaSignature)`:
-  `digest = persistentHash([pad("pp:ms:v7:approve"), kernel.self().bytes, actionHash])`,
-  `assert(secp256k1EcdsaVerify(digest, sig, adminPk[adminIndex]))`, record.
-  The contract address in the digest keeps M-2's domain separation.
-- New witness-free `isApproved(actionHash): Boolean` (approvals ≥ threshold).
-  Witness-free is required: a circuit reached by a cross-contract call may not
-  call witnesses.
-- H-3 caps (MAX_ADMINS = 7, threshold raised with size, majority floor) carry
-  over unchanged.
+- **Constructor** (decided 2026-11-24; council make-up still to be confirmed
+  by Garrett, devnet uses 3 test keys at 2-of-3):
+  `constructor(adminPks: Vector<7, Secp256k1Point>, adminCount: Uint<8>, threshold: Uint<8>)`.
+  Slots `0..adminCount-1` are the council; later slots are ignored. Asserts:
+  `1 ≤ adminCount ≤ 7` (H-3 cap), `0 < threshold ≤ adminCount`, strict majority
+  (`2·threshold > adminCount`), and **no key twice** (each key's
+  `persistentHash` goes in a set; a duplicate would let one ring count twice).
+  Admins are addressed by slot index.
+- **Approval** `approve(actionHash, adminIndex, sig: Secp256k1EcdsaSignature)`:
+  `digest = persistentHash([pad("pp:ms:v8:approve"), kernel.self().bytes, actionHash, epoch])`,
+  `assert(secp256k1EcdsaVerify(digest, sig, adminPk[adminIndex]))`. The contract
+  address keeps M-2's domain separation; `epoch` is the council generation
+  (0 until a rotation, see below). The ring signs `digest` as given.
+  `approvalDigest(self, actionHash, epoch)` is an exported pure circuit so the
+  admin app computes exactly the same bytes.
+- **Approvals are recorded per `(actionHash, adminIndex)`** under the current
+  epoch, never per signature: the circuit accepts both `(r, s)` and
+  `(r, n−s)`, so signature bytes are not unique. A second approval by the same
+  slot is rejected.
+- Witness-free `isApproved(actionHash): Boolean` (approvals in the current
+  epoch ≥ threshold). Witness-free is required: a circuit reached by a
+  cross-contract call may not call witnesses. The contract has **no witnesses
+  at all**.
+- No generic `execute`: replay protection lives in each consumer (C-1b), so
+  an approval is consumed where it is used.
 - Cost: ~117 MB proving key per approval, ~2.7 KB verifier key. Approvals are
   rare council actions, so this is acceptable.
+
+#### Council rotation: sealed for the Nov 30 demo, **required before Preprod**
+
+Decision (Garrett, 2026-11-24): the council is sealed (no rotation circuits)
+for the Nov 30 devnet demo. **Preprod gate: no Preprod deploy until the
+council is rotatable as below.**
+
+Rotation is in place (same contract address), so EBT, TariffRegistry and LD
+keep their sealed `_council` reference.
+
+1. **Propose.** `rotationHash = persistentHash([pad("pp:ms:v8:rotate"), self,
+   epoch, keyIds…, adminCount, threshold])` over the complete new council
+   (all slots, count and threshold, so the H-3 bounds are checked on the
+   whole new set).
+2. **Approve.** Admins approve `rotationHash` with `approve()`, recorded per
+   `(rotationHash, adminIndex)` under the current epoch like any other action.
+3. **Schedule.** Once the current threshold is reached, anyone calls
+   `scheduleRotation(newCouncil…)`; the contract recomputes the hash, checks
+   `isApproved`, and records `readyAt = blockTime + ROTATION_DELAY` (block-time
+   validated, L-3).
+4. **Execute.** After `readyAt`, anyone calls `executeRotation(newCouncil…)`:
+   the hash must match the scheduled one, then the keys, count and threshold
+   are replaced and **`epoch` increments, which invalidates every outstanding
+   approval** (approvals and digests are keyed by epoch, so a removed admin's
+   earlier approvals no longer count).
+5. **Cancel.** A council-approved `cancelRotation(rotationHash)` before
+   execution.
+
+**Proposed `ROTATION_DELAY`: 72 hours.** Reasons: the council spans JST and
+EAT, and 72 h gives every member at least one working day to see a pending
+rotation even across a weekend; it is long enough for Joi's monitoring and the
+dependent apps to alert, and short enough that replacing a lost or
+compromised ring doesn't leave the council degraded for long. A single
+compromised key cannot rotate anything on its own (threshold ≥ 2 for any
+council of 3 or more); the delay protects against a mistaken or coerced
+threshold approval, since the honest majority can cancel within the window.
+Cost: one extra secp256k1-free circuit pair (schedule/execute) and a
+`cancelRotation`; no change to `approve` or `isApproved`, because the epoch is
+already in the approval layout from the demo version.
 
 #### Tangem ring test (2026-11-24): PASS
 
@@ -121,10 +179,9 @@ circuit requireCouncil(actionHash: Bytes<32>): [] {
   `kernel.self()`, so an approval for one contract or action cannot be reused
   on another.
 - Replay protection lives in the consumer. Nobody else can burn an approval.
-- Rotating the council address becomes a council-approved action itself
-  (`setCouncil`), or the field is `sealed` and rotation means redeploy.
-  **Decision needed** (recommendation: sealed for the Buildathon, rotation
-  in the next version).
+- `_council` is sealed in the consumers. Council membership rotates inside
+  Multisig v8 (same address, see "Council rotation"), so consumers never need
+  a `setCouncil`.
 
 ### C-1c: machine signers (HAT, escrow attestor, schedule operators/validators)
 
@@ -240,5 +297,6 @@ review pass are done.
 
 1. Approve this design (or the hash-preimage alternative for C-2).
 2. ~~Can the Tangem rings sign secp256k1?~~ **Yes**, verified on the devnet 2026-11-24 (C-1a stays on hardware).
-3. `_council` sealed for the Buildathon (recommended), or rotatable now.
+3. ~~`_council` sealed or rotatable?~~ **Sealed for the Nov 30 devnet demo; rotatable (72 h delay, proposed) before any Preprod deploy.**
+5. **Council make-up** (size, holders, threshold): not yet given; the devnet uses 3 test keys at 2-of-3.
 4. Schedule option A or B.
