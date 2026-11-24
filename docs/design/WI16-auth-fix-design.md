@@ -241,7 +241,7 @@ it from the layout below; parity test EBT-2 checks an independent rebuild).
 
 | Signer | Key held in | Signs | Layout of `m` (`transientHash<Vector<n, Bytes<32>>>`, integers little-endian) |
 |---|---|---|---|
-| Meter authority, HAT (`settle`), countersigning the chip | EBT `_meterAuthorityPubkey: JubjubPoint` (owner rotates, `execOwnerOp` op 1) | `hatMessage` | `pad("pollpower:ebt:v9:hat"), self, chipDigest, chipPubkey, chipSigR, chipSigS`; `chipDigest` = `transientHash(pad("pollpower:hat:chip:v1"), self, sessionID, amount, producerKey, producerAddr.bytes, meterKeyHash, meterTime, meterCounter) as Bytes<32>` (what the chip signs, Ed25519) |
+| Meter authority, HAT (`settle`), countersigning the chip's native attestation | EBT `_meterAuthorityPubkey: JubjubPoint` (owner rotates, `execOwnerOp` op 1) | `hatMessage` | `pad("pollpower:ebt:v9:hat"), self, recordDigest, chipPubkey, chipSigR, chipSigS`; `recordDigest = settleRecordDigest(self, sessionID, amount, producerKey, producerAddr.bytes, meterKeyHash, chipHwId, chipSessionUwh, chipUptimeMs, chipNonce)` (`pad("pollpower:hat:record:v1")`, Vector<11>); the circuit also asserts `amount == floor(chipSessionUwh / 1000)` |
 | Meter authority, reissue co-signature (`manualReissue`) | same key | `reissueMessage` | `pad("pollpower:ebt:v9:reissue"), self, producerKey, producerAddr.bytes, amount, seq` (`seq` = `reissuanceCount`) |
 | Escrow attestor (`redeem`, KES) | EBT `_escrowAttestorPubkey: JubjubPoint` (council rotates, op 4) | `escrowMessage` | `pad("pollpower:ebt:v9:escrow"), self, trustFloat, outstandingEbt, attestationEpoch` |
 | Schedule validator (`registerSchedule`) | TR `_validatorPk: JubjubPoint` (constructor; council rotates with `setValidator`) | `signerMessage(registerScheduleActionHash(...))` | `pad("pp:tariff:v2:signer"), digest` |
@@ -287,32 +287,36 @@ Interface changes (callers must follow):
   `setValidator(newValidatorPk, currentTime)` (council-approved
   `setValidatorActionHash`).
 
-### HAT trust model (Garrett, 2026-11-24: option 3)
+### HAT trust model (Garrett, 2026-11-24: option 3 + native attestation)
 
-The HAT chip (TI CC1352P7) signs **Ed25519** on chip, and ledger 9 cannot
-verify Ed25519 in-circuit. So:
+The HAT chip (TI CC1352P7, firmware `PollPower/gateway-execution`) signs
+**Ed25519** on chip, which ledger 9 cannot verify in-circuit. So:
 
-1. The chip signs `chipDigest(...)` (it covers the contract, session, amount,
-   producer, payout address, meter, meter time and a per-chip counter).
-2. `meter-authority-service` (`POST /hat/v9`, branch `wi16-hat-v9`) checks the
-   chip signature against its allowlist of approved chip keys, then the sanity
-   rules (the chip's own meter / producer / payout address, per-settle kWh
-   cap, max kW since the chip's last reading, meter time freshness, strictly
-   increasing time and counter, no replayed session), and signs
-   `hatMessage(self, chipDigest, chipPubkey, chipSigR, chipSigS)` with its
-   Jubjub key (owner-only key file, never logged).
-3. `settle` verifies that Jubjub signature in-circuit and emits the chip key,
-   chip signature, chip digest and meter reading as the `pp:ebt:v9:settleChip`
-   event. The chip fields are inside the signed message, so the submitter
-   cannot swap the audit record.
+1. The chip's **native attestation** (`ATTEST` 0x60): Ed25519 over
+   SHA-512(`"pollpower:hat:attest:v1"` || ieee(8) || userid(4) ||
+   sessionID[0..16] || session_uwh(8) || uptime_ms(8) || nonce(8)), where
+   `session_uwh` is the chip's **own INA226-metered** energy, the nonce comes
+   from its TRNG, and the host supplies only the 16-byte session id. The
+   settle session id is that id zero-padded (it is also the v2-api purchase /
+   outlet session id: Gap A). `SIGN_HASH` (chip signs any host hash) is
+   refused for settles.
+2. `meter-authority-service` (`POST /hat/v9`) verifies the attestation against
+   the chip's allowlisted key and hardware id, then its rules (the chip's own
+   meter / producer / payout address, `amount == floor(uWh / 1000)`, per-settle
+   cap, max kW since the chip's last countersignature by the server clock, no
+   reused session or nonce), and signs `hatMessage(self, settleRecordDigest(...),
+   chipPubkey, chipSigR, chipSigS)` with its Jubjub key.
+3. `settle` verifies that Jubjub signature in-circuit, **asserts the minted
+   amount is the chip-metered energy**, and emits `pp:ebt:v9:settleChip`
+   (session, chip key, chip signature, hardware id, uWh, uptime, nonce): every
+   field needed to re-verify the chip signature off-chain (tested).
 
 **Until the chip signs a curve the circuit verifies, the on-chain proof
-vouches for the service, not the chip.** A stolen service key can mint for
-any approved chip's producer (bounded by nothing on chain except producer
-attestation and the session set); a stolen chip key alone cannot mint. The
-chip signature is checkable off-chain by anyone from the event. Follow-up
-after Preprod: [hat-chip-signing-followup.md](./hat-chip-signing-followup.md)
-(secp256k1 ECDSA on chip, evaluated against Jubjub + Poseidon).
+vouches for the service, not the chip.** A stolen service key could still
+mint for an approved chip's producer, but every such mint carries a chip
+signature anyone can check from the event, and the minted amount is bound to
+the attested energy. Follow-up after Preprod:
+[hat-chip-signing-followup.md](./hat-chip-signing-followup.md).
 
 **Cross-app impact: `meter-authority-service` must sign Jubjub Schnorr
 instead of Ed25519**, over `hatMessage` and `reissueMessage`; the escrow
@@ -326,6 +330,20 @@ Why not ECDSA for the HAT: it would add ~117 MB to every `settle` proof
 Tests: `tests/contract/c1c-ebt-machine-signers.test.mjs` (18, 12 negative),
 `tests/contract/c1c-tariff-signers.test.mjs` (11, 7 negative); the PoC (a
 lying `signature_valid` witness) is supplied in every case.
+
+### manualReissue: council gate (Gap C, Garrett 2026-11-24)
+
+An exceptional correction (`manualReissue`, capped at 1,000,000 base units per
+call with a 1 h cooldown) now needs **three** authorisations, all checked
+in-circuit: the owner's Jubjub signature (`requireOwner`), the meter
+authority's Jubjub co-signature over `reissueMessage(self, producerKey,
+producerAddr, amount, seq)`, and the council's 2-of-3 approval (Multisig v8
+`isApproved`) of `councilReissueHash(self, producerKey, producerAddr, amount,
+reasonCode, evidenceHash, sourceTariffPath, currentTime)`, recorded in
+`_consumedCouncilActions`. Tooling: owner key + signer in `tooling/owner/`;
+co-signature from meter-authority-service `POST /reissue/v9` (token-gated,
+once per reissue sequence). Tests: `c1c-ebt-machine-signers` RC1-RC5,
+`owner-tooling`.
 
 ### Settle path findings (found while building LD v3's tests, 2026-11-24)
 

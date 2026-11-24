@@ -9,9 +9,10 @@
 //
 // Now the meter authority and the escrow attestor are Jubjub keys held in the
 // ledger, and each signs the Field returned by an exported pure circuit:
-//   hatMessage(self, chipDigest, chipPubkey, chipSigR, chipSigS), where
-//     chipDigest(self, sessionID, amount, producerKey, producerAddr,
-//                meterKeyHash, meterTime, meterCounter)
+//   hatMessage(self, settleRecordDigest(...), chipPubkey, chipSigR, chipSigS),
+//   where the record carries the HAT chip's native attestation (its own
+//   metered energy, uptime, nonce, hardware id; see hat-signer.mjs) and the
+//   circuit also checks amount == floor(chip uWh / 1000)
 //   is what the HAT chip signs (Ed25519, checked by meter-authority-service;
 //   see hat-signer.mjs and the trust-model note in the design doc)
 //   escrowMessage(self, trustFloat, outstandingEbt, attestationEpoch)
@@ -29,8 +30,11 @@ import path from 'node:path';
 import { BUILD, buildExists, loadContract, deploy, b32, hex, padTag, RTlib } from '../parity/harness.mjs';
 import { newOwnerKey, signOwnerAction, garbageSignature } from './owner-signer.mjs';
 import { newMachineKey, signMessage } from './machine-signer.mjs';
-import { newChipKey, signSettle, settleHatArgs } from './hat-signer.mjs';
+import { newChipKey, signSettle, settleHatArgs, chipHwId, attestDigest, sessionFrom16 } from './hat-signer.mjs';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { settleWorld } from './settle-world.mjs';
+import { createWorld } from '../parity/harness.mjs';
+import { newCouncilKey, approvalDigest, signDigest } from './council-signer.mjs';
 
 const NAME = 'ebt-v8';
 const skip = buildExists(NAME) ? false : 'build/l9/ebt-v8 missing: run `npm run build:contracts`';
@@ -44,16 +48,31 @@ const HAT = newMachineKey();
 const ESCROW = newMachineKey();
 const NOW = 10_000n;
 
+// manualReissue also needs the council (Gap C, 2026-11-24): a real Multisig v8
+// council in a world, so the cross-contract isApproved call is real.
+const COUNCIL_KEYS = Array.from({ length: 7 }, newCouncilKey);
 async function setup() {
   const mod = await loadContract(NAME);
-  const deployEbt = async () => {
-    const c = await deploy(mod, witnesses, [
-      OWNER.pk, HAT.pk, { bytes: b32(0xa2) },
-      { bytes: b32(0x21) }, { bytes: b32(0x23) }, ESCROW.pk, b32(0xa4),
-    ]);
-    return Object.assign(c, { mod });
+  const ms = await loadContract('multisig-v8');
+  const world = createWorld();
+  const deployCouncil = async () => world.register(
+    await deploy(ms, {}, [COUNCIL_KEYS.map((k) => k.point), 3n, 2n], {}, { world }), ms, 'multisig-v8');
+  const council = await deployCouncil();
+  const approve = async (hash, slots = [0, 1], on = council) => {
+    for (const i of slots) {
+      // A test may approve the same reissue twice: Multisig v8 refuses the duplicate; that is fine here.
+      await on.call('approve', hash, BigInt(i), signDigest(approvalDigest(ms, on.addressBytes, hash, 0n), COUNCIL_KEYS[i].sk))
+        .catch((err) => { if (!/already approved/.test(String(err.message))) throw err; });
+    }
   };
-  return { mod, e: await deployEbt(), deployEbt };
+  const deployEbt = async (c = council) => {
+    const e = await deploy(mod, witnesses, [
+      OWNER.pk, HAT.pk, { bytes: c.addressBytes },
+      { bytes: b32(0x21) }, { bytes: b32(0x23) }, ESCROW.pk, b32(0xa4),
+    ], {}, { world });
+    return Object.assign(e, { mod, council: c, approveCouncil: (h, slots) => approve(h, slots, c) });
+  };
+  return { mod, e: await deployEbt(), deployEbt, deployCouncil, approve, council };
 }
 
 const ownerCall = (c, circuit, args) =>
@@ -63,15 +82,16 @@ const ownerCall = (c, circuit, args) =>
 
 const CHIP = newChipKey();
 const HAT_FIELDS = {
-  sessionID: b32(0x61), amount: 0x0102030405n, producerKey: b32(0x63),
-  producerAddr: { bytes: b32(0x64) }, meterKeyHash: b32(0x65), meterTime: 9000n, meterCounter: 7n,
+  sessionID: sessionFrom16(new Uint8Array(16).fill(0x61)), amount: 0x0102030405n, producerKey: b32(0x63),
+  producerAddr: { bytes: b32(0x64) }, meterKeyHash: b32(0x65),
+  chipHwId: chipHwId(CHIP), chipSessionUwh: 0x0102030405n * 1000n + 123n, chipUptimeMs: 9000n, chipNonce: 7n,
 };
 // The chip part of a settle, as an honest chip would sign it for (target, f).
 const chipPart = (mod, target, f) => signSettle(mod, target, f, { chip: CHIP, hatSk: HAT.sk });
 // The meter-authority message for (target, f) with that chip part.
 const hatMsg = (mod, target, f = HAT_FIELDS) => {
   const c = chipPart(mod, target, f);
-  return mod.pureCircuits.hatMessage(target.addressBytes, c.chipDigest, c.chipPubkey, c.chipSigR, c.chipSigS);
+  return mod.pureCircuits.hatMessage(target.addressBytes, c.recordDigest, c.chipPubkey, c.chipSigR, c.chipSigS);
 };
 // settle with fields f, an honest chip part for (c, f) unless `chip` overrides it, and HAT signature `sig`.
 const settle = (c, sig, f = HAT_FIELDS, chip = {}) => c.call('settle',
@@ -108,21 +128,35 @@ test('C1c-EBT-S2 (negative): a HAT signed by any key other than the meter author
 test('C1c-EBT-S3 (negative): the HAT binds amount, producer, recipient address and meter', { skip }, async () => {
   const { mod, e } = await setup();
   const sig = signMessage(hatMsg(mod, e), HAT.sk);
-  await assert.rejects(settle(e, sig, { ...HAT_FIELDS, amount: HAT_FIELDS.amount + 1n }), BAD_HAT, 'amount');
+  // A different amount alone fails the chip-metered check; with the energy moved too, the HAT fails.
+  await assert.rejects(settle(e, sig, { ...HAT_FIELDS, amount: HAT_FIELDS.amount + 1n }), /AMOUNT_NOT_CHIP_METERED/, 'amount');
+  await assert.rejects(settle(e, sig, { ...HAT_FIELDS, amount: HAT_FIELDS.amount + 1n, chipSessionUwh: HAT_FIELDS.chipSessionUwh + 1000n }), BAD_HAT, 'amount + energy');
   await assert.rejects(settle(e, sig, { ...HAT_FIELDS, producerKey: b32(0x73) }), BAD_HAT, 'producerKey');
   await assert.rejects(settle(e, sig, { ...HAT_FIELDS, producerAddr: { bytes: b32(0x74) } }), BAD_HAT, 'producerAddr (EBT-H-1)');
   await assert.rejects(settle(e, sig, { ...HAT_FIELDS, meterKeyHash: b32(0x75) }), BAD_HAT, 'meterKeyHash');
   await assert.rejects(settle(e, sig, { ...HAT_FIELDS, sessionID: b32(0x76) }), BAD_HAT, 'sessionID');
 });
 
-test('C1c-EBT-S3b (negative): the HAT binds the chip key, the chip signature and the meter time and counter', { skip }, async () => {
+test('C1c-EBT-S3b (negative): the HAT binds the chip key, the chip signature and the chip attestation fields', { skip }, async () => {
   const { mod, e } = await setup();
   const sig = signMessage(hatMsg(mod, e), HAT.sk);
   await assert.rejects(settle(e, sig, HAT_FIELDS, { chipPubkey: newChipKey().pk }), BAD_HAT, 'chip key swapped');
   await assert.rejects(settle(e, sig, HAT_FIELDS, { chipSigR: b32(0x01) }), BAD_HAT, 'chip signature R swapped');
   await assert.rejects(settle(e, sig, HAT_FIELDS, { chipSigS: b32(0x01) }), BAD_HAT, 'chip signature S swapped');
-  await assert.rejects(settle(e, sig, { ...HAT_FIELDS, meterTime: 9001n }), BAD_HAT, 'meter time');
-  await assert.rejects(settle(e, sig, { ...HAT_FIELDS, meterCounter: 8n }), BAD_HAT, 'meter counter');
+  await assert.rejects(settle(e, sig, { ...HAT_FIELDS, chipUptimeMs: 9001n }), BAD_HAT, 'uptime');
+  await assert.rejects(settle(e, sig, { ...HAT_FIELDS, chipNonce: 8n }), BAD_HAT, 'nonce');
+  await assert.rejects(settle(e, sig, { ...HAT_FIELDS, chipSessionUwh: HAT_FIELDS.chipSessionUwh + 1n }), BAD_HAT, 'metered energy');
+  await assert.rejects(settle(e, sig, { ...HAT_FIELDS, chipHwId: b32(0x09) }), BAD_HAT, 'hardware id');
+});
+
+test('C1c-EBT-S3c (negative): the minted amount must be the chip-metered energy, even with a valid HAT', { skip }, async () => {
+  const { mod, e } = await setup();
+  for (const uwh of [HAT_FIELDS.amount * 1000n - 1n, (HAT_FIELDS.amount + 1n) * 1000n]) {
+    const f = { ...HAT_FIELDS, chipSessionUwh: uwh };     // a (hypothetically) compromised service signs it
+    await assert.rejects(settle(e, signMessage(hatMsg(mod, e, f), HAT.sk), f), /AMOUNT_NOT_CHIP_METERED/, `uwh ${uwh}`);
+  }
+  const exact = { ...HAT_FIELDS, chipSessionUwh: HAT_FIELDS.amount * 1000n };
+  await assert.rejects(settle(e, signMessage(hatMsg(mod, e, exact), HAT.sk), exact), HAT_ACCEPTED, 'exact multiple');
 });
 
 test('C1c-EBT-S4 (negative): a HAT for another EBT deployment is refused here', { skip }, async () => {
@@ -155,8 +189,11 @@ const reissueMsg = (mod, target, seq, r = RE) =>
   mod.pureCircuits.reissueMessage(target.addressBytes, r.producerKey, r.producerAddr, r.amount, seq);
 // manualReissue's argument order is (..., currentTime, authoritySig, ownerSig); the
 // owner signs the arguments before authoritySig.
-const reissueCall = (c, coSig, time = NOW, r = RE) => {
+const councilHashFor = (c, args) => c.mod.pureCircuits.councilReissueHash(c.addressBytes, ...args);
+// Approves the reissue in the council first (unless opts.council === false), then calls it.
+const reissueCall = async (c, coSig, time = NOW, r = RE, opts = {}) => {
   const args = [r.producerKey, r.producerAddr, r.amount, 1n, b32(0x43), TP, time];
+  if (opts.council !== false) await (opts.approve ?? c.approveCouncil)(councilHashFor(c, args), opts.slots);
   return c.call('manualReissue', ...args, coSig, signOwnerAction(c.mod, c, 'manualReissue', args, { sk: OWNER.sk }));
 };
 const NO_COSIG = /Reissue requires authority co-signature/;
@@ -197,6 +234,56 @@ test('C1c-EBT-M5: owner + meter-authority co-signature reissues once; the co-sig
   await assert.rejects(reissueCall(e, coSig, NOW + 3600n), NO_COSIG);
   await reissueCall(e, signMessage(reissueMsg(mod, e, 1n), HAT.sk), NOW + 3600n);
   assert.equal(e.ledger().reissuanceCount, 2n);
+});
+
+// ------------------------------------------- manualReissue: council gate ---
+// Gap C (Garrett, 2026-11-24): owner + meter-authority co-signature are not
+// enough; the council (Multisig v8, 2-of-3) must approve exactly this reissue.
+const NO_COUNCIL = /Council has not approved/;
+const goodCoSig = (mod, e, seq = 0n) => signMessage(reissueMsg(mod, e, seq), HAT.sk);
+
+test('C1c-EBT-RC1 (negative): owner + co-signature without council approval cannot reissue', { skip }, async () => {
+  const { mod, e } = await setup();
+  await assert.rejects(reissueCall(e, goodCoSig(mod, e), NOW, RE, { council: false }), NO_COUNCIL);
+  assert.equal(e.ledger().reissuanceCount, 0n);
+});
+
+test('C1c-EBT-RC2 (negative): one approval of a 2-of-3 council is not enough', { skip }, async () => {
+  const { mod, e } = await setup();
+  await assert.rejects(reissueCall(e, goodCoSig(mod, e), NOW, RE, { slots: [2] }), NO_COUNCIL);
+});
+
+test('C1c-EBT-RC3 (negative): the approval binds amount, recipient and time', { skip }, async () => {
+  const { mod, e } = await setup();
+  const args = [RE.producerKey, RE.producerAddr, RE.amount, 1n, b32(0x43), TP, NOW];
+  await e.approveCouncil(councilHashFor(e, args));                 // approved: 1000 to RE.producerAddr at NOW
+  const other = { ...RE, amount: 999n };
+  await assert.rejects(reissueCall(e, signMessage(reissueMsg(mod, e, 0n, other), HAT.sk), NOW, other, { council: false }), NO_COUNCIL, 'amount');
+  const elsewhere = { ...RE, producerAddr: { bytes: b32(0x98) } };
+  await assert.rejects(reissueCall(e, signMessage(reissueMsg(mod, e, 0n, elsewhere), HAT.sk), NOW, elsewhere, { council: false }), NO_COUNCIL, 'recipient');
+  await assert.rejects(reissueCall(e, goodCoSig(mod, e), NOW + 1n, RE, { council: false }), NO_COUNCIL, 'time');
+  await reissueCall(e, goodCoSig(mod, e), NOW, RE, { council: false });   // exactly what was approved
+  assert.equal(e.ledger().reissuanceCount, 1n);
+});
+
+test('C1c-EBT-RC4 (negative): approvals in another council or for another EBT do not count', { skip }, async () => {
+  const { mod, e, deployCouncil, deployEbt, approve } = await setup();
+  const rogue = await deployCouncil();
+  const args = [RE.producerKey, RE.producerAddr, RE.amount, 1n, b32(0x43), TP, NOW];
+  await approve(councilHashFor(e, args), [0, 1], rogue);
+  await assert.rejects(reissueCall(e, goodCoSig(mod, e), NOW, RE, { council: false }), NO_COUNCIL, 'rogue council');
+  const other = await deployEbt();
+  await approve(councilHashFor(other, args));
+  await assert.rejects(reissueCall(e, goodCoSig(mod, e), NOW, RE, { council: false }), NO_COUNCIL, 'approved for another EBT');
+});
+
+test('C1c-EBT-RC5 (negative): an executed approval cannot be replayed', { skip }, async () => {
+  const { mod, e } = await setup();
+  await reissueCall(e, goodCoSig(mod, e));
+  const args = [RE.producerKey, RE.producerAddr, RE.amount, 1n, b32(0x43), TP, NOW];
+  assert.equal(e.ledger()._consumedCouncilActions.member(councilHashFor(e, args)), true);
+  // Same reissue again (fresh co-signature for the next seq), approval reused: refused.
+  await assert.rejects(reissueCall(e, goodCoSig(mod, e, 1n), NOW, RE, { council: false }), /cooldown|Action already executed/);
 });
 
 // ---------------------------------------------------------------- redeem ---
@@ -262,18 +349,18 @@ test('C1c-EBT-P1: the signed messages are the pure circuits the services call (l
   const le = (x) => new Uint8Array(RTlib.convertBigintToBytes(32, x, 'x'));
   const f = HAT_FIELDS;
   const c = chipPart(mod, e, f);
-  assert.equal(hex(c.chipDigest), hex(RTlib.convertBigintToBytes(32, RTlib.transientHash(T(9), [
-    padTag('pollpower:hat:chip:v1'), e.addressBytes, f.sessionID, le(f.amount), f.producerKey, f.producerAddr.bytes,
-    f.meterKeyHash, le(f.meterTime), le(f.meterCounter)]), 'digest')), 'chipDigest layout');
+  assert.equal(hex(c.recordDigest), hex(RTlib.convertBigintToBytes(32, RTlib.transientHash(T(11), [
+    padTag('pollpower:hat:record:v1'), e.addressBytes, f.sessionID, le(f.amount), f.producerKey, f.producerAddr.bytes,
+    f.meterKeyHash, f.chipHwId, le(f.chipSessionUwh), le(f.chipUptimeMs), le(f.chipNonce)]), 'digest')), 'settleRecordDigest layout');
   assert.equal(hatMsg(mod, e), RTlib.transientHash(T(6), [
-    padTag('pollpower:ebt:v9:hat'), e.addressBytes, c.chipDigest, c.chipPubkey, c.chipSigR, c.chipSigS]));
+    padTag('pollpower:ebt:v9:hat'), e.addressBytes, c.recordDigest, c.chipPubkey, c.chipSigR, c.chipSigS]));
   assert.equal(escrowMsg(mod, e), RTlib.transientHash(T(5), [
     padTag('pollpower:ebt:v9:escrow'), e.addressBytes, le(ESC.float), le(ESC.outstanding), le(ESC.epoch)]));
   assert.equal(reissueMsg(mod, e, 7n), RTlib.transientHash(T(6), [
     padTag('pollpower:ebt:v9:reissue'), e.addressBytes, RE.producerKey, RE.producerAddr.bytes, le(RE.amount), le(7n)]));
 });
 
-test('C1c-EBT-S8: a completed settle records the chip key, chip signature and meter reading in an event', { skip }, async () => {
+test('C1c-EBT-S8: a completed settle records the chip attestation; the chip signature re-verifies from the event alone', { skip }, async () => {
   const w = await settleWorld();
   const { chip, fields } = await w.settle(10000n);
   const ev = w.ebt.events().map((x) => Buffer.from(x.data.content.value[0]))
@@ -284,5 +371,15 @@ test('C1c-EBT-S8: a completed settle records the chip key, chip signature and me
   assert.equal(hex(word(1)), hex(chip.chipPubkey));
   assert.equal(hex(word(2)), hex(chip.chipSigR));
   assert.equal(hex(word(3)), hex(chip.chipSigS));
-  assert.equal(hex(word(4)), hex(chip.chipDigest));
+  assert.equal(hex(word(4)), hex(fields.chipHwId));
+  const le = (b) => { let x = 0n; for (let i = b.length - 1; i >= 0; i--) x = (x << 8n) | BigInt(b[i]); return x; };
+  assert.equal(le(word(5)), fields.chipSessionUwh);
+  assert.equal(le(word(6)), fields.chipUptimeMs);
+  assert.equal(le(word(7)), fields.chipNonce);
+  // An auditor rebuilds the firmware pre-image from the event and checks the chip's own signature.
+  const hw = word(4);
+  const digest = attestDigest({ ieee: hw.subarray(0, 8), userid: hw.readUInt32BE(8), sessionId16: word(0).subarray(0, 16),
+    uwh: le(word(5)), uptimeMs: le(word(6)), nonce: le(word(7)) });
+  assert.equal(ed25519.verify(Buffer.concat([word(2), word(3)]), digest, word(1)), true, 'chip signature verifies from the event');
+  assert.equal(fields.amount, fields.chipSessionUwh / 1000n);
 });

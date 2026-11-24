@@ -10,7 +10,7 @@ import { loadContract, deploy, createWorld, b32, runtimePersistentHash, padTag, 
 import { newCouncilKey, approvalDigest, signDigest } from './council-signer.mjs';
 import { newOwnerKey, signOwnerAction } from './owner-signer.mjs';
 import { newMachineKey, signMessage } from './machine-signer.mjs';
-import { newChipKey, signSettle, settleHatArgs } from './hat-signer.mjs';
+import { newChipKey, signSettle, settleHatArgs, chipHwId, sessionFrom16 } from './hat-signer.mjs';
 
 const DEPTH = 24;
 const NODE_TAG = padTag('pp:tariff:v1:actionLogNode');
@@ -152,9 +152,11 @@ export async function settleWorld(opts = {}) {
     const divAmt = (amount * ld) / 10000n;
     const daoAmt = (amount * dao) / 10000n;
     const producerAmt = amount - opsAmt - divAmt - daoAmt;
+    // The chip's native attestation: its own metered uWh (amount = floor(uWh / 1000)).
     const fields = {
-      sessionID: b32(0x80 + (session % 120)), amount, producerKey, producerAddr: { bytes: b32(0x64) },
-      meterKeyHash, meterTime: T0, meterCounter: BigInt(session + 1),
+      sessionID: sessionFrom16(new Uint8Array(16).fill(0x80 + (session % 120))), amount, producerKey,
+      producerAddr: { bytes: b32(0x64) }, meterKeyHash, chipHwId: chipHwId(keys.chip),
+      chipSessionUwh: amount * 1000n + 123n, chipUptimeMs: 60_000n + BigInt(session) * 1000n, chipNonce: BigInt(session + 1),
     };
     session++;
     const chip = signSettle(ebtMod, ebt, fields, { chip: keys.chip, hatSk: keys.hat.sk });

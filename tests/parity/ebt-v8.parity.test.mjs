@@ -54,18 +54,20 @@ test('EBT-2: a HAT built off-chain from the documented layouts is accepted by se
   const producerKey = Buffer.alloc(32, 0x63);
   const producerAddr = Buffer.alloc(32, 0x64);
   const meterKeyHash = Buffer.alloc(32, 0x65);
-  const meterTime = 9000n;
-  const meterCounter = 7n;
+  const chipHwId = Buffer.concat([Buffer.alloc(8, 0x6a), Buffer.from([0, 0, 0, 9]), Buffer.alloc(20)]);
+  const chipSessionUwh = amount * 1000n + 7n;
+  const chipUptimeMs = 9000n;
+  const chipNonce = 7n;
   const chipPubkey = Buffer.alloc(32, 0x66);
   const chipSigR = Buffer.alloc(32, 0x67);
   const chipSigS = Buffer.alloc(32, 0x68);
   // Off-chain builders (what the services implement): transientHash, integers little-endian.
-  const chipDigest = le(RTlib.transientHash(V(9), [
-    padTag('pollpower:hat:chip:v1'), c.addressBytes, sessionID, le(amount), producerKey, producerAddr,
-    meterKeyHash, le(meterTime), le(meterCounter)]));
-  const hatMsg = (tag) => RTlib.transientHash(V(6), [padTag(tag), c.addressBytes, chipDigest, chipPubkey, chipSigR, chipSigS]);
+  const recordDigest = le(RTlib.transientHash(V(11), [
+    padTag('pollpower:hat:record:v1'), c.addressBytes, sessionID, le(amount), producerKey, producerAddr,
+    meterKeyHash, chipHwId, le(chipSessionUwh), le(chipUptimeMs), le(chipNonce)]));
+  const hatMsg = (tag) => RTlib.transientHash(V(6), [padTag(tag), c.addressBytes, recordDigest, chipPubkey, chipSigR, chipSigS]);
   const settle = (sig) => c.call('settle', sessionID, amount, producerKey, { bytes: producerAddr }, meterKeyHash,
-    meterTime, meterCounter, chipPubkey, chipSigR, chipSigS, sig,
+    chipHwId, chipSessionUwh, chipUptimeMs, chipNonce, chipPubkey, chipSigR, chipSigS, sig,
     b32(0), b32(0), 0n, 1n, [b32(0), b32(0), b32(0), b32(0)], [0n, 0n, 0n, 0n], [0n, 0n, 0n, 0n],
     0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n);
   // Signature accepted: settle moves on to the producer-attestation check.

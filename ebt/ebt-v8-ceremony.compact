@@ -360,24 +360,31 @@ circuit requireOwner(action: Bytes<32>, argsDigest: Bytes<32>, ownerSig: JubjubS
 // jubjubSchnorrVerify<1>. Every message carries this contract's address, so a
 // signature for one deployment is useless on another. The services call these
 // exported circuits from the compiled contract instead of re-implementing them.
-// What the HAT chip signs (Ed25519, on chip). The contract does not verify
-// the chip signature (ledger 9 has no Ed25519 verifier): meter-authority-service
-// does, before it countersigns. Until the chip signs a curve the circuit can
-// verify, the on-chain proof vouches for the service, not the chip.
-export pure circuit chipDigest(
+// The settle record meter-authority-service countersigns. It includes the HAT
+// chip's NATIVE attestation (firmware ATTEST 0x60): the chip signs (Ed25519,
+// on chip) SHA-512("pollpower:hat:attest:v1" || ieee(8) || userid(4) ||
+// sessionID[0..16] || session_uwh(8) || uptime_ms(8) || nonce(8)), with
+// session_uwh its OWN INA226-metered energy. The circuit cannot verify Ed25519,
+// so the service verifies it and countersigns this record; the event carries
+// every field needed to re-verify the chip signature off-chain. Until the chip
+// signs a curve the circuit verifies, the proof vouches for the service.
+//   chipHwId = ieee(8) || userid(4 BE) || zeros(20)
+export pure circuit settleRecordDigest(
   self: Bytes<32>, sessionID: Bytes<32>, amount: Uint<128>, producerKey: Bytes<32>,
-  producerAddr: UserAddress, meterKeyHash: Bytes<32>, meterTime: Uint<64>, meterCounter: Uint<64>,
+  producerAddr: UserAddress, meterKeyHash: Bytes<32>, chipHwId: Bytes<32>,
+  chipSessionUwh: Uint<64>, chipUptimeMs: Uint<64>, chipNonce: Uint<64>,
 ): Bytes<32> {
-  return transientHash<Vector<9, Bytes<32>>>([
-    pad(32, "pollpower:hat:chip:v1"), self, sessionID, (amount as Field) as Bytes<32>,
-    producerKey, producerAddr.bytes, meterKeyHash,
-    (meterTime as Field) as Bytes<32>, (meterCounter as Field) as Bytes<32>,
+  return transientHash<Vector<11, Bytes<32>>>([
+    pad(32, "pollpower:hat:record:v1"), self, sessionID, (amount as Field) as Bytes<32>,
+    producerKey, producerAddr.bytes, meterKeyHash, chipHwId,
+    (chipSessionUwh as Field) as Bytes<32>, (chipUptimeMs as Field) as Bytes<32>,
+    (chipNonce as Field) as Bytes<32>,
   ]) as Bytes<32>;
 }
 
-// What meter-authority-service signs (Jubjub Schnorr): the chip digest plus
-// the chip's key and signature, so the audit record in the settle event cannot
-// be swapped by the submitter.
+// What meter-authority-service signs (Jubjub Schnorr): the settle record digest
+// plus the chip's key and signature, so the audit record in the settle event
+// cannot be swapped by the submitter.
 export pure circuit hatMessage(
   self: Bytes<32>, digest: Bytes<32>, chipPubkey: Bytes<32>, chipSigR: Bytes<32>, chipSigS: Bytes<32>,
 ): Field {
@@ -816,16 +823,19 @@ export circuit mirrorClassStatutoryTotal(
 // =============================================================================
 
 export circuit settle(
-  // HAT bundle: the chip signs chipDigest(...) (Ed25519); meter-authority-
-  // service checks it and signs hatMessage(self, chipDigest, chipPubkey,
-  // chipSigR, chipSigS) (Jubjub). producerAddr stays bound (I-14-A / EBT-H-1).
+  // HAT bundle: the chip's native attestation (Ed25519, its own metered
+  // energy); meter-authority-service verifies it and signs hatMessage(self,
+  // settleRecordDigest(...), chipPubkey, chipSigR, chipSigS) (Jubjub).
+  // producerAddr stays bound (I-14-A / EBT-H-1).
   sessionID:    Bytes<32>,
   amount:       Uint<128>,
   producerKey:  Bytes<32>,
   producerAddr: UserAddress,
   meterKeyHash: Bytes<32>,
-  meterTime:    Uint<64>,
-  meterCounter: Uint<64>,
+  chipHwId:       Bytes<32>,   // chip's native attestation (ATTEST 0x60)
+  chipSessionUwh: Uint<64>,
+  chipUptimeMs:   Uint<64>,
+  chipNonce:      Uint<64>,
   chipPubkey:   Bytes<32>,
   chipSigR:     Bytes<32>,
   chipSigS:     Bytes<32>,
@@ -863,9 +873,15 @@ export circuit settle(
          "timestamp cannot be in the future");
 
   // 2. HAT VERIFICATION (WI16-C-1c: in-circuit Schnorr under the meter authority).
-  const digest = chipDigest(kernel.self().bytes, disclose(sessionID), disclose(amount),
-    disclose(producerKey), disclose(producerAddr), disclose(meterKeyHash),
-    disclose(meterTime), disclose(meterCounter));
+  const digest = settleRecordDigest(kernel.self().bytes, disclose(sessionID), disclose(amount),
+    disclose(producerKey), disclose(producerAddr), disclose(meterKeyHash), disclose(chipHwId),
+    disclose(chipSessionUwh), disclose(chipUptimeMs), disclose(chipNonce));
+  // The minted amount is the chip's own metered energy: floor(uWh / 1000).
+  const amtF = disclose(amount) as Field;
+  const uwh = disclose(chipSessionUwh) as Uint<128>;
+  assert((amtF * (1000 as Field)) as Uint<128> <= uwh
+         && uwh < (((amtF + (1 as Field)) * (1000 as Field)) as Uint<128>),
+         "AMOUNT_NOT_CHIP_METERED");
   const hatMsg: Vector<1, Field> = [hatMessage(kernel.self().bytes, digest, disclose(chipPubkey),
     disclose(chipSigR), disclose(chipSigS))];
   assert(jubjubSchnorrVerify<1>(hatMsg, disclose(hatSig), _meterAuthorityPubkey), "Bad HAT signature");
@@ -1038,12 +1054,12 @@ export circuit settle(
   _settleLog.insert(disclose(seq) as Uint<64>, disclose(settleEntry));
   settlementCount.increment(1);
 
-  // Audit: the chip key, chip signature and meter reading behind this mint.
-  const z = pad(32, "");
+  // Audit: the chip's native attestation behind this mint (re-verifiable
+  // off-chain with the chip key: see settleRecordDigest).
   const flat: Vector<256, Uint<8>> = [
     ...b8(disclose(sessionID)), ...b8(disclose(chipPubkey)), ...b8(disclose(chipSigR)), ...b8(disclose(chipSigS)),
-    ...b8(digest), ...b8((disclose(meterTime) as Field) as Bytes<32>),
-    ...b8((disclose(meterCounter) as Field) as Bytes<32>), ...b8(z),
+    ...b8(disclose(chipHwId)), ...b8((disclose(chipSessionUwh) as Field) as Bytes<32>),
+    ...b8((disclose(chipUptimeMs) as Field) as Bytes<32>), ...b8((disclose(chipNonce) as Field) as Bytes<32>),
   ];
   emit(Misc { name: pad(32, "pp:ebt:v9:settleChip"), payload: flat as Bytes<256> });
 }

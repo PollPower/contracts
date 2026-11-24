@@ -69,6 +69,21 @@ Unrelated CC1352P7 code in `pollpower-monorepo` (`src/cc1352p7-firmware`,
 `hardware/gateway-v3.4|3.5/firmware`) is the earlier mesh / relay radio work,
 not the HAT signer.
 
+### Confirmed (2026-11-24) and decided
+
+- `ATTEST` (0x60, `pp_gwattest.c`) takes only the 16-byte session id from the
+  host and signs `energy.session_uwh`, the chip's own counter fed by
+  `pp_energy_sample` from the INA226; uptime and the TRNG nonce are also
+  chip-generated. The host can reset the session counter (`ENERGY_RESET`) and
+  set the cut-off limit, which only lower or end a reading.
+- **Decided (Garrett):** meter-authority-service requires this native
+  attestation and refuses `SIGN_HASH` for settles (before Preprod).
+- **Next firmware revision:** disable `SIGN_HASH` (0x62) for settle use (keep
+  it, if at all, only for non-settle purposes), and add a persistent boot
+  counter to the attestation: uptime resets on reboot, so today the server
+  can only refuse reused nonces and sessions, not enforce a monotonic clock
+  across reboots.
+
 ### What this changes for the evaluation
 
 - **The chip already has a stronger attestation than the one production uses.**
