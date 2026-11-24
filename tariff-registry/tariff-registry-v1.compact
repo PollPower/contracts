@@ -9,9 +9,9 @@
 // Brief:   ../dispatch-briefs/WI-13-TariffRegistry.md
 // Memo:    ../dispatch-briefs/WI-13-DISPATCH-MEMO-2026-07-14.md
 // Plan:    ../FEDERATION-IMPLEMENTATION-PLAN.md §0.1, §0.2, §0.3
-// Tooling: compactc 0.30.0, language 0.22.0, runtime 0.15.0 — per Garrett's
-//          written call 2026-07-14 22:57 JST. 0.31.0 upgrade gap deferred
-//          to WI-13.1 (V1-DESIGN.md §11).
+// Tooling: Compact toolchain 0.36.1, language 0.28, runtime 0.21.0 (WI-16
+//          ledger 9 pin). Was compactc 0.30.0 / language 0.22.0 / runtime
+//          0.15.0 per Garrett's written call 2026-07-14 22:57 JST.
 //
 // =============================================================================
 // WHAT THIS CONTRACT IS
@@ -85,7 +85,7 @@
 //
 // =============================================================================
 
-pragma language_version >= 0.16 && <= 0.22;
+pragma language_version 0.28;
 
 import CompactStandardLibrary;
 
