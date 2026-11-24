@@ -47,7 +47,7 @@ export class ActionLogTree {
 
 const NODE = b32(0x0e);
 const ZERO = b32(0);
-const charterProof = { siblings: Array(12).fill(ZERO), indices: Array(12).fill(false) };
+export const charterProof = { siblings: Array(12).fill(ZERO), indices: Array(12).fill(false) };
 const charterRoot = (() => {
   let h = runtimePersistentHash([padTag('pp:fed:charter:leaf'), NODE]);
   for (let i = 0; i < 12; i++) h = runtimePersistentHash([padTag('pp:fed:charter:node'), h, ZERO]);

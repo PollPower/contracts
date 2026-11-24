@@ -23,6 +23,7 @@ import { createEbtSettleChain } from '../settle/ebt-settle-chain.mjs';
 import { createLdRelay } from '../ld/ld-relay.mjs';
 import { planSettleArgs } from '../settle/settle-plan.mjs';
 import { createSettleWatcherService } from '../watcher/settle-watcher-service.mjs';
+import { registerLaneActionHash, registerLaneArgs, findLane } from '../tariff/lane.mjs';
 import { deployCouncil, deployTariffRegistry, deployEbt, deployLd, suiteManifest } from '../deploy/deploy-suite.mjs';
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -34,7 +35,7 @@ import { signMessage } from '../../tests/contract/machine-signer.mjs';
 import { runtimePersistentHash, padTag } from '../../tests/parity/harness.mjs';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { ActionLogTree } from '../../tests/contract/settle-world.mjs';
-import { signSettle, settleHatArgs, chipHwId, sessionFrom16 } from '../../tests/contract/hat-signer.mjs';
+import { signSettle, chipHwId, sessionFrom16 } from '../../tests/contract/hat-signer.mjs';
 import { submitSettleWithRetry } from '../settle/submit-settle.mjs';
 import { findSettleChipEvents, decodeSettleChipEvent, verifySettleChipEvent, SETTLE_CHIP_EVENT } from '../watcher/settle-watcher-lib.mjs';
 import { restoreIndexerMiscEvent, payloadWords } from '../events/event-codec.mjs';
@@ -85,7 +86,15 @@ const TR_WITNESSES = {
   action_log_path_bits: (/** @type {any} */ ctx, /** @type {bigint} */ seq) => [ctx.privateState, pathBits(seq)],
 };
 export const CLASS = new Uint8Array(32).fill(0xc1);
-export const SPLIT = { producerShareBps: 6000n, ldShareBps: 1000n, opsShareBps: 2000n, daoShareBps: 500n, operatorMarginBps: 500n, statutoryTotalBps: 0n };
+// The Preprod class carries a statutory lane (Garrett, 2026-11-24): 300 bps here,
+// on-chain remit (minted to the lane's remit address at every settle).
+export const SPLIT = { producerShareBps: 5700n, ldShareBps: 1000n, opsShareBps: 2000n, daoShareBps: 500n, operatorMarginBps: 500n, statutoryTotalBps: 300n };
+/** The devnet's statutory lane (scheduleId filled in at registration). */
+const LANE = {
+  laneKindByte: 1n, leviedBy: label('lane levied by'), bpsShare: 300n, remitAddress: label('lane remit address'),
+  basis: 0n, applicabilityHash: label('lane applicability'), statuteRefHash: label('lane statute ref'),
+  effectiveEpoch: 1n, remittanceMode: 1n,
+};
 
 /** Current ledger of a deployed contract (via the indexer). */
 async function ledgerOf(dn, name, address) {
@@ -178,6 +187,15 @@ async function mirrorAndAttest(dn, ebtAddress, flags, rootHex, joinAs) {
     save();
     console.log('[stack] schedule + class mirrored into EBT');
   }
+  if (!flags.laneMirrored) {
+    const seq = entries.findIndex((e) => Number(e.kind) === 1);
+    if (seq < 0) throw new Error('no LANE_REGISTERED entry in the TariffRegistry action log');
+    const rec = findLane(trL, sid, LANE.leviedBy, LANE.laneKindByte);
+    await ebt.callTx.mirrorRegisterLane(entries[seq], rec, tree.proof(seq));
+    flags.laneMirrored = true;
+    save();
+    console.log(`[stack] statutory lane mirrored into EBT (action ${seq})`);
+  }
   if (!flags.attested) {
     const attKey = runtimePersistentHash([PRODUCER.key, PRODUCER.meter]);
     const args = [attKey, PRODUCER.key, PRODUCER.meter, 1n, new Uint8Array(32).fill(0x53), nowSec()];
@@ -267,7 +285,21 @@ const STAGES = {
       S.classRetuned = true;
       S.retuneTime = t.toString();
       save();
-      console.log('[stack] class retuned');
+      console.log(`[stack] class retuned (statutory ${SPLIT.statutoryTotalBps} bps)`);
+    }
+    // The statutory lane: council-approved registerLane, before EBT deploys
+    // (EBT's constructor mirrors the action-log root that includes it).
+    if (!S.laneRegistered) {
+      const lane = { ...LANE, scheduleId: hexToBytes(S.scheduleId) };
+      const t = nowSec();
+      L = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
+      await approve(dn, registerLaneActionHash(self, lane, L._currentEpoch, t));
+      await tr.callTx.registerLane(...registerLaneArgs(lane), charterProof, t);
+      L = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
+      const rec = findLane(L, lane.scheduleId, lane.leviedBy, lane.laneKindByte);
+      S.laneRegistered = true;
+      save();
+      console.log(`[stack] statutory lane registered: kind ${rec.laneKindByte}, ${rec.bpsShare} bps, remit mode ${rec.remittanceMode}, effective epoch ${rec.effectiveEpoch}`);
     }
   },
 
@@ -420,11 +452,10 @@ const STAGES = {
         chipUptimeMs: 7_200_000n, chipNonce: BigInt(Date.now()),
       };
       const s = signSettle(ebtMod, { addressBytes: self }, f, { chip: CHIP, hatSk: METER_AUTHORITY.sk });
-      const ld = (amount * SPLIT.ldShareBps) / 10000n, ops = (amount * SPLIT.opsShareBps) / 10000n, dao = (amount * SPLIT.daoShareBps) / 10000n;
-      const args = [...settleHatArgs(f, s), hexToBytes(S.scheduleId), CLASS, 1n, 2n,
-        [ZERO, ZERO, ZERO, ZERO], [0n, 0n, 0n, 0n], [0n, 0n, 0n, 0n],
-        10000n - SPLIT.ldShareBps - SPLIT.opsShareBps - SPLIT.daoShareBps, SPLIT.opsShareBps, SPLIT.ldShareBps, SPLIT.daoShareBps,
-        amount - ld - ops - dao, ops, ld, dao, nowSec()];
+      const args = planSettleArgs({
+        ebtModule: ebtMod, ledger: await ledgerOf(dn, 'ebt-v8', A.ebt), fields: f, chip: s,
+        scheduleId: hexToBytes(S.scheduleId), classPath: CLASS, epoch: 1n, fiatValueAtMint: 2n, currentTime: nowSec(),
+      });
       const r = await refused(async () => (await join(dn, 'ebt-v8-ceremony', A.ebt)).callTx.settle(...args));
       const L = await ledgerOf(dn, 'ebt-v8', A.ebt);
       check('SD-3 settle mid-deploy (valid HAT, no registered chip)', r.refused && L._totalSupply === 0n, `${r.why}; totalSupply ${L._totalSupply}`);
@@ -659,14 +690,13 @@ const STAGES = {
       chipUptimeMs: 3_600_000n + BigInt(n), chipNonce: BigInt(Date.now()),
     };
     const s = signSettle(ebtMod, { addressBytes: self }, f, { chip: CHIP, hatSk: METER_AUTHORITY.sk });
-    const ld = (amount * SPLIT.ldShareBps) / 10000n;
-    const ops = (amount * SPLIT.opsShareBps) / 10000n;
-    const dao = (amount * SPLIT.daoShareBps) / 10000n;
-    const prod = amount - ld - ops - dao;
-    const args = [...settleHatArgs(f, s), hexToBytes(S.scheduleId), CLASS, 1n, 2n,
-      [ZERO, ZERO, ZERO, ZERO], [0n, 0n, 0n, 0n], [0n, 0n, 0n, 0n],
-      10000n - SPLIT.ldShareBps - SPLIT.opsShareBps - SPLIT.daoShareBps, SPLIT.opsShareBps, SPLIT.ldShareBps, SPLIT.daoShareBps,
-      prod, ops, ld, dao, nowSec()];
+    // Split planned from EBT's live mirrors (class + statutory lane), as pp-settle-service does.
+    const args = planSettleArgs({
+      ebtModule: ebtMod, ledger: await ledgerOf(dn, 'ebt-v8', S.ebt), fields: f, chip: s,
+      scheduleId: hexToBytes(S.scheduleId), classPath: CLASS, epoch: 1n, fiatValueAtMint: 2n, currentTime: nowSec(),
+    });
+    console.log(`[stack] planned split: producer ${args[24]}, ops ${args[25]}, dividend ${args[26]}, dao ${args[27]}, lanes ${args[19].join('/')}`);
+    if (args[19][0] !== (amount * LANE.bpsShare) / 10000n) throw new Error('settle plan does not pay the statutory lane');
     const t0 = Date.now();
     const r = await submitSettleWithRetry({
       args,
