@@ -80,6 +80,14 @@ pragma language_version 0.28;
 
 import CompactStandardLibrary;
 
+// WI16-C-1b: the council is Multisig v8. Council-gated operations ask its
+// witness-free `isApproved` through a ledger 9 cross-contract call and record
+// the action here, so an approval is used once and only by this contract.
+contract Council {
+  circuit isApproved(actionHash: Bytes<32>): Boolean;
+}
+
+
 // =============================================================================
 // Calibration placeholders — Garrett's call. DO NOT RESOLVE (v2 brief §CAL).
 // The literals below are NON-AUTHORITATIVE compilable scaffolds ONLY, mirrored
@@ -120,11 +128,6 @@ witness signature_valid(
   pubkey: Bytes<32>,
   messageHash: Bytes<32>,
   signature: Bytes<64>,
-): Boolean;
-
-witness multisig_signature_valid(
-  payload:       Bytes<32>,
-  authorityHash: Bytes<32>,
 ): Boolean;
 
 // =============================================================================
@@ -277,8 +280,8 @@ struct EventProof {
 export ledger _ownerPk: JubjubPoint;
 export ledger _ownerNonce: Counter;
 export ledger _meterAuthorityPubkey: Bytes<32>;
-export ledger _multisigAuthority: Bytes<32>;
-export ledger _authorityRotationNonce: Counter;
+export sealed ledger _council: Council;
+export ledger _consumedCouncilActions: Set<Bytes<32>>;
 
 export ledger _totalSupply: Uint<128>;
 export ledger _totalRedeemed: Uint<128>;
@@ -582,7 +585,7 @@ circuit assertSliceOnPolicy(amt: Uint<128>, amount: Uint<128>, bps: Uint<16>): [
 constructor(
   ownerPk:               JubjubPoint,
   meterAuthorityPubkey:  Bytes<32>,
-  multisigAuthorityHash: Bytes<32>,
+  council:               Council,
   operationsRecipient:   UserAddress,
   dividendRecipient:     UserAddress,
   daoRecipient:          UserAddress,
@@ -591,7 +594,7 @@ constructor(
 ) {
   _ownerPk = disclose(ownerPk);
   _meterAuthorityPubkey = disclose(meterAuthorityPubkey);
-  _multisigAuthority = disclose(multisigAuthorityHash);
+  _council = disclose(council);
 
   _operationsRecipient = disclose(operationsRecipient);
   _dividendRecipient = disclose(dividendRecipient);

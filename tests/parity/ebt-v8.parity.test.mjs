@@ -26,7 +26,7 @@ async function setup(captured) {
   const mod = await loadContract(NAME);
   // WI16-H-1: authorities are constructor arguments; WI16-C-2: the owner is a Jubjub key.
   const c = await deploy(mod, witnesses, [
-    OWNER.pk, b32(0xa1), b32(0xa2),
+    OWNER.pk, b32(0xa1), { bytes: b32(0xa2) },
     { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, b32(0xa3), b32(0xa4),
   ]);
   return Object.assign(c, { mod });

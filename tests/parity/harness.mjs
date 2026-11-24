@@ -29,11 +29,43 @@ export async function loadContract(name) {
   return import(pathToFileURL(file).href);
 }
 
+const PARENT_BLOCK = '00'.repeat(32);
+
+/**
+ * Several in-memory contracts that can call each other (ledger 9
+ * cross-contract calls). Register each deployed handle with the build it came
+ * from; a callee's state is served with the REAL verifier keys of that build
+ * (the runtime checks them against the module's `expectedVk` on every call),
+ * so callees need a full-ZK build. Every call resolves callees afresh, so a
+ * callee's state is never stale between transactions.
+ */
+export function createWorld() {
+  const entries = new Map(); // address -> { mod, handle, buildName }
+  return {
+    register(handle, mod, buildName) { entries.set(handle.address, { mod, handle, buildName }); return handle; },
+    crossContract: {
+      stateProvider: {
+        async getContractState(_blockHash, address) {
+          const e = entries.get(address);
+          return e ? e.handle.contractState(e.buildName) : undefined;
+        },
+      },
+      moduleProvider: {
+        resolve(address) {
+          const e = entries.get(address);
+          return e ? async () => e.mod : undefined;
+        },
+      },
+    },
+  };
+}
+
 /**
  * Deploys `mod.Contract` in memory and returns a caller that threads the
  * circuit context through successive calls, like successive transactions.
+ * `opts.world` (from createWorld) enables cross-contract calls.
  */
-export async function deploy(mod, witnesses, ctorArgs = [], privateState = {}) {
+export async function deploy(mod, witnesses, ctorArgs = [], privateState = {}, opts = {}) {
   const contract = new mod.Contract(witnesses);
   const ctor = await contract.initialState(RT.createConstructorContext(privateState, COIN), ...ctorArgs);
   const address = RT.sampleContractAddress();
@@ -43,6 +75,7 @@ export async function deploy(mod, witnesses, ctorArgs = [], privateState = {}) {
     coinPublicKeyOrZswapState: COIN,
     contractState: ctor.currentContractState,
     privateState,
+    ...(opts.world ? { parentBlockHash: PARENT_BLOCK, crossContract: opts.world.crossContract } : {}),
   });
   return {
     contract,
@@ -50,12 +83,38 @@ export async function deploy(mod, witnesses, ctorArgs = [], privateState = {}) {
     /** The contract address as the 32 bytes `kernel.self().bytes` sees. */
     addressBytes: Uint8Array.from(Buffer.from(String(address).replace(/^0x/, ''), 'hex')),
     async call(circuitId, ...args) {
-      const at = { ...ctx, callContext: { ...ctx.callContext, circuitId } };
+      // Each call is a new transaction: drop other contracts' cached state.
+      const own = (rec) => (rec && address in rec ? { [address]: rec[address] } : {});
+      const at = {
+        ...ctx,
+        callContext: { ...ctx.callContext, circuitId },
+        queryContexts: own(ctx.queryContexts),
+        gasCosts: own(ctx.gasCosts),
+        zswapLocalStates: own(ctx.zswapLocalStates),
+        contractStates: {},
+        activeContracts: new Set([address]),
+        callProofDataTrace: [],
+        events: [],
+      };
       const r = await contract.impureCircuits[circuitId](at, ...args);
       ctx = r.context;
       return r.result;
     },
     ledger() { return mod.ledger(ctx.callContext.currentQueryContext.state); },
+    /** This contract's deployed state now: current data plus `buildName`'s verifier keys. */
+    contractState(buildName) {
+      const cs = new RT.ContractState();
+      const data = ctx.callContext.currentQueryContext.state;
+      cs.data = data instanceof RT.ChargedState ? data : new RT.ChargedState(data);
+      const keys = path.join(BUILD, buildName, 'keys');
+      for (const f of fs.existsSync(keys) ? fs.readdirSync(keys) : []) {
+        if (!f.endsWith('.verifier')) continue;
+        const op = new RT.ContractOperation();
+        op.verifierKey = new Uint8Array(fs.readFileSync(path.join(keys, f)));
+        cs.setOperation(f.slice(0, -'.verifier'.length), op);
+      }
+      return cs;
+    },
   };
 }
 

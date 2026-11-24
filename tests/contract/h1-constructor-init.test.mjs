@@ -24,7 +24,7 @@ const OWNER = newOwnerKey();
 const ebtArgs = () => [
   OWNER.pk,                 // ownerPk
   b32(0xa1),                // meterAuthorityPubkey
-  b32(0xa2),                // multisigAuthorityHash
+  { bytes: b32(0xa2) },     // council (Multisig v8 address; WI16-C-1b)
   { bytes: b32(0x21) },     // operationsRecipient
   { bytes: b32(0x22) },     // dividendRecipient
   { bytes: b32(0x23) },     // daoRecipient
@@ -47,7 +47,7 @@ for (const name of EBT) {
     assert.deepEqual(L._ownerPk, OWNER.pk);
     assert.equal(L._ownerNonce, 0n);
     assert.equal(hex(L._meterAuthorityPubkey), hex(b32(0xa1)));
-    assert.equal(hex(L._multisigAuthority), hex(b32(0xa2)));
+    assert.equal(hex(L._council.bytes), hex(b32(0xa2)));
     assert.equal(hex(L._operationsRecipient.bytes), hex(b32(0x21)));
     assert.equal(hex(L._dividendRecipient.bytes), hex(b32(0x22)));
     assert.equal(hex(L._daoRecipient.bytes), hex(b32(0x23)));

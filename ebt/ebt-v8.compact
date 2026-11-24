@@ -80,6 +80,14 @@ pragma language_version 0.28;
 
 import CompactStandardLibrary;
 
+// WI16-C-1b: the council is Multisig v8. Council-gated operations ask its
+// witness-free `isApproved` through a ledger 9 cross-contract call and record
+// the action here, so an approval is used once and only by this contract.
+contract Council {
+  circuit isApproved(actionHash: Bytes<32>): Boolean;
+}
+
+
 // =============================================================================
 // Calibration placeholders — Garrett's call. DO NOT RESOLVE (v2 brief §CAL).
 // The literals below are NON-AUTHORITATIVE compilable scaffolds ONLY, mirrored
@@ -120,11 +128,6 @@ witness signature_valid(
   pubkey: Bytes<32>,
   messageHash: Bytes<32>,
   signature: Bytes<64>,
-): Boolean;
-
-witness multisig_signature_valid(
-  payload:       Bytes<32>,
-  authorityHash: Bytes<32>,
 ): Boolean;
 
 // =============================================================================
@@ -277,8 +280,8 @@ struct EventProof {
 export ledger _ownerPk: JubjubPoint;
 export ledger _ownerNonce: Counter;
 export ledger _meterAuthorityPubkey: Bytes<32>;
-export ledger _multisigAuthority: Bytes<32>;
-export ledger _authorityRotationNonce: Counter;
+export sealed ledger _council: Council;
+export ledger _consumedCouncilActions: Set<Bytes<32>>;
 
 export ledger _totalSupply: Uint<128>;
 export ledger _totalRedeemed: Uint<128>;
@@ -582,7 +585,7 @@ circuit assertSliceOnPolicy(amt: Uint<128>, amount: Uint<128>, bps: Uint<16>): [
 constructor(
   ownerPk:               JubjubPoint,
   meterAuthorityPubkey:  Bytes<32>,
-  multisigAuthorityHash: Bytes<32>,
+  council:               Council,
   operationsRecipient:   UserAddress,
   dividendRecipient:     UserAddress,
   daoRecipient:          UserAddress,
@@ -591,7 +594,7 @@ constructor(
 ) {
   _ownerPk = disclose(ownerPk);
   _meterAuthorityPubkey = disclose(meterAuthorityPubkey);
-  _multisigAuthority = disclose(multisigAuthorityHash);
+  _council = disclose(council);
 
   _operationsRecipient = disclose(operationsRecipient);
   _dividendRecipient = disclose(dividendRecipient);
@@ -632,110 +635,69 @@ export circuit execOwnerOp(
   }
 }
 
-// Multisig-gated LD binding — bit-for-bit from v7.4.2 for ops 0-3 (domains
-// unchanged so existing off-chain bundle builders are unaffected). Op 4 is
-// review-pass-1 net-new: escrow-attestor rotation lives here now (design §6.4).
-//   op 0 = setLivingDividendAddress   ("ebt:v7.3:setLD",           Vector<3>)
-//   op 1 = clearLivingDividendAddress ("ebt:v7.3:clearLD",         Vector<2>)
-//   op 2 = setDividendRecipient       ("ebt:v7.3:setDivRecip",     Vector<3>)
-//   op 3 = setMultisigAuthority       ("ebt:v7.4:rotateAuth",      Vector<5>)
-//   op 4 = setEscrowAttestor          ("ebt:v8:setEscrowAttestor", Vector<3>)
+// =============================================================================
+// Council-gated operations (WI16-C-1b)
+// =============================================================================
+// Before WI-16 these asserted `multisig_signature_valid(payload, authority)`,
+// a prover-supplied witness. Now the council (Multisig v8) must have approved
+// councilActionHash(...) -- checked through a cross-contract call -- and the
+// action is recorded so it runs once.
+//
+// The action hash binds this contract's address, the op, EVERY argument (also
+// those the op ignores, so one approval names exactly one call) and the
+// approved time. councilActionHash is an exported pure circuit: the admin app
+// computes the same bytes from the compiled contract.
+//   op 0 = setLivingDividendAddress   op 1 = clearLivingDividendAddress
+//   op 2 = setDividendRecipient       op 4 = setEscrowAttestor
+//   op 3 (setMultisigAuthority) is removed: the council rotates inside
+//   Multisig v8, at the same address.
+
+export pure circuit councilActionHash(
+  self: Bytes<32>, op: Uint<8>, ldAddr: ContractAddress, newRecipient: UserAddress,
+  newEscrowAttestor: Bytes<32>, currentTime: Uint<64>,
+): Bytes<32> {
+  return persistentHash<Vector<7, Bytes<32>>>([
+    pad(32, "pp:ebt:v9:council"), self, (op as Field) as Bytes<32>, ldAddr.bytes,
+    newRecipient.bytes, newEscrowAttestor, (currentTime as Field) as Bytes<32>,
+  ]);
+}
+
+circuit requireCouncil(actionHash: Bytes<32>): [] {
+  const h = disclose(actionHash);
+  assert(!_consumedCouncilActions.member(h), "Action already executed");
+  assert(_council.isApproved(h), "Council has not approved");
+  _consumedCouncilActions.insert(h);
+}
+
 export circuit execMultisigOp(
-  op:               Uint<8>,
-  ldAddr:           ContractAddress,
-  newRecipient:     UserAddress,
-  newAuthorityHash: Bytes<32>,
-  nonceIn:          Uint<64>,
-  currentTime:      Uint<64>,
+  op:                Uint<8>,
+  ldAddr:            ContractAddress,
+  newRecipient:      UserAddress,
   newEscrowAttestor: Bytes<32>,
+  currentTime:       Uint<64>,
 ): [] {
   assert(disclose(blockTimeGte(disclose(currentTime))),
          "execMultisigOp: timestamp cannot be in the future");
-
   const k = disclose(op);
-  const timeBytes = (disclose(currentTime) as Field) as Bytes<32>;
+  assert(k == 0 as Uint<8> || k == 1 as Uint<8> || k == 2 as Uint<8> || k == 4 as Uint<8>,
+         "execMultisigOp: bad op");
+  requireCouncil(councilActionHash(kernel.self().bytes, k, disclose(ldAddr), disclose(newRecipient),
+                                   disclose(newEscrowAttestor), disclose(currentTime)));
 
   if (k == 0 as Uint<8>) {
-    const payload = persistentHash<Vector<3, Bytes<32>>>([
-      pad(32, "ebt:v7.3:setLD"),
-      disclose(ldAddr).bytes,
-      timeBytes,
-    ]);
-    assert(
-      disclose(multisig_signature_valid(payload, _multisigAuthority)),
-      "setLivingDividendAddress: multisig signature invalid"
-    );
     _livingDividendAddress = some<ContractAddress>(disclose(ldAddr));
   } else {
     if (k == 1 as Uint<8>) {
-      const payload = persistentHash<Vector<2, Bytes<32>>>([
-        pad(32, "ebt:v7.3:clearLD"),
-        timeBytes,
-      ]);
-      assert(
-        disclose(multisig_signature_valid(payload, _multisigAuthority)),
-        "clearLivingDividendAddress: multisig signature invalid"
-      );
       _livingDividendAddress = none<ContractAddress>();
     } else {
       if (k == 2 as Uint<8>) {
-        const payload = persistentHash<Vector<3, Bytes<32>>>([
-          pad(32, "ebt:v7.3:setDivRecip"),
-          disclose(newRecipient).bytes,
-          timeBytes,
-        ]);
-        assert(
-          disclose(multisig_signature_valid(payload, _multisigAuthority)),
-          "setDividendRecipient: multisig signature invalid"
-        );
         _dividendRecipient = disclose(newRecipient);
       } else {
-        if (k == 3 as Uint<8>) {
-          const zeroAuth = pad(32, "");
-          const disclosedNew = disclose(newAuthorityHash);
-          assert(disclosedNew != zeroAuth,
-                 "setMultisigAuthority: zero hash rejected");
-          assert(disclosedNew != _multisigAuthority,
-                 "setMultisigAuthority: no-op rotation");
-          const expectedNonce = (_authorityRotationNonce.read() + 1 as Uint<64>) as Uint<64>;
-          assert(disclose(nonceIn) == expectedNonce,
-                 "setMultisigAuthority: invalid nonce");
-          const selfBytes = disclose(kernel.self()).bytes;
-          const nonceBytes = (disclose(nonceIn) as Field) as Bytes<32>;
-          const payload = persistentHash<Vector<5, Bytes<32>>>([
-            pad(32, "ebt:v7.4:rotateAuth"),
-            selfBytes,
-            disclosedNew,
-            nonceBytes,
-            timeBytes,
-          ]);
-          assert(
-            disclose(multisig_signature_valid(payload, _multisigAuthority)),
-            "setMultisigAuthority: multisig signature invalid"
-          );
-          _multisigAuthority = disclosedNew;
-          _authorityRotationNonce.increment(1);
-        } else {
-          assert(k == 4 as Uint<8>, "execMultisigOp: bad op");
-          // Review-pass-1 fix: escrow-attestor rotation is multisig-gated
-          // (design §6.4). Same shape as op 2 setDividendRecipient.
-          const disclosedAttestor = disclose(newEscrowAttestor);
-          const zeroAttestor = pad(32, "");
-          assert(disclosedAttestor != zeroAttestor,
-                 "setEscrowAttestor: zero pubkey rejected");
-          assert(disclosedAttestor != _escrowAttestorPubkey,
-                 "setEscrowAttestor: no-op rotation");
-          const payload = persistentHash<Vector<3, Bytes<32>>>([
-            pad(32, "ebt:v8:setEscrowAttestor"),
-            disclosedAttestor,
-            timeBytes,
-          ]);
-          assert(
-            disclose(multisig_signature_valid(payload, _multisigAuthority)),
-            "setEscrowAttestor: multisig signature invalid"
-          );
-          _escrowAttestorPubkey = disclosedAttestor;
-        }
+        // op 4: escrow-attestor rotation (design §6.4).
+        const disclosedAttestor = disclose(newEscrowAttestor);
+        assert(disclosedAttestor != pad(32, ""), "setEscrowAttestor: zero pubkey rejected");
+        assert(disclosedAttestor != _escrowAttestorPubkey, "setEscrowAttestor: no-op rotation");
+        _escrowAttestorPubkey = disclosedAttestor;
       }
     }
   }

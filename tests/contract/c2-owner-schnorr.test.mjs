@@ -24,7 +24,7 @@ const witnesses = { signature_valid: unused('signature_valid'), multisig_signatu
 const ONLY_OWNER = /Only owner/;
 
 const ctorArgs = (ownerPk) => [
-  ownerPk, b32(0xa1), b32(0xa2), { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, b32(0xa3), b32(0xa4),
+  ownerPk, b32(0xa1), { bytes: b32(0xa2) }, { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, b32(0xa3), b32(0xa4),
 ];
 async function setup() {
   const mod = await loadContract(NAME);
