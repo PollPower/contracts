@@ -1,0 +1,56 @@
+{
+  "source": "pollpower-contracts-midnight build/l9/ebt-v8 (chipDigest, hatMessage)",
+  "cases": [
+    {
+      "input": {
+        "ebtAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+        "sessionId": "6161616161616161616161616161616161616161616161616161616161616161",
+        "amount": "4328719365",
+        "producerKey": "6363636363636363636363636363636363636363636363636363636363636363",
+        "producerAddr": "6464646464646464646464646464646464646464646464646464646464646464",
+        "meterKeyHash": "6565656565656565656565656565656565656565656565656565656565656565",
+        "meterTime": "1795000000",
+        "meterCounter": "7",
+        "chipPubkey": "6666666666666666666666666666666666666666666666666666666666666666",
+        "chipSigR": "6767676767676767676767676767676767676767676767676767676767676767",
+        "chipSigS": "6868686868686868686868686868686868686868686868686868686868686868"
+      },
+      "chipDigest": "6a3a3f00150a2d2bbc5de1bcd78e3c7238fd0f0bba8614f61347bd82c5ca926e",
+      "hatMessage": "25885133889258879438342424547768069727852768235590138675185493412603784916721"
+    },
+    {
+      "input": {
+        "ebtAddress": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+        "sessionId": "0101010101010101010101010101010101010101010101010101010101010101",
+        "amount": "1",
+        "producerKey": "0202020202020202020202020202020202020202020202020202020202020202",
+        "producerAddr": "0303030303030303030303030303030303030303030303030303030303030303",
+        "meterKeyHash": "0404040404040404040404040404040404040404040404040404040404040404",
+        "meterTime": "0",
+        "meterCounter": "0",
+        "chipPubkey": "0505050505050505050505050505050505050505050505050505050505050505",
+        "chipSigR": "0606060606060606060606060606060606060606060606060606060606060606",
+        "chipSigS": "0707070707070707070707070707070707070707070707070707070707070707"
+      },
+      "chipDigest": "0e312ebe8e2ec1b3a6d206b8bd670f527338259857aecc8fae86876b3c5c9f64",
+      "hatMessage": "34164990452923425485717739616693427424886018317415010634510471087888480787854"
+    },
+    {
+      "input": {
+        "ebtAddress": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "sessionId": "fefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefe",
+        "amount": "18446744073709551615",
+        "producerKey": "fdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfd",
+        "producerAddr": "fcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc",
+        "meterKeyHash": "fbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb",
+        "meterTime": "18446744073709551615",
+        "meterCounter": "9223372036854775808",
+        "chipPubkey": "fafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafa",
+        "chipSigR": "f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9",
+        "chipSigS": "f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8"
+      },
+      "chipDigest": "5f9b98125fb0111f0d18012cff4accc363b720e7e3d465095bedb6dd24a3375f",
+      "hatMessage": "38646395865627431219414882005345742902265120923085690317022567992441010507106"
+    }
+  ]
+}

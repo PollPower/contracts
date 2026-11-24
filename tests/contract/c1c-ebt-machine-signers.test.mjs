@@ -9,7 +9,11 @@
 //
 // Now the meter authority and the escrow attestor are Jubjub keys held in the
 // ledger, and each signs the Field returned by an exported pure circuit:
-//   hatMessage(self, sessionID, amount, producerKey, producerAddr, meterKeyHash)
+//   hatMessage(self, chipDigest, chipPubkey, chipSigR, chipSigS), where
+//     chipDigest(self, sessionID, amount, producerKey, producerAddr,
+//                meterKeyHash, meterTime, meterCounter)
+//   is what the HAT chip signs (Ed25519, checked by meter-authority-service;
+//   see hat-signer.mjs and the trust-model note in the design doc)
 //   escrowMessage(self, trustFloat, outstandingEbt, attestationEpoch)
 //   reissueMessage(self, producerKey, producerAddr, amount, seq)
 // verified with jubjubSchnorrVerify<1>. Each message carries the contract's
@@ -22,9 +26,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BUILD, buildExists, loadContract, deploy, b32, padTag, RTlib } from '../parity/harness.mjs';
+import { BUILD, buildExists, loadContract, deploy, b32, hex, padTag, RTlib } from '../parity/harness.mjs';
 import { newOwnerKey, signOwnerAction, garbageSignature } from './owner-signer.mjs';
 import { newMachineKey, signMessage } from './machine-signer.mjs';
+import { newChipKey, signSettle, settleHatArgs } from './hat-signer.mjs';
+import { settleWorld } from './settle-world.mjs';
 
 const NAME = 'ebt-v8';
 const skip = buildExists(NAME) ? false : 'build/l9/ebt-v8 missing: run `npm run build:contracts`';
@@ -55,14 +61,21 @@ const ownerCall = (c, circuit, args) =>
 
 // ---------------------------------------------------------------- settle ---
 
+const CHIP = newChipKey();
 const HAT_FIELDS = {
   sessionID: b32(0x61), amount: 0x0102030405n, producerKey: b32(0x63),
-  producerAddr: { bytes: b32(0x64) }, meterKeyHash: b32(0x65),
+  producerAddr: { bytes: b32(0x64) }, meterKeyHash: b32(0x65), meterTime: 9000n, meterCounter: 7n,
 };
-const hatMsg = (mod, target, f = HAT_FIELDS) =>
-  mod.pureCircuits.hatMessage(target.addressBytes, f.sessionID, f.amount, f.producerKey, f.producerAddr, f.meterKeyHash);
-const settle = (c, sig, f = HAT_FIELDS) => c.call('settle',
-  f.sessionID, f.amount, f.producerKey, f.producerAddr, f.meterKeyHash, sig,
+// The chip part of a settle, as an honest chip would sign it for (target, f).
+const chipPart = (mod, target, f) => signSettle(mod, target, f, { chip: CHIP, hatSk: HAT.sk });
+// The meter-authority message for (target, f) with that chip part.
+const hatMsg = (mod, target, f = HAT_FIELDS) => {
+  const c = chipPart(mod, target, f);
+  return mod.pureCircuits.hatMessage(target.addressBytes, c.chipDigest, c.chipPubkey, c.chipSigR, c.chipSigS);
+};
+// settle with fields f, an honest chip part for (c, f) unless `chip` overrides it, and HAT signature `sig`.
+const settle = (c, sig, f = HAT_FIELDS, chip = {}) => c.call('settle',
+  ...settleHatArgs(f, { ...chipPart(c.mod, c, f), ...chip, hatSig: sig }),
   b32(0), b32(0), 0n, 1n, [b32(0), b32(0), b32(0), b32(0)], [0n, 0n, 0n, 0n], [0n, 0n, 0n, 0n],
   0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, NOW);
 const BAD_HAT = /Bad HAT signature/;
@@ -100,6 +113,16 @@ test('C1c-EBT-S3 (negative): the HAT binds amount, producer, recipient address a
   await assert.rejects(settle(e, sig, { ...HAT_FIELDS, producerAddr: { bytes: b32(0x74) } }), BAD_HAT, 'producerAddr (EBT-H-1)');
   await assert.rejects(settle(e, sig, { ...HAT_FIELDS, meterKeyHash: b32(0x75) }), BAD_HAT, 'meterKeyHash');
   await assert.rejects(settle(e, sig, { ...HAT_FIELDS, sessionID: b32(0x76) }), BAD_HAT, 'sessionID');
+});
+
+test('C1c-EBT-S3b (negative): the HAT binds the chip key, the chip signature and the meter time and counter', { skip }, async () => {
+  const { mod, e } = await setup();
+  const sig = signMessage(hatMsg(mod, e), HAT.sk);
+  await assert.rejects(settle(e, sig, HAT_FIELDS, { chipPubkey: newChipKey().pk }), BAD_HAT, 'chip key swapped');
+  await assert.rejects(settle(e, sig, HAT_FIELDS, { chipSigR: b32(0x01) }), BAD_HAT, 'chip signature R swapped');
+  await assert.rejects(settle(e, sig, HAT_FIELDS, { chipSigS: b32(0x01) }), BAD_HAT, 'chip signature S swapped');
+  await assert.rejects(settle(e, sig, { ...HAT_FIELDS, meterTime: 9001n }), BAD_HAT, 'meter time');
+  await assert.rejects(settle(e, sig, { ...HAT_FIELDS, meterCounter: 8n }), BAD_HAT, 'meter counter');
 });
 
 test('C1c-EBT-S4 (negative): a HAT for another EBT deployment is refused here', { skip }, async () => {
@@ -238,10 +261,28 @@ test('C1c-EBT-P1: the signed messages are the pure circuits the services call (l
   const T = (n) => new RTlib.CompactTypeVector(n, new RTlib.CompactTypeBytes(32));
   const le = (x) => new Uint8Array(RTlib.convertBigintToBytes(32, x, 'x'));
   const f = HAT_FIELDS;
-  assert.equal(hatMsg(mod, e), RTlib.transientHash(T(7), [
-    padTag('pollpower:ebt:v9:hat'), e.addressBytes, f.sessionID, le(f.amount), f.producerKey, f.producerAddr.bytes, f.meterKeyHash]));
+  const c = chipPart(mod, e, f);
+  assert.equal(hex(c.chipDigest), hex(RTlib.convertBigintToBytes(32, RTlib.transientHash(T(9), [
+    padTag('pollpower:hat:chip:v1'), e.addressBytes, f.sessionID, le(f.amount), f.producerKey, f.producerAddr.bytes,
+    f.meterKeyHash, le(f.meterTime), le(f.meterCounter)]), 'digest')), 'chipDigest layout');
+  assert.equal(hatMsg(mod, e), RTlib.transientHash(T(6), [
+    padTag('pollpower:ebt:v9:hat'), e.addressBytes, c.chipDigest, c.chipPubkey, c.chipSigR, c.chipSigS]));
   assert.equal(escrowMsg(mod, e), RTlib.transientHash(T(5), [
     padTag('pollpower:ebt:v9:escrow'), e.addressBytes, le(ESC.float), le(ESC.outstanding), le(ESC.epoch)]));
   assert.equal(reissueMsg(mod, e, 7n), RTlib.transientHash(T(6), [
     padTag('pollpower:ebt:v9:reissue'), e.addressBytes, RE.producerKey, RE.producerAddr.bytes, le(RE.amount), le(7n)]));
+});
+
+test('C1c-EBT-S8: a completed settle records the chip key, chip signature and meter reading in an event', { skip }, async () => {
+  const w = await settleWorld();
+  const { chip, fields } = await w.settle(10000n);
+  const ev = w.ebt.events().map((x) => Buffer.from(x.data.content.value[0]))
+    .find((b) => b.subarray(0, 32).toString('utf8').replace(/\0+$/, '') === 'pp:ebt:v9:settleChip');
+  assert.ok(ev, 'settleChip event');
+  const word = (i) => ev.subarray(32 + 32 * i, 64 + 32 * i);
+  assert.equal(hex(word(0)), hex(fields.sessionID));
+  assert.equal(hex(word(1)), hex(chip.chipPubkey));
+  assert.equal(hex(word(2)), hex(chip.chipSigR));
+  assert.equal(hex(word(3)), hex(chip.chipSigS));
+  assert.equal(hex(word(4)), hex(chip.chipDigest));
 });

@@ -360,14 +360,34 @@ circuit requireOwner(action: Bytes<32>, argsDigest: Bytes<32>, ownerSig: JubjubS
 // jubjubSchnorrVerify<1>. Every message carries this contract's address, so a
 // signature for one deployment is useless on another. The services call these
 // exported circuits from the compiled contract instead of re-implementing them.
-export pure circuit hatMessage(
+// What the HAT chip signs (Ed25519, on chip). The contract does not verify
+// the chip signature (ledger 9 has no Ed25519 verifier): meter-authority-service
+// does, before it countersigns. Until the chip signs a curve the circuit can
+// verify, the on-chain proof vouches for the service, not the chip.
+export pure circuit chipDigest(
   self: Bytes<32>, sessionID: Bytes<32>, amount: Uint<128>, producerKey: Bytes<32>,
-  producerAddr: UserAddress, meterKeyHash: Bytes<32>,
-): Field {
-  return transientHash<Vector<7, Bytes<32>>>([
-    pad(32, "pollpower:ebt:v9:hat"), self, sessionID, (amount as Field) as Bytes<32>,
+  producerAddr: UserAddress, meterKeyHash: Bytes<32>, meterTime: Uint<64>, meterCounter: Uint<64>,
+): Bytes<32> {
+  return transientHash<Vector<9, Bytes<32>>>([
+    pad(32, "pollpower:hat:chip:v1"), self, sessionID, (amount as Field) as Bytes<32>,
     producerKey, producerAddr.bytes, meterKeyHash,
+    (meterTime as Field) as Bytes<32>, (meterCounter as Field) as Bytes<32>,
+  ]) as Bytes<32>;
+}
+
+// What meter-authority-service signs (Jubjub Schnorr): the chip digest plus
+// the chip's key and signature, so the audit record in the settle event cannot
+// be swapped by the submitter.
+export pure circuit hatMessage(
+  self: Bytes<32>, digest: Bytes<32>, chipPubkey: Bytes<32>, chipSigR: Bytes<32>, chipSigS: Bytes<32>,
+): Field {
+  return transientHash<Vector<6, Bytes<32>>>([
+    pad(32, "pollpower:ebt:v9:hat"), self, digest, chipPubkey, chipSigR, chipSigS,
   ]);
+}
+
+circuit b8(x: Bytes<32>): Vector<32, Uint<8>> {
+  return x as Vector<32, Uint<8>>;
 }
 
 export pure circuit escrowMessage(
@@ -796,14 +816,19 @@ export circuit mirrorClassStatutoryTotal(
 // =============================================================================
 
 export circuit settle(
-  // HAT bundle (WI16-C-1c): the meter authority signs hatMessage(self,
-  // sessionID, amount, producerKey, producerAddr, meterKeyHash) -- producerAddr
-  // stays bound (I-14-A / EBT-H-1).
+  // HAT bundle: the chip signs chipDigest(...) (Ed25519); meter-authority-
+  // service checks it and signs hatMessage(self, chipDigest, chipPubkey,
+  // chipSigR, chipSigS) (Jubjub). producerAddr stays bound (I-14-A / EBT-H-1).
   sessionID:    Bytes<32>,
   amount:       Uint<128>,
   producerKey:  Bytes<32>,
   producerAddr: UserAddress,
   meterKeyHash: Bytes<32>,
+  meterTime:    Uint<64>,
+  meterCounter: Uint<64>,
+  chipPubkey:   Bytes<32>,
+  chipSigR:     Bytes<32>,
+  chipSigS:     Bytes<32>,
   hatSig:       JubjubSchnorrSignature,
 
   // Tariff-path binding (per-coin metadata; I-14-E).
@@ -838,8 +863,11 @@ export circuit settle(
          "timestamp cannot be in the future");
 
   // 2. HAT VERIFICATION (WI16-C-1c: in-circuit Schnorr under the meter authority).
-  const hatMsg: Vector<1, Field> = [hatMessage(kernel.self().bytes, disclose(sessionID), disclose(amount),
-    disclose(producerKey), disclose(producerAddr), disclose(meterKeyHash))];
+  const digest = chipDigest(kernel.self().bytes, disclose(sessionID), disclose(amount),
+    disclose(producerKey), disclose(producerAddr), disclose(meterKeyHash),
+    disclose(meterTime), disclose(meterCounter));
+  const hatMsg: Vector<1, Field> = [hatMessage(kernel.self().bytes, digest, disclose(chipPubkey),
+    disclose(chipSigR), disclose(chipSigS))];
   assert(jubjubSchnorrVerify<1>(hatMsg, disclose(hatSig), _meterAuthorityPubkey), "Bad HAT signature");
 
   // 3. PRODUCER ATTESTATION — I-14-G (a de-federated producer cannot settle).
@@ -1009,6 +1037,15 @@ export circuit settle(
   };
   _settleLog.insert(disclose(seq) as Uint<64>, disclose(settleEntry));
   settlementCount.increment(1);
+
+  // Audit: the chip key, chip signature and meter reading behind this mint.
+  const z = pad(32, "");
+  const flat: Vector<256, Uint<8>> = [
+    ...b8(disclose(sessionID)), ...b8(disclose(chipPubkey)), ...b8(disclose(chipSigR)), ...b8(disclose(chipSigS)),
+    ...b8(digest), ...b8((disclose(meterTime) as Field) as Bytes<32>),
+    ...b8((disclose(meterCounter) as Field) as Bytes<32>), ...b8(z),
+  ];
+  emit(Misc { name: pad(32, "pp:ebt:v9:settleChip"), payload: flat as Bytes<256> });
 }
 
 // Per-slot settle checks: freshness (§3.3), liveness (four-part parts 2/3),

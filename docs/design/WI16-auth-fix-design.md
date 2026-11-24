@@ -241,7 +241,7 @@ it from the layout below; parity test EBT-2 checks an independent rebuild).
 
 | Signer | Key held in | Signs | Layout of `m` (`transientHash<Vector<n, Bytes<32>>>`, integers little-endian) |
 |---|---|---|---|
-| Meter authority, HAT (`settle`) | EBT `_meterAuthorityPubkey: JubjubPoint` (owner rotates, `execOwnerOp` op 1) | `hatMessage` | `pad("pollpower:ebt:v9:hat"), self, sessionID, amount, producerKey, producerAddr.bytes, meterKeyHash` |
+| Meter authority, HAT (`settle`), countersigning the chip | EBT `_meterAuthorityPubkey: JubjubPoint` (owner rotates, `execOwnerOp` op 1) | `hatMessage` | `pad("pollpower:ebt:v9:hat"), self, chipDigest, chipPubkey, chipSigR, chipSigS`; `chipDigest` = `transientHash(pad("pollpower:hat:chip:v1"), self, sessionID, amount, producerKey, producerAddr.bytes, meterKeyHash, meterTime, meterCounter) as Bytes<32>` (what the chip signs, Ed25519) |
 | Meter authority, reissue co-signature (`manualReissue`) | same key | `reissueMessage` | `pad("pollpower:ebt:v9:reissue"), self, producerKey, producerAddr.bytes, amount, seq` (`seq` = `reissuanceCount`) |
 | Escrow attestor (`redeem`, KES) | EBT `_escrowAttestorPubkey: JubjubPoint` (council rotates, op 4) | `escrowMessage` | `pad("pollpower:ebt:v9:escrow"), self, trustFloat, outstandingEbt, attestationEpoch` |
 | Schedule validator (`registerSchedule`) | TR `_validatorPk: JubjubPoint` (constructor; council rotates with `setValidator`) | `signerMessage(registerScheduleActionHash(...))` | `pad("pp:tariff:v2:signer"), digest` |
@@ -286,6 +286,33 @@ Interface changes (callers must follow):
   `retuneClass(..., operatorPk: JubjubPoint, operatorSignature, ...)`; new
   `setValidator(newValidatorPk, currentTime)` (council-approved
   `setValidatorActionHash`).
+
+### HAT trust model (Garrett, 2026-11-24: option 3)
+
+The HAT chip (TI CC1352P7) signs **Ed25519** on chip, and ledger 9 cannot
+verify Ed25519 in-circuit. So:
+
+1. The chip signs `chipDigest(...)` (it covers the contract, session, amount,
+   producer, payout address, meter, meter time and a per-chip counter).
+2. `meter-authority-service` (`POST /hat/v9`, branch `wi16-hat-v9`) checks the
+   chip signature against its allowlist of approved chip keys, then the sanity
+   rules (the chip's own meter / producer / payout address, per-settle kWh
+   cap, max kW since the chip's last reading, meter time freshness, strictly
+   increasing time and counter, no replayed session), and signs
+   `hatMessage(self, chipDigest, chipPubkey, chipSigR, chipSigS)` with its
+   Jubjub key (owner-only key file, never logged).
+3. `settle` verifies that Jubjub signature in-circuit and emits the chip key,
+   chip signature, chip digest and meter reading as the `pp:ebt:v9:settleChip`
+   event. The chip fields are inside the signed message, so the submitter
+   cannot swap the audit record.
+
+**Until the chip signs a curve the circuit verifies, the on-chain proof
+vouches for the service, not the chip.** A stolen service key can mint for
+any approved chip's producer (bounded by nothing on chain except producer
+attestation and the session set); a stolen chip key alone cannot mint. The
+chip signature is checkable off-chain by anyone from the event. Follow-up
+after Preprod: [hat-chip-signing-followup.md](./hat-chip-signing-followup.md)
+(secp256k1 ECDSA on chip, evaluated against Jubjub + Poseidon).
 
 **Cross-app impact: `meter-authority-service` must sign Jubjub Schnorr
 instead of Ed25519**, over `hatMessage` and `reissueMessage`; the escrow

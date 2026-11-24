@@ -10,6 +10,7 @@ import { loadContract, deploy, createWorld, b32, runtimePersistentHash, padTag, 
 import { newCouncilKey, approvalDigest, signDigest } from './council-signer.mjs';
 import { newOwnerKey, signOwnerAction } from './owner-signer.mjs';
 import { newMachineKey, signMessage } from './machine-signer.mjs';
+import { newChipKey, signSettle, settleHatArgs } from './hat-signer.mjs';
 
 const DEPTH = 24;
 const NODE_TAG = padTag('pp:tariff:v1:actionLogNode');
@@ -114,7 +115,7 @@ export async function settleWorld(opts = {}) {
   syncTree();
 
   // --- EBT -------------------------------------------------------------------
-  const keys = { owner: newOwnerKey(), hat: newMachineKey(), escrow: newMachineKey() };
+  const keys = { owner: newOwnerKey(), hat: newMachineKey(), escrow: newMachineKey(), chip: newChipKey() };
   const ctor = opts.ebtCtor
     ? opts.ebtCtor(keys, council, tree.root())
     : [keys.owner.pk, keys.hat.pk, { bytes: council.addressBytes },
@@ -151,13 +152,16 @@ export async function settleWorld(opts = {}) {
     const divAmt = (amount * ld) / 10000n;
     const daoAmt = (amount * dao) / 10000n;
     const producerAmt = amount - opsAmt - divAmt - daoAmt;
-    const sessionID = b32(0x80 + (session++ % 120));
-    const producerAddr = { bytes: b32(0x64) };
-    const msg = ebtMod.pureCircuits.hatMessage(ebt.addressBytes, sessionID, amount, producerKey, producerAddr, meterKeyHash);
-    await ebt.call('settle', sessionID, amount, producerKey, producerAddr, meterKeyHash, signMessage(msg, keys.hat.sk),
+    const fields = {
+      sessionID: b32(0x80 + (session % 120)), amount, producerKey, producerAddr: { bytes: b32(0x64) },
+      meterKeyHash, meterTime: T0, meterCounter: BigInt(session + 1),
+    };
+    session++;
+    const chip = signSettle(ebtMod, ebt, fields, { chip: keys.chip, hatSk: keys.hat.sk });
+    await ebt.call('settle', ...settleHatArgs(fields, chip),
       scheduleId, CLASS, 1n, 2n, [ZERO, ZERO, ZERO, ZERO], [0n, 0n, 0n, 0n], [0n, 0n, 0n, 0n],
       prod, ops, ld, dao, producerAmt, opsAmt, divAmt, daoAmt, T0);
-    return { divAmt, producerAmt };
+    return { divAmt, producerAmt, chip, fields };
   };
 
   return {

@@ -2,10 +2,10 @@
 // (ebt/tests/lib.mjs) and an independent off-chain HAT builder.
 //
 // Since WI16-C-1c the HAT is a Jubjub Schnorr signature verified in-circuit
-// (no witness). EBT-2 builds the signed message with compact-runtime's
-// transientHash from the documented layout, NOT through the contract's
-// hatMessage pure circuit, and checks the circuit accepts it: that is the
-// parity a meter-authority-service implementation must meet.
+// (no witness). EBT-2 builds the chip digest and the HAT message with
+// compact-runtime's transientHash from the documented layouts, NOT through the
+// contract's pure circuits, and checks the circuit accepts the result: that is
+// the parity meter-authority-service (and pp-settle-service) must meet.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as M from '../../ebt/tests/lib.mjs';
@@ -45,27 +45,31 @@ test('EBT-1: attestationKey computed in JS is the key the circuit derives', { sk
   );
 });
 
-test('EBT-2: a HAT built off-chain from the documented layout is accepted by settle', { skip }, async () => {
+test('EBT-2: a HAT built off-chain from the documented layouts is accepted by settle', { skip }, async () => {
   const c = await setup();
+  const V = (n) => new RTlib.CompactTypeVector(n, new RTlib.CompactTypeBytes(32));
+  const le = (x) => new Uint8Array(RTlib.convertBigintToBytes(32, x, 'x'));
   const sessionID = Buffer.alloc(32, 0x61);
   const amount = 0x0102030405n; // asymmetric bytes: a byte-order mistake changes the hash
   const producerKey = Buffer.alloc(32, 0x63);
   const producerAddr = Buffer.alloc(32, 0x64);
   const meterKeyHash = Buffer.alloc(32, 0x65);
-  // Service-side builder: transientHash over Vector<7, Bytes<32>>, integers little-endian.
-  const msg = RTlib.transientHash(new RTlib.CompactTypeVector(7, new RTlib.CompactTypeBytes(32)), [
-    padTag('pollpower:ebt:v9:hat'), c.addressBytes, sessionID,
-    new Uint8Array(RTlib.convertBigintToBytes(32, amount, 'amount')), producerKey, producerAddr, meterKeyHash,
-  ]);
-  const settle = (sig) => c.call('settle', sessionID, amount, producerKey, { bytes: producerAddr }, meterKeyHash, sig,
+  const meterTime = 9000n;
+  const meterCounter = 7n;
+  const chipPubkey = Buffer.alloc(32, 0x66);
+  const chipSigR = Buffer.alloc(32, 0x67);
+  const chipSigS = Buffer.alloc(32, 0x68);
+  // Off-chain builders (what the services implement): transientHash, integers little-endian.
+  const chipDigest = le(RTlib.transientHash(V(9), [
+    padTag('pollpower:hat:chip:v1'), c.addressBytes, sessionID, le(amount), producerKey, producerAddr,
+    meterKeyHash, le(meterTime), le(meterCounter)]));
+  const hatMsg = (tag) => RTlib.transientHash(V(6), [padTag(tag), c.addressBytes, chipDigest, chipPubkey, chipSigR, chipSigS]);
+  const settle = (sig) => c.call('settle', sessionID, amount, producerKey, { bytes: producerAddr }, meterKeyHash,
+    meterTime, meterCounter, chipPubkey, chipSigR, chipSigS, sig,
     b32(0), b32(0), 0n, 1n, [b32(0), b32(0), b32(0), b32(0)], [0n, 0n, 0n, 0n], [0n, 0n, 0n, 0n],
     0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n);
   // Signature accepted: settle moves on to the producer-attestation check.
-  await assert.rejects(settle(signMessage(msg, HAT.sk)), /PRODUCER_NOT_ATTESTED/);
+  await assert.rejects(settle(signMessage(hatMsg('pollpower:ebt:v9:hat'), HAT.sk)), /PRODUCER_NOT_ATTESTED/);
   // Same builder with the old v8 tag: refused.
-  const old = RTlib.transientHash(new RTlib.CompactTypeVector(7, new RTlib.CompactTypeBytes(32)), [
-    padTag('pollpower:ebt:v8:epoch1'), c.addressBytes, sessionID,
-    new Uint8Array(RTlib.convertBigintToBytes(32, amount, 'amount')), producerKey, producerAddr, meterKeyHash,
-  ]);
-  await assert.rejects(settle(signMessage(old, HAT.sk)), /Bad HAT signature/);
+  await assert.rejects(settle(signMessage(hatMsg('pollpower:ebt:v8:epoch1'), HAT.sk)), /Bad HAT signature/);
 });
