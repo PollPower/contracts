@@ -26,5 +26,8 @@
   },
   "devDependencies": {
     "@noble/curves": "2.4.0"
+  },
+  "dependencies": {
+    "nodemailer": "10.3.1"
   }
 }
