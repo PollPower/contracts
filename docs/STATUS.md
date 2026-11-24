@@ -149,3 +149,12 @@ claim with a view call and a minting call. No fix grows a verifier key past
 5. **`meter-authority-service` signer change** (Ed25519 → Jubjub Schnorr) is
    cross-app; it needs an owner and a slot.
 6. **throne WSL memory cap** (`.wslconfig`), or keep compiling on kenya.
+
+## Follow-ups after the Preprod redeploy
+
+- **Admin app** (monorepo `pollpower-v2/apps/admin`): `app.json` still points at
+  the Preview indexer, `network: "preview"` and the dead multisig v5/v6
+  addresses; `services/adminAuth.ts` defaults to `'preview'`. Switch to Preprod
+  and the new addresses after the redeploy, together with the C-1a signing
+  change (secp256k1 approvals replace the `PollPowerMultiSig.v5` Ed25519
+  action hashes in `services/actionHash.ts`).
