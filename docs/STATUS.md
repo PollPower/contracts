@@ -49,6 +49,18 @@ SHA-256 with an expiry; devnet chips (`PPDEV`) refused off-devnet; the contract
 cannot tell native attestations from SIGN_HASH (ledger 9 has no Ed25519):
 recommend the firmware change before Preprod.
 
+**Preprod gates (all must hold before any Preprod deploy):**
+- Every step passes on the local devnet, and Joi confirms kenya is fully synced.
+- Council rotation (72 h delay) implemented (design doc, "Council rotation").
+- **HAT firmware with `SIGN_HASH` disabled for settle use** (hard gate,
+  Garrett 2026-11-24): the contract cannot tell `SIGN_HASH` signatures from
+  native attestations.
+- Settle-event watcher running and alerting all council members
+  (`docs/runbooks/hat-settle-watcher.md`).
+- Real ring keys (Garrett, Jonathan, Timothy) in the Multisig v8 constructor.
+- Done already: Gap C council gate on `manualReissue`, native attestation in
+  meter-authority-service, epoch-0 retire fix, chip registry + nonce set.
+
 **Step 4 order (ABI first, so the scripts are written once):**
 1. ~~TR retire-at-epoch-0 fix~~ done `49403b3` (3 tests).
 2. ~~`manualReissue` council gate~~ done `d1a0e36` (RC1-RC5), owner signer
@@ -60,6 +72,10 @@ recommend the firmware change before Preprod.
    (native attestation only, SIGN_HASH refused; 17 tests), pp-settle-service
    `7aa0eaf` (`ATTEST`; session id = purchase id, Gap A; 36 tests).
    Contracts: 136/136 + mirror 133/133.
+4. **Settle-event watcher** (Garrett 2026-11-24): re-verify each
+   `settleChip` event's chip Ed25519 signature against the chip's on-chain
+   registered key, alert all council members on mismatch. Chip revocation stays
+   2-of-3 (no single-member suspend); runbook `docs/runbooks/hat-settle-watcher.md`.
 4. Devnet scripts (deploy, mirror, settle submit with retry), LD v3 relayer
    (`/api/ld/v3/*`), Gap A session linking; then the devnet run.
 
