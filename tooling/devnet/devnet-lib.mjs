@@ -18,7 +18,14 @@ import { ROOT, BUILD, buildDir, loadModule, compiled, openNetwork, deploy, join,
 
 export { ROOT, BUILD, buildDir, loadModule, compiled, deploy, join, liveState, finalizeContract };
 
-const STATE_FILE = path.join(ROOT, 'build', 'devnet', 'state.json');
+const DEVNET_DIR = path.join(ROOT, 'build', 'devnet');
+// DEVNET_STATE_FILE: a separate run (e.g. the recorded demo) keeps its own state
+// next to the pass state, never in it.
+const STATE_FILE = (() => {
+  const f = process.env.DEVNET_STATE_FILE ? path.resolve(ROOT, process.env.DEVNET_STATE_FILE) : path.join(DEVNET_DIR, 'state.json');
+  if (path.dirname(f) !== DEVNET_DIR) throw new Error(`DEVNET_STATE_FILE must be a file directly in ${DEVNET_DIR}`);
+  return f;
+})();
 
 /** Run state (addresses, keys' public parts, progress) for one devnet pass. */
 export const state = {
@@ -29,6 +36,7 @@ export const state = {
     fs.writeFileSync(STATE_FILE, JSON.stringify(s, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v), 2));
   },
   file: STATE_FILE,
+  isDefault: STATE_FILE === path.join(DEVNET_DIR, 'state.json'),
 };
 
 export async function openDevnet() {

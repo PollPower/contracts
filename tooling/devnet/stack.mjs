@@ -39,12 +39,31 @@ import { signSettle, chipHwId, sessionFrom16 } from '../../tests/contract/hat-si
 import { submitSettleWithRetry } from '../settle/submit-settle.mjs';
 import { findSettleChipEvents, decodeSettleChipEvent, verifySettleChipEvent, SETTLE_CHIP_EVENT } from '../watcher/settle-watcher-lib.mjs';
 import { restoreIndexerMiscEvent, payloadWords } from '../events/event-codec.mjs';
+import { parsePublicKey, parseSignature, nobleVerify, normalizeS } from '../tangem/ring-signature.mjs';
+import { channelsFromEnv } from '../watcher/alert-channels.mjs';
+import readline from 'node:readline';
 
 const big = (/** @type {Uint8Array} */ b) => b.reduce((a, x) => (a << 8n) | BigInt(x), 0n);
 const label = (/** @type {string} */ s) => new Uint8Array(createHash('sha256').update(`pollpower wi16 devnet ${s} (test key, not a secret)`).digest());
 // Devnet council keys: marked (x starts 0xDE7E) and hard-blocked off-devnet.
 const COUNCIL = [0, 1, 2].map(devnetCouncilKey);
 const hexToBytes = (/** @type {string} */ h) => Uint8Array.from(Buffer.from(h.replace(/^0x/, ''), 'hex'));
+
+// Recorded-demo mode (Garrett, 2026-11-24): council slot 0 is a REAL Tangem
+// ring (public key from the off-chain council keys file, DEVNET_RING_KEYS;
+// whose ring: DEVNET_RING_HOLDER, required), slots 1-2 are devnet keys.
+// Software approvals then use slots 1+2; the ring signs live in demo-ring.
+// Demo runs keep their own state (DEVNET_STATE_FILE) and never count as a pass.
+const RING = (() => {
+  const f = process.env.DEVNET_RING_KEYS;
+  if (!f) return null;
+  const holder = process.env.DEVNET_RING_HOLDER;
+  if (!holder) throw new Error('DEVNET_RING_HOLDER is required with DEVNET_RING_KEYS');
+  const entry = JSON.parse(fs.readFileSync(f, 'utf8')).council?.find((/** @type {any} */ c) => String(c.holder).toLowerCase() === holder.toLowerCase());
+  if (!entry) throw new Error(`no council ring for holder ${holder} in ${f}`);
+  return { holder, publicKey: String(entry.publicKey), point: parsePublicKey(entry.publicKey).point };
+})();
+const SOFT = RING ? [1, 2] : [0, 1];
 
 /** Devnet-only Jubjub key from a public label. */
 const jubjub = (/** @type {string} */ s) => {
@@ -144,6 +163,10 @@ async function watchLdEvents(dn) {
 // A full pass ('all') is valid only from a fresh state: fresh council, keys
 // and contracts on the devnet, nothing resumed (Garrett, 2026-11-24).
 const RUN_ALL = process.argv.slice(2).includes('all');
+if (RING && (RUN_ALL || state.isDefault)) {
+  console.error('[stack] REFUSING: ring (demo) mode needs its own DEVNET_STATE_FILE and is never a full pass');
+  process.exit(3);
+}
 if (RUN_ALL && state.exists()) {
   console.error(`[stack] REFUSING 'all': run state already exists (${state.file}). A full pass must start fresh: move it aside first.`);
   process.exit(3);
@@ -153,7 +176,7 @@ const save = () => state.save(S);
 
 /** The devnet's inputs to the shared deploy suite (Preprod passes real ones). */
 const DEVNET_INPUTS = {
-  council: { points: COUNCIL.map((k) => k.point), threshold: 2n },
+  council: { points: RING ? [RING.point, COUNCIL[1].point, COUNCIL[2].point] : COUNCIL.map((k) => k.point), threshold: 2n },
   tariff: { governanceRoot: charterRoot, refRateFiatPerKwh: 100n, validatorPk: VALIDATOR.pk, witnesses: TR_WITNESSES },
   ebt: {
     ownerPk: OWNER.pk, meterAuthorityPk: METER_AUTHORITY.pk, escrowAttestorPk: ESCROW.pk,
@@ -163,6 +186,68 @@ const DEVNET_INPUTS = {
 };
 /** The run record IS the stack state: the suite resumes a step from it. */
 const suiteCtx = (/** @type {any} */ dn) => ({ dn, rec: S, save });
+
+// --- recorded-demo helpers ---------------------------------------------------
+const MEMBER2 = { ...jubjub('ld member 2'), payout: new Uint8Array(32).fill(0x32), kyc: new Uint8Array(32).fill(0xd2) };
+const demoState = () => (S.demo ??= {});
+const hx = (/** @type {Uint8Array} */ b) => Buffer.from(b).toString('hex');
+const short = (/** @type {Uint8Array | string} */ b) => { const h = typeof b === 'string' ? b : hx(b); return h.length > 16 ? `${h.slice(0, 8)}...${h.slice(-4)}` : h; };
+const scene = (/** @type {number} */ n, /** @type {string} */ title) => console.log(`\n=== ${n}. ${title} ===`);
+const say = (/** @type {string} */ s) => console.log(`  ${s}`);
+/** Runs `fn`, printing how long it took (proof generation dominates). */
+async function timed(/** @type {string} */ what, /** @type {() => Promise<any>} */ fn) {
+  const t0 = Date.now();
+  say(`${what} ...`);
+  const r = await fn();
+  say(`  done in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+  return r;
+}
+/** The ring's shared result: DEMO_RING_RESULT=<file>, or pasted on stdin. */
+async function readRingResult() {
+  if (process.env.DEMO_RING_RESULT) return JSON.parse(fs.readFileSync(process.env.DEMO_RING_RESULT, 'utf8'));
+  say('Sign it with the ring (admin app > Ring signature test), then paste the shared result here:');
+  const rl = readline.createInterface({ input: process.stdin });
+  let buf = '';
+  for await (const line of rl) {
+    buf += `${line}\n`;
+    try { const j = JSON.parse(buf); rl.close(); return j; } catch { /* keep reading */ }
+  }
+  throw new Error('no ring result received');
+}
+/** Settle fields for a stored demo session { sid16, uwh, uptime, nonce }. */
+const demoFields = (/** @type {any} */ d) => {
+  const uwh = BigInt(d.uwh);
+  return {
+    sessionID: sessionFrom16(hexToBytes(d.sid16)), amount: uwh / 1000n, producerKey: PRODUCER.key, producerAddr: { bytes: PRODUCER.payout },
+    meterKeyHash: PRODUCER.meter, chipHwId: chipHwId(CHIP), chipSessionUwh: uwh, chipUptimeMs: BigInt(d.uptime), chipNonce: BigInt(d.nonce),
+  };
+};
+/** Council slots that have approved `actionHash` (epoch 0). */
+async function approvalSlots(/** @type {any} */ dn, /** @type {Uint8Array} */ actionHash) {
+  const msMod = await loadModule('multisig-v8');
+  const st = await liveState(dn, 'multisig-v8', S.council);
+  const V3 = new RT.CompactTypeVector(3, new RT.CompactTypeBytes(32));
+  const key = RT.persistentHash(V3, [padTag('pp:ms:v8:approvalKey'), actionHash, new Uint8Array(32)]);
+  const a = msMod.ledger(st.data)._approvals;
+  return a.member(key) ? [0n, 1n, 2n].filter((i) => a.lookup(key).member(i)).map(String) : [];
+}
+/** The settleChip event for `sessionID`, read from the indexer and verified as the watcher does. */
+async function settleEventFor(/** @type {any} */ dn, /** @type {Uint8Array} */ sessionID) {
+  for (let tries = 0; tries < 6; tries++) {
+    const evs = await /** @type {any} */ (dn.providersFor('ebt-v8')).publicDataProvider.queryContractEvents({ contractAddress: S.ebt, types: ['Misc'] });
+    const L = await ledgerOf(dn, 'ebt-v8', S.ebt);
+    for (const e of evs) {
+      let r;
+      try { r = restoreIndexerMiscEvent(e); } catch { continue; }
+      if (r.name !== SETTLE_CHIP_EVENT) continue;
+      const ev = decodeSettleChipEvent(r.bytes);
+      if (hx(ev.sessionId) !== hx(sessionID)) continue;
+      return verifySettleChipEvent(ev, L._chips.member(ev.chipPubkey) ? L._chips.lookup(ev.chipPubkey) : null);
+    }
+    await new Promise((res) => setTimeout(res, 5000));
+  }
+  return null;
+}
 
 /**
  * Mirrors the TR schedule + class into an EBT (action-log proofs) and attests
@@ -209,7 +294,7 @@ async function mirrorAndAttest(dn, ebtAddress, flags, rootHex, joinAs) {
 }
 
 /** Approve `actionHash` on the council with slots 0 and 1 (2-of-3). */
-async function approve(dn, actionHash, slots = [0, 1]) {
+async function approve(dn, actionHash, slots = SOFT) {
   const ms = await loadModule('multisig-v8');
   const council = await join(dn, 'multisig-v8', S.council);
   const self = hexToBytes(S.council);
@@ -236,7 +321,7 @@ const STAGES = {
     await deployCouncil(suiteCtx(dn), DEVNET_INPUTS.council);
     // One on-chain approval end to end (in-circuit secp256k1, real proof).
     const probe = label('council probe action');
-    await approve(dn, probe, [0]);
+    await approve(dn, probe, [SOFT[0]]);
     // Read the approval back from the council's ledger (epoch 0: the epoch word is 32 zero bytes).
     const msMod = await loadModule('multisig-v8');
     const st = await liveState(dn, 'multisig-v8', S.council);
@@ -244,9 +329,9 @@ const STAGES = {
     const pad = new Uint8Array(32); pad.set(new TextEncoder().encode('pp:ms:v8:approvalKey'));
     const key = RT.persistentHash(V3, [pad, probe, new Uint8Array(32)]);
     const approvals = msMod.ledger(st.data)._approvals;
-    const recorded = approvals.member(key) && approvals.lookup(key).member(0n);
-    if (!recorded) throw new Error('council probe approval (slot 0) is not recorded in the council ledger');
-    console.log(`[stack] council at ${S.council}; probe approval by slot 0 recorded in the ledger`);
+    const recorded = approvals.member(key) && approvals.lookup(key).member(BigInt(SOFT[0]));
+    if (!recorded) throw new Error(`council probe approval (slot ${SOFT[0]}) is not recorded in the council ledger`);
+    console.log(`[stack] council at ${S.council}${RING ? ` (slot 0: ${RING.holder}'s Tangem ring)` : ''}; probe approval by slot ${SOFT[0]} recorded in the ledger`);
     S.councilProbe = true;
     save();
   },
@@ -711,6 +796,200 @@ const STAGES = {
     const L = await ledgerOf(dn, 'ebt-v8', S.ebt);
     console.log(`[stack] EBT: totalSupply ${L._totalSupply}, dividendAccrued ${L._dividendAccrued}`);
     await watchEvents(dn, 'settle');
+  },
+
+  // ---------------------------------------------------------------------------
+  // Recorded demo (Garrett, 2026-11-24), on a ring-mode stack prepared with
+  //   DEVNET_RING_KEYS=... DEVNET_STATE_FILE=build/devnet/demo-state.json \
+  //     node tooling/devnet/stack.mjs council tariff ebt settle ld settle
+  // then, on camera: demo-ring demo-settle demo-claim demo-attack demo-forged
+  // (docs/demo/wi16-demo.md).
+  // ---------------------------------------------------------------------------
+
+  // 1. A council approval signed by the real Tangem ring (slot 0) + slot 1:
+  //    registering a new Living Dividend member.
+  async 'demo-ring'(dn) {
+    if (!RING) throw new Error('demo-ring needs ring mode (DEVNET_RING_KEYS)');
+    const D = demoState();
+    const ms = await loadModule('multisig-v8');
+    const P = (await loadModule('living-dividend-v3')).pureCircuits;
+    D.regTime ??= String(nowSec());
+    save();
+    const t = BigInt(D.regTime);
+    const h = P.registerActionHash(hexToBytes(S.ld), MEMBER2.pk, { bytes: MEMBER2.payout }, MEMBER2.kyc, t);
+    const digest = ms.pureCircuits.approvalDigest(hexToBytes(S.council), h, 0n);
+    scene(1, 'Council approval, signed by a Tangem ring');
+    say(`Council: Multisig v8 ${short(S.council)}, 2-of-3. Slot 0 is ${RING.holder}'s Tangem ring; on this devnet slots 1-2 stand in for the other two members.`);
+    say(`Action: register Living Dividend member ${short(P.memberId(MEMBER2.pk))} (after KYC).`);
+    const council = await join(dn, 'multisig-v8', S.council);
+    if (!D.ringApproved) {
+      const digestHex = hx(digest);
+      fs.writeFileSync(path.join(ROOT, 'build', 'devnet', 'demo-ring-digest.txt'), `${digestHex}\n`);
+      say(`Hash for the ring: ${digestHex}`);
+      const res = await readRingResult();
+      if (String(res.hash).toLowerCase() !== digestHex) throw new Error('the ring signed a different hash');
+      const pk = parsePublicKey(String(res.walletPublicKey ?? res.publicKey));
+      if (pk.x !== RING.point.x || pk.y !== RING.point.y) throw new Error('the signature is not from the ring in council slot 0');
+      const sig = parseSignature(String(res.signature));
+      if (!nobleVerify(digest, sig.r, sig.s, pk).lowSNotRequired) throw new Error('the ring signature does not verify');
+      say(`Ring signature received (${sig.encoding}); it verifies against the slot-0 key.`);
+      await timed('Submitting the ring approval (secp256k1 checked inside the circuit, real proof)',
+        () => council.callTx.approve(h, 0n, { r: sig.r, s: normalizeS(sig.s) }));
+      D.ringApproved = true;
+      save();
+    }
+    if (!D.secondApproved) {
+      await timed('Second member approves (slot 1)', () => council.callTx.approve(h, 1n, signDigest(digest, COUNCIL[1].sk)));
+      D.secondApproved = true;
+      save();
+    }
+    const slots = await approvalSlots(dn, h);
+    say(`Council ledger: approved by slots ${slots.join(' and ')} (threshold 2 met).`);
+    if (!D.member2) {
+      const ld = await join(dn, 'living-dividend-v3', S.ld, LD_WITNESSES);
+      await timed('Registering the member (Living Dividend asks the council, contract to contract)',
+        () => ld.callTx.register(MEMBER2.pk, { bytes: MEMBER2.payout }, MEMBER2.kyc, t));
+      D.member2 = hx(P.memberId(MEMBER2.pk));
+      save();
+    }
+    say(`Member ${short(D.member2)} is registered.`);
+  },
+
+  // 2. A metered settle: the chip's native attestation, the meter authority's
+  //    countersignature, a split planned from the class (incl. the statutory
+  //    lane); then the public event, re-verified the way the watcher does.
+  async 'demo-settle'(dn) {
+    const D = demoState();
+    const ebtMod = await loadModule('ebt-v8');
+    const ebt = await join(dn, 'ebt-v8', S.ebt);
+    scene(2, 'A metered settle with the chip attestation');
+    D.settle ??= { sid16: hx(new Uint8Array(createHash('sha256').update(`demo settle ${S.ebt} ${Date.now()}`).digest()).slice(0, 16)), uwh: '12345678', uptime: '5400000', nonce: String(Date.now()) };
+    save();
+    const f = demoFields(D.settle);
+    const s = signSettle(ebtMod, { addressBytes: hexToBytes(S.ebt) }, f, { chip: CHIP, hatSk: METER_AUTHORITY.sk });
+    say(`HAT chip ${CHIP.ieee.toString('hex')} (devnet software chip) signed its reading: ${f.chipSessionUwh} uWh over ${Number(f.chipUptimeMs) / 60000} min, nonce ${f.chipNonce}.`);
+    say(`meter-authority-service checked that signature and countersigned. Amount = floor(uWh / 1000) = ${f.amount} EBT.`);
+    const L0 = await ledgerOf(dn, 'ebt-v8', S.ebt);
+    if (L0._settledSessions.member(f.sessionID)) { say('(already settled in an earlier take)'); return; }
+    const args = planSettleArgs({ ebtModule: ebtMod, ledger: L0, fields: f, chip: s, scheduleId: hexToBytes(S.scheduleId), classPath: CLASS, epoch: 1n, fiatValueAtMint: 2n, currentTime: nowSec() });
+    say(`Split from the class on chain: producer ${args[24]}, operations ${args[25]}, Living Dividend ${args[26]}, DAO ${args[27]}, statutory lane ${args[19][0]} (paid on chain to the lane's remit address).`);
+    const r = await timed('Proving and submitting settle', () => submitSettleWithRetry({
+      args, submit: (a) => ebt.callTx.settle(...a),
+      alreadySettled: async () => (await ledgerOf(dn, 'ebt-v8', S.ebt))._settledSessions.member(f.sessionID),
+    }));
+    const L1 = await ledgerOf(dn, 'ebt-v8', S.ebt);
+    say(`Settled (tx ${short(String(r.tx?.public?.txId ?? '-'))}). EBT supply ${L0._totalSupply} -> ${L1._totalSupply}; dividend accrued ${L0._dividendAccrued} -> ${L1._dividendAccrued}.`);
+    const ev = await settleEventFor(dn, f.sessionID);
+    say(ev ? `Public settleChip event re-verified from the indexer: chip registered and active, Ed25519 signature ${ev.ok ? 'VALID' : 'INVALID: ' + ev.problems.join(',')}.` : 'settleChip event not yet indexed');
+  },
+
+  // 3. The new member claims Living Dividend: LD -> EBT dividendAccrued, then
+  //    LD -> EBT mintDividend (a mint inside a contract-to-contract call).
+  async 'demo-claim'(dn) {
+    const D = demoState();
+    if (!D.member2) throw new Error('run demo-ring first');
+    const P = (await loadModule('living-dividend-v3')).pureCircuits;
+    scene(3, 'The member claims Living Dividend');
+    const id = hexToBytes(D.member2);
+    const ld = await join(dn, 'living-dividend-v3', S.ld, LD_WITNESSES);
+    const ldL = await ledgerOf(dn, 'living-dividend-v3', S.ld);
+    const before = await ledgerOf(dn, 'ebt-v8', S.ebt);
+    const nonce = ldL._members.lookup(id).nonce;
+    const t = nowSec();
+    say(`Member ${short(id)} signs a claim with their own key (Jubjub Schnorr, nonce ${nonce}).`);
+    const sig = RT.jubjubSchnorrSign(MSG1, [P.memberMessage(hexToBytes(S.ld), padTag('claim'), id, P.timeDigest(t), nonce)], MEMBER2.sk);
+    const r = await timed('Proving and submitting claim (LD calls EBT twice in one transaction)', () => ld.callTx.claim(id, t, sig));
+    const after = await ledgerOf(dn, 'ebt-v8', S.ebt);
+    say(`Claimed (tx ${short(String(r?.public?.txId ?? '-'))}): ${after._dividendMinted - before._dividendMinted} EBT minted straight to the member's payout address.`);
+    say(`EBT dividend minted ${before._dividendMinted} -> ${after._dividendMinted}.`);
+  },
+
+  // 4. Attacks, refused by the contract (no state change).
+  async 'demo-attack'(dn) {
+    const D = demoState();
+    if (!D.settle) throw new Error('run demo-settle first');
+    const ebtMod = await loadModule('ebt-v8');
+    const ebt = await join(dn, 'ebt-v8', S.ebt);
+    scene(4, 'Attacks, refused');
+    const L0 = await ledgerOf(dn, 'ebt-v8', S.ebt);
+    const plan = (/** @type {any} */ f, /** @type {any} */ s) => planSettleArgs({ ebtModule: ebtMod, ledger: L0, fields: f, chip: s, scheduleId: hexToBytes(S.scheduleId), classPath: CLASS, epoch: 1n, fiatValueAtMint: 2n, currentTime: nowSec() });
+    let accepted = 0;
+    const attempt = async (/** @type {string} */ what, /** @type {any[]} */ args) => {
+      try {
+        await ebt.callTx.settle(...args);
+        accepted++;
+        say(`!! ACCEPTED  ${what}`);
+      } catch (e) {
+        const msg = [/** @type {any} */ (e)?.message, /** @type {any} */ (e)?.cause?.message].filter(Boolean).join(' ');
+        const why = msg.match(/Session already settled|CHIP_[A-Z_]+|SLICE_OFF_POLICY|LANE_SUM_MISMATCH|SPLIT_OFF_CLASS|[A-Z][A-Z_]{6,}/)?.[0] ?? msg.slice(0, 80);
+        say(`REFUSED  ${what}: ${why}`);
+      }
+    };
+    // a) replay the settle just made (same session, same chip nonce), freshly countersigned
+    {
+      const f = demoFields(D.settle);
+      await attempt('Replay the same metered session', plan(f, signSettle(ebtMod, { addressBytes: hexToBytes(S.ebt) }, f, { chip: CHIP, hatSk: METER_AUTHORITY.sk })));
+    }
+    // b) a valid, countersigned reading, but the submitter moves the members' dividend slice to the producer
+    const fresh = demoFields({ sid16: hx(new Uint8Array(createHash('sha256').update(`demo attack ${Date.now()}`).digest()).slice(0, 16)), uwh: '8000000', uptime: '3600000', nonce: String(Date.now() + 1) });
+    const s2 = signSettle(ebtMod, { addressBytes: hexToBytes(S.ebt) }, fresh, { chip: CHIP, hatSk: METER_AUTHORITY.sk });
+    {
+      const a = plan(fresh, s2);
+      a[24] = a[24] + a[26]; a[26] = 0n;
+      await attempt('Valid reading, dividend slice redirected to the producer', a);
+    }
+    // c) same reading, statutory lane dropped and its slice handed to the producer
+    {
+      const a = plan(fresh, s2);
+      a[24] = a[24] + a[19][0];
+      a[17] = [ZERO, ZERO, ZERO, ZERO]; a[18] = [0n, 0n, 0n, 0n]; a[19] = [0n, 0n, 0n, 0n];
+      await attempt('Valid reading, statutory lane skipped', a);
+    }
+    const L1 = await ledgerOf(dn, 'ebt-v8', S.ebt);
+    say(`EBT supply unchanged: ${L0._totalSupply} -> ${L1._totalSupply}.`);
+    if (accepted || L1._totalSupply !== L0._totalSupply) throw new Error('a demo attack was accepted');
+  },
+
+  // 5. A forged settle: garbage chip signature, valid meter-authority
+  //    countersignature (a compromised service). Ledger 9 cannot check Ed25519
+  //    in-circuit, so the chain accepts it; the watcher catches it from the
+  //    public event and alerts the council (Telegram + email when configured).
+  async 'demo-forged'(dn) {
+    const D = demoState();
+    const ebtMod = await loadModule('ebt-v8');
+    const ebt = await join(dn, 'ebt-v8', S.ebt);
+    const self = hexToBytes(S.ebt);
+    scene(5, 'A forged settle, caught by the watcher');
+    if (!D.forged) {
+      const f = demoFields({ sid16: hx(new Uint8Array(createHash('sha256').update(`demo forged ${Date.now()}`).digest()).slice(0, 16)), uwh: '1000000', uptime: '9000000', nonce: String(Date.now() * 3) });
+      const genuine = signSettle(ebtMod, { addressBytes: self }, f, { chip: CHIP, hatSk: METER_AUTHORITY.sk });
+      const chipSigR = new Uint8Array(32).fill(0x0b), chipSigS = new Uint8Array(32).fill(0x0d);
+      const rd = ebtMod.pureCircuits.settleRecordDigest(self, f.sessionID, f.amount, f.producerKey, f.producerAddr, f.meterKeyHash, f.chipHwId, f.chipSessionUwh, f.chipUptimeMs, f.chipNonce);
+      const hatSig = RT.jubjubSchnorrSign(MSG1, [ebtMod.pureCircuits.hatMessage(self, rd, genuine.chipPubkey, chipSigR, chipSigS)], METER_AUTHORITY.sk);
+      say('A compromised meter-authority-service countersigns a reading whose chip signature is garbage.');
+      const args = planSettleArgs({ ebtModule: ebtMod, ledger: await ledgerOf(dn, 'ebt-v8', S.ebt), fields: f, chip: { chipPubkey: genuine.chipPubkey, chipSigR, chipSigS, hatSig }, scheduleId: hexToBytes(S.scheduleId), classPath: CLASS, epoch: 1n, fiatValueAtMint: 2n, currentTime: nowSec() });
+      const r = await timed('Proving and submitting the forged settle', () => ebt.callTx.settle(...args));
+      D.forged = { tx: r?.public?.txId, sessionId: hx(f.sessionID) };
+      save();
+      say(`Accepted on chain (tx ${short(String(D.forged.tx))}): ledger 9 cannot verify Ed25519 inside a circuit. That is the watcher's job.`);
+    }
+    const realChannels = Boolean(process.env.WATCHER_TELEGRAM_TOKEN_FILE);
+    const context = { network: 'devnet (demo)', ebtAddress: S.ebt };
+    let sinks;
+    if (realChannels) {
+      const nodemailer = (await import('nodemailer')).default;
+      sinks = channelsFromEnv(process.env, { createTransport: (o) => nodemailer.createTransport(o), context });
+    } else {
+      sinks = ['garrett', 'jonathan', 'timothy'].map((m) => ({ member: `test:${m}`, send: async () => {} }));
+    }
+    const stateFile = path.join(ROOT, 'build', 'devnet', `demo-watcher-${S.ebt.slice(0, 8)}.json`);
+    const svc = await createSettleWatcherService({ publicDataProvider: dn.providersFor('ebt-v8').publicDataProvider, ebtBuildDir: buildDir('ebt-v8'), ebtAddress: S.ebt, sinks, stateFile });
+    const r = await timed('Watcher pass over every settle event from the indexer', () => svc.pass());
+    say(`Checked ${r.checked} settle event(s): ${r.alerts} alert(s), for session ${short(D.forged.sessionId)}: bad_chip_signature.`);
+    const pending = svc.watcher.state().pendingAlerts;
+    const missing = pending.length ? sinks.filter((s) => !pending[0].deliveredTo.includes(s.member)).map((s) => s.member) : [];
+    say(`Delivered to: ${sinks.map((s) => s.member).filter((m) => !missing.includes(m)).join(', ')}${missing.length ? `; retrying: ${missing.join(', ')}` : ''}.`);
+    say('Council next step: verify, then 2-of-3 revokeChip; from then on settle refuses this chip.');
   },
 };
 
