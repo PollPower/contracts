@@ -81,6 +81,16 @@ grew 2,121 → 2,313 B (in-circuit Schnorr); prover keys ~24 MB each. Full
 deploy 85.3% of the block (still needs the fence), **ceremony deploy 35.6%
 (fits in one tx)**, each vk insert 4.9%. The fence plan holds.
 
+**After C-1 council (full ZK on kenya, 30 min, Tue 24):** every staged deploy fits.
+
+| Contract | Full deploy | Staged (ceremony) deploy | Each vk insert |
+|---|---|---|---|
+| Multisig v8 (5 keys) | **22.8%, fits in one tx** | not needed | 5.7% |
+| EBT v8 (17 keys) | 85.3% (fence needed, unchanged) | **35.6%, fits** | 4.9% |
+| TariffRegistry v1 (17 keys; first full build) | 78.8% (fence needed) | **31.7%, fits** | 4.5% |
+
+The cross-contract call left EBT's sizes unchanged (`execMultisigOp` verifier key 2,121 B).
+
 Before WI-16 fixes: EBT v8 deploy pricing (ledger 9 cost model): full deploy 84% of the
 50,000-byte `bytes_written` block limit (too big for one transaction, which
 gets ~60–65%); ceremony deploy 36% (fits); each vk insert 4.5%. The ceremony
