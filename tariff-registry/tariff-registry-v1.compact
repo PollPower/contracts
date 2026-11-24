@@ -886,6 +886,9 @@ export circuit retireSchedule(
   currentTime: Uint<64>,
 ): [] {
   assertInitialized();
+  // retiredEpoch = 0 means "live" everywhere: refuse a retirement that would
+  // be invisible (Low finding, 2026-11-24).
+  assert(_currentEpoch.read() > 0 as Uint<64>, "RETIRE_AT_EPOCH_ZERO");
   assert(disclose(blockTimeGte(disclose(currentTime))),
          "retireSchedule: timestamp cannot be in the future");
 
@@ -1218,6 +1221,9 @@ export circuit retireLane(
   currentTime:  Uint<64>,
 ): [] {
   assertInitialized();
+  // retiredEpoch = 0 means "live" everywhere: refuse a retirement that would
+  // be invisible (Low finding, 2026-11-24).
+  assert(_currentEpoch.read() > 0 as Uint<64>, "RETIRE_AT_EPOCH_ZERO");
   assert(disclose(blockTimeGte(disclose(currentTime))),
          "retireLane: timestamp cannot be in the future");
 

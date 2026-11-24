@@ -37,7 +37,7 @@ until both are fixed.
 | WI16-E-1 (new, High) settle split not bound to the class | **Fixed**: settle must use the mirrored class shares for dividend / ops / DAO | `b236ea4` | `ld3-ebt-side` E-1 |
 | WI16-E-2 (new, High) registry mirror rollback | **Fixed**: per-item monotonic `actionSeq` on every mirror write | `b236ea4` | `ld3-ebt-side` E-2a/b/c |
 | WI16-E-3 (new, Medium) EventProof `actionSeq` unbound | **Fixed**: `actionSeq` must equal the leaf index encoded by the path bits | `b236ea4` | `ld3-ebt-side` E-3 |
-| TR retire at epoch 0 (new, Low) | **Open**: `retiredEpoch = 0` reads as live | | |
+| TR retire at epoch 0 (new, Low) | **Fixed**: retireSchedule / retireLane refused until the first epoch advance (`RETIRE_AT_EPOCH_ZERO`); encoding unchanged | (this commit) | `tr-retire-epoch0` |
 | WI16-T-2 (new, High) TR `registerSchedule` front-run | **Fixed**: the approved hash now binds operator key id and reference rate; validator key pinned in the ledger | `a95e48b` | `c1c-tariff-signers` V3 |
 | WI16-C-1 Living Dividend | **Open**: fixed by LD v3 | | |
 
