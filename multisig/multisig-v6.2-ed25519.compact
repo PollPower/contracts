@@ -124,28 +124,25 @@ export ledger _nonce: Counter;
 // Pending approvals: actionHash -> set of admin ring pubkeys who approved.
 export ledger _approvals: Map<Bytes<32>, Set<Bytes<32>>>;
 
-// Initialization guard.
-export ledger _initialized: Boolean;
-
 // =============================================================================
-// Initialization
+// Initialization (WI16-H-1)
 // =============================================================================
 //
-// Deploy-time setup. 5 initial admins, threshold 3-of-5 by default.
-// We do NOT verify a signature at initialization; the deployer is implicit
-// (whoever submits the deploy tx). Subsequent admin-set changes go through
-// approve()/execute() and DO require Ed25519 sigs.
-export circuit initialize(
+// Deploy-time setup in the constructor: 5 initial admins, threshold 3-of-5 by
+// default. Before WI-16 this was an exported `initialize` circuit that installed
+// the admin set for whoever called it first after deploy (front-runnable). The
+// deployer is implicit (whoever submits the deploy tx). Subsequent admin-set
+// changes go through approve()/execute().
+constructor(
   admin1: Bytes<32>,
   admin2: Bytes<32>,
   admin3: Bytes<32>,
   admin4: Bytes<32>,
   admin5: Bytes<32>,
   threshold: Uint<8>,
-): [] {
-  assert(!_initialized, "Already initialized");
+) {
   assert(threshold > 0 as Uint<8>, "Threshold must be > 0");
-  // Upper bound: 5 is the true initial admin count (5-arg initialize()).
+  // Upper bound: 5 is the true initial admin count (5-arg constructor).
   assert(threshold <= 5 as Uint<8>, "Threshold must be <= initial admin count");
   // Fix 3 (H-3): majority floor — initial threshold must be a strict majority
   // of the 5 initial admins (threshold*2 > 5  =>  threshold >= 3).
@@ -159,7 +156,6 @@ export circuit initialize(
   _admins.insert(disclose(admin5));
 
   _threshold = disclose(threshold);
-  _initialized = disclose(true);
 }
 
 // =============================================================================
@@ -176,7 +172,6 @@ export circuit approve(
   signerPubkey: Bytes<32>,
   signature: Bytes<64>,
 ): [] {
-  assert(_initialized, "Not initialized");
 
   const sigOk = signature_valid(signerPubkey, actionHash, signature);
   assert(disclose(sigOk), "Bad Ed25519 signature");
@@ -225,7 +220,6 @@ export circuit isApproved(actionHash: Bytes<32>): Boolean {
 // Execute — clears approvals, increments nonce. (Same shape as v6.)
 // =============================================================================
 export circuit execute(actionHash: Bytes<32>): [] {
-  assert(_initialized, "Not initialized");
   assert(isApproved(actionHash), "Not enough approvals");
 
   _approvals.remove(disclose(actionHash));
@@ -255,7 +249,6 @@ export circuit executeAddAdmin(
   newAdmin: Bytes<32>,
   newThreshold: Uint<8>,
 ): [] {
-  assert(_initialized, "Not initialized");
   assert(newThreshold > 0 as Uint<8>, "Threshold must be > 0");
 
   // Recompute the action hash. Preimage now binds newThreshold (variant b),
@@ -291,7 +284,6 @@ export circuit executeRemoveAdmin(
   removedAdmin: Bytes<32>,
   newThreshold: Uint<8>,
 ): [] {
-  assert(_initialized, "Not initialized");
   assert(newThreshold > 0 as Uint<8>, "Threshold must be > 0");
 
   const opSel = persistentHash<Bytes<32>>(pad(32, "v6.2:removeAdmin"));
@@ -325,7 +317,6 @@ export circuit executeRemoveAdmin(
 export circuit executeSetThreshold(
   newThreshold: Uint<8>,
 ): [] {
-  assert(_initialized, "Not initialized");
   assert(newThreshold > 0 as Uint<8>, "Threshold must be > 0");
   assert((newThreshold as Uint<64>) <= _admins.size(), "Threshold > admin count");
   // Fix 4 (H-3): majority floor — can't lower threshold below a strict

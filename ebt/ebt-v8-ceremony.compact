@@ -273,7 +273,6 @@ struct EventProof {
 // =============================================================================
 
 // --- preserved from v7.4.2 -------------------------------------------------
-export ledger _initialized: Boolean;
 export ledger _owner: Either<ZswapCoinPublicKey, ContractAddress>;
 export ledger _meterAuthorityPubkey: Bytes<32>;
 export ledger _multisigAuthority: Bytes<32>;
@@ -339,12 +338,7 @@ export ledger _mirrorClimb: Bytes<32>;
 // Helpers
 // =============================================================================
 
-circuit assertInitialized(): [] {
-  assert(_initialized, "Not initialized");
-}
-
 circuit assertOnlyOwner(): [] {
-  assertInitialized();
   assert(_owner.is_left, "Owner is contract address; not supported");
   const caller = ownPublicKey();
   assert(caller == _owner.left, "Only owner");
@@ -515,7 +509,11 @@ circuit assertSliceOnPolicy(amt: Uint<128>, amount: Uint<128>, bps: Uint<16>): [
 // Initialization (v7.4.2 pattern + vNext trust anchors)
 // =============================================================================
 
-export circuit initialize(
+// WI16-H-1: every authority is set here, in the deploy transaction. There is
+// no exported initialize circuit, so nobody can front-run the ceremony and
+// make themselves owner. (The owner becomes a Schnorr key in WI16-C-2.)
+constructor(
+  owner:                 ZswapCoinPublicKey,
   meterAuthorityPubkey:  Bytes<32>,
   multisigAuthorityHash: Bytes<32>,
   operationsRecipient:   UserAddress,
@@ -523,17 +521,12 @@ export circuit initialize(
   daoRecipient:          UserAddress,
   escrowAttestorPubkey:  Bytes<32>,
   registryActionLogRoot: Bytes<32>,   // bootstrap: registry post-WI-13.2 root
-): [] {
-  assert(!_initialized, "Already initialized");
-  const callerKey = ownPublicKey();
-  const callerAcc = Either<ZswapCoinPublicKey, ContractAddress> {
+) {
+  _owner = disclose(Either<ZswapCoinPublicKey, ContractAddress> {
     is_left: true,
-    left: callerKey,
+    left: owner,
     right: default<ContractAddress>,
-  };
-
-  _initialized = disclose(true);
-  _owner = disclose(callerAcc);
+  });
   _meterAuthorityPubkey = disclose(meterAuthorityPubkey);
   _multisigAuthority = disclose(multisigAuthorityHash);
 
@@ -613,7 +606,6 @@ export circuit mirrorActionLogHead(
   latestEntry: RegistryActionEntry,
   proof:       EventProof,
 ): [] {
-  assertInitialized();
   verifyEventProof(latestEntry, proof);
   // The cited event must be exactly the new head.
   assert(disclose(proof.actionSeq) == disclose(newHeadSeq),
@@ -629,7 +621,6 @@ export circuit mirrorRegisterLane(
   laneRecord: LaneRecord,
   proof:      EventProof,
 ): [] {
-  assertInitialized();
   assert(disclose(entry.kind) == 1 as Uint<8>, "MIRROR_KIND_MISMATCH");
   verifyEventProof(entry, proof);
   const recHash = laneActionPayloadHash(1 as Uint<8>, laneRecord);
@@ -650,7 +641,6 @@ export circuit mirrorScheduleLifecycle(
   scheduleRecord: ScheduleRecord,
   proof:          EventProof,
 ): [] {
-  assertInitialized();
   const k = disclose(entry.kind);
   assert(k == 0 as Uint<8> || k == 3 as Uint<8>, "MIRROR_KIND_MISMATCH");
   verifyEventProof(entry, proof);
@@ -672,7 +662,6 @@ export circuit mirrorClassStatutoryTotal(
   lastUpdatedAt:  Uint<64>,
   proof:          EventProof,
 ): [] {
-  assertInitialized();
   assert(disclose(entry.kind) == 2 as Uint<8>, "MIRROR_KIND_MISMATCH");
   verifyEventProof(entry, proof);
   const recHash = retuneActionPayloadHash(scheduleId, classPath, split,
@@ -723,7 +712,6 @@ export circuit settle(
   currentTime: Uint<64>,
 ): [] {
   // 1. PRE-CONDITIONS
-  assertInitialized();
   assert(amount > 0 as Uint<128>, "Amount must be positive");
   assert(!_settledSessions.member(disclose(sessionID)), "Session already settled");
   assert(disclose(blockTimeGte(disclose(currentTime))),

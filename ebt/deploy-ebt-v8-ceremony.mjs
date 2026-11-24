@@ -1,7 +1,13 @@
-// deploy-ebt-v8-ceremony.mjs — deploy the 8-circuit ceremony-fenced EBT v8 to Preview.
+// deploy-ebt-v8-ceremony.mjs — deploy the ceremony-fenced EBT v8.
+//
+// WI16-H-1: `initialize` is gone; the authorities are constructor arguments of
+// the deploy itself. The constructor arguments (owner, HAT key, recipients,
+// escrow attestor, registry root) change again with WI16-C-2/C-1, so they are
+// wired in the local-devnet rewrite of this script (docs/STATUS.md, Sun 29).
+// Until then deploying fails loudly instead of deploying without authorities.
 //
 // Fork of deploy-ebt-v8.mjs (2026-07-29 evening). Differences:
-//   1. BUILD_DIR points at build/v8-ceremony (8 circuits: initialize,
+//   1. BUILD_DIR points at build/v8-ceremony (7 circuits since WI16-H-1:
 //      attestProducerOwnership, revokeProducerOwnership, mirrorActionLogHead,
 //      mirrorScheduleLifecycle, mirrorClassStatutoryTotal, mirrorRegisterLane,
 //      settle).
@@ -128,7 +134,7 @@ async function deployOrDryRun() {
       compiledContract: compiledContract,
       privateStateId: 'ebt-v8-ceremony-state',
       initialPrivateState: {},
-      args: [],
+      args: ceremonyConstructorArgs(),
     });
     const dur = ((Date.now() - t0) / 1000).toFixed(1);
     const deployTxData = deployedContract.deployTxData;
@@ -146,6 +152,16 @@ async function deployOrDryRun() {
   }
 }
 
+// WI16-H-1: constructor arguments replace the old post-deploy `initialize`.
+// Wired in the local-devnet rewrite once C-2/C-1 fix the owner and signer key
+// types; refusing here is deliberate.
+function ceremonyConstructorArgs() {
+  throw new Error(
+    'EBT constructor arguments (owner, HAT key, recipients, escrow attestor, registry root) ' +
+    'are wired in the WI-16 local-devnet rewrite of this script; see docs/STATUS.md.',
+  );
+}
+
 function ensureArtifactsDir() {
   fs.mkdirSync(ARTIFACTS_DIR, { recursive: true });
 }
@@ -159,7 +175,6 @@ function persistDeployment(record) {
     deployedAt: new Date().toISOString(),
     contractVariant: 'ebt-v8-ceremony',
     circuitsInDeploy: [
-      'initialize',
       'attestProducerOwnership',
       'revokeProducerOwnership',
       'mirrorActionLogHead',

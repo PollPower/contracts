@@ -39,14 +39,38 @@ function run(bin, args) {
   return { status: r.status, out };
 }
 
+// COMPACT_REMOTE=<ssh host>: compile on that host with `compact compile +0.36.1`
+// (used while throne's WSL cannot start). All tracked .compact sources are sent
+// so imports resolve; the output directory is streamed back.
+function remoteCompile(host, src, outDir, zk) {
+  const files = spawnSync('git', ['ls-files', '*.compact'], { cwd: ROOT, encoding: 'utf8' }).stdout.trim().split('\n');
+  const tarIn = spawnSync('tar', ['cf', '-', ...files], { cwd: ROOT, maxBuffer: 1 << 30 });
+  const script = [
+    'set -e', 'export PATH="$HOME/.local/bin:$PATH"',
+    'W=$(mktemp -d ~/wi16-work/build.XXXXXX)', 'cd "$W"', 'tar xf -',
+    `compact compile +${EXPECTED.compiler} ${zk ? '' : '--skip-zk'} '${src}' out >&2`,
+    'tar cf - -C out .', 'cd ~ && rm -rf -- "$W"',
+  ].join('; ');
+  const r = spawnSync('ssh', ['-o', 'ConnectTimeout=15', host, `mkdir -p ~/wi16-work && bash -c '${script.replace(/'/g, "'\\''")}'`],
+    { input: tarIn.stdout, maxBuffer: 1 << 30 });
+  if (r.status !== 0) return { status: r.status, out: String(r.stderr) };
+  fs.mkdirSync(outDir, { recursive: true });
+  // cwd, not `-C <dir>`: Git-for-Windows tar reads "C:" in a path as a remote host.
+  const x = spawnSync('tar', ['xmf', '-'], { cwd: outDir, input: r.stdout, maxBuffer: 1 << 30 });
+  return { status: x.status, out: String(r.stderr) + String(x.stderr) };
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const zk = process.argv.includes('--zk');
   const only = process.argv.slice(2).filter((a) => !a.startsWith('--'));
-  const bin = compactBin();
-  const v = run(bin, ['compile', '--version']);
-  if (!v.out.includes(EXPECTED.compiler)) {
-    console.error(`compiler must be ${EXPECTED.compiler}, got: ${v.out.trim()}`);
-    process.exit(1);
+  const remote = process.env.COMPACT_REMOTE;
+  const bin = remote ? null : compactBin();
+  if (!remote) {
+    const v = run(bin, ['compile', '--version']);
+    if (!v.out.includes(EXPECTED.compiler)) {
+      console.error(`compiler must be ${EXPECTED.compiler}, got: ${v.out.trim()}`);
+      process.exit(1);
+    }
   }
   fs.mkdirSync(BUILD_DIR, { recursive: true });
   let failed = 0;
@@ -54,7 +78,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (only.length && !only.includes(name)) continue;
     const out = path.join(BUILD_DIR, name);
     fs.rmSync(out, { recursive: true, force: true });
-    const r = run(bin, ['compile', ...(zk ? [] : ['--skip-zk']), src, out]);
+    const r = remote
+      ? remoteCompile(remote, src, out, zk)
+      : run(bin, ['compile', ...(zk ? [] : ['--skip-zk']), src, out]);
     const info = path.join(out, 'compiler', 'contract-info.json');
     if (r.status !== 0 || !fs.existsSync(info)) { failed++; console.error(`FAIL ${name}\n${r.out}`); continue; }
     const ci = JSON.parse(fs.readFileSync(info, 'utf8'));

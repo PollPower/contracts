@@ -1,7 +1,31 @@
 # WI-16 ledger 9 status
 
 Branch `wi16-ledger9`. Updated at the end of each task.
-Last update: 2026-11-24, after Phase 3 (tooling + parity tests) and the fix designs.
+Last update: 2026-11-24, start of the fix implementation (design approved, Schnorr for C-2).
+
+## Day-by-day plan vs actual
+
+Scope (Garrett, 2026-11-24): the full fix set (C-1, C-2, H-1) plus LD v3 by
+Nov 30, in this order, each step committed with tests green before the next.
+Negative tests from the PoC and parity tests are not optional. **If a step
+slips by more than half a day, Garrett is told at once; tests are never
+compressed to catch up.**
+
+Honest framing: the design estimate was 12–15 dev-days; the plan below is 7
+calendar days. It only holds if each step lands in about a day.
+
+| Day | Planned | Actual | Status |
+|---|---|---|---|
+| Tue 24 | **H-1** (EBT, Multisig: constructor sets all authorities) · Tangem test tooling + admin-app "sign hash" · local devnet up | **H-1 done**: 9 contract tests (3 negative) green; EBT 18→17, ceremony 8→7, Multisig 12→11 circuits. Tangem tooling + software-key pipeline (5 tests) `3d29984`; admin app ring test `e77521b` (monorepo, branch `wi16-ledger9`); devnet up on kenya (node 2.1.101, indexer 4.4.101, proof 9.0.2; offset ports). **Waiting on:** ring signature (needs `read:packages` token for the APK build) | H-1 ✅ · Tangem ⏳ |
+| Wed 25 | **C-2** (EBT owner Schnorr) + Schnorr signer lib + parity · **Tangem ring verified on devnet** | | |
+| Thu 26 | **C-1 council**: Multisig secp256k1 `approve` + `isApproved`; EBT/TR/LD `requireCouncil` + replay records | | |
+| Fri 27 | **C-1 machine signers**: HAT, escrow attestor, schedule operators → Jubjub Schnorr; meter-authority-service signer | | |
+| Sat 28 | **LD v3** + EBT `dividendAccrued` / `mintDividend` callee | | |
+| Sun 29 | **Full local-devnet run** of the whole stack (fenced deploys, settle, claim) | | |
+| Mon 30 | Recorded demo + submission (shows what passed the devnet run) | | |
+
+Deploy gate: nothing goes to Preprod until every step passes on the local
+devnet **and** Joi confirms kenya is fully synced.
 
 ## Goal: Nov 30 Buildathon, Wave 3
 

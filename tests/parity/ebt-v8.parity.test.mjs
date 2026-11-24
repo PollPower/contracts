@@ -23,9 +23,11 @@ async function setup(captured) {
     multisig_signature_valid: () => { throw new Error('multisig witness must not be reached'); },
   };
   const mod = await loadContract(NAME);
-  const c = await deploy(mod, witnesses);
-  await c.call('initialize', b32(0xa1), b32(0xa2), { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, b32(0xa3), b32(0xa4));
-  return c;
+  // WI16-H-1: authorities are constructor arguments (owner = the harness coin key).
+  return deploy(mod, witnesses, [
+    { bytes: new Uint8Array(32) }, b32(0xa1), b32(0xa2),
+    { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, b32(0xa3), b32(0xa4),
+  ]);
 }
 
 test('EBT-1: attestationKey computed in JS is the key the circuit derives', { skip }, async () => {

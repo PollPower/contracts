@@ -1,9 +1,9 @@
 // verify-ceremony-state.mjs — generic on-chain state verifier for the
 // ceremony contract. Reads the "rolled out so far" list from deployment.json
 // (field: circuitsRolledIn, array of circuit ids that have been vk-inserted
-// since the initial 8-circuit ceremony deploy).
+// since the initial 7-circuit ceremony deploy; 8 before WI16-H-1).
 //
-// Baseline: 8 KEEP circuits from deploy + any circuit id in circuitsRolledIn
+// Baseline: 7 KEEP circuits from deploy + any circuit id in circuitsRolledIn
 // MUST be DEFINED; everything else in circuitsDeferredForVkInsert MUST be
 // UNDEFINED.
 
@@ -18,7 +18,7 @@ const EBT_ROOT = '/home/pollpower/contracts/ebt';
 const DEPLOYMENT_JSON_PATH = path.join(EBT_ROOT, 'deployment.json');
 
 const CEREMONY_KEEP = [
-  'initialize','attestProducerOwnership','revokeProducerOwnership',
+  'attestProducerOwnership','revokeProducerOwnership', // WI16-H-1: initialize removed
   'mirrorActionLogHead','mirrorScheduleLifecycle','mirrorClassStatutoryTotal',
   'mirrorRegisterLane','settle',
 ];

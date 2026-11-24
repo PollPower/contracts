@@ -19,9 +19,10 @@
     "build:contracts": "node tooling/build-contracts.mjs",
     "test:mirror": "node --test --test-reporter=tap ebt/tests/vnext/*.test.mjs tariff-registry/tests/registry.test.mjs tariff-registry/tests/wi13.2/action-log.test.mjs tariff-registry/tests/wi13-3-bootstrap.test.mjs tariff-registry/tests/wi15.1/*.test.mjs tariff-registry/tests/wi15.2/*.test.mjs tariff-registry/tests/wi15.7/*.test.mjs tooling/tests/*.test.mjs",
     "test:parity": "node --test --test-reporter=tap tests/parity/*.test.mjs",
-    "test": "npm run test:mirror && npm run test:parity",
+    "test": "npm run test:mirror && npm run test:parity && npm run test:contract",
     "typecheck": "tsc -p tooling/tsconfig.json && npm run typecheck --workspace tariff-registry",
-    "check:single-copies": "node tooling/check-single-copies.mjs"
+    "check:single-copies": "node tooling/check-single-copies.mjs",
+    "test:contract": "node --test --test-reporter=tap tests/contract/*.test.mjs"
   },
   "devDependencies": {
     "@noble/curves": "2.4.0"
