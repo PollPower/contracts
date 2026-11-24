@@ -140,6 +140,33 @@ locked authorities, changing the chip registry means redeploying EBT and
 migrating balances), not headroom. Recommendation: no split before Preprod;
 revisit if the ceremony set nears ~60% or chip-registry changes are expected.
 
+**Step 4 item 4: code complete, each part run on kenya's devnet (2026-11-24).**
+- pp-settle-service on-chain submit (`wi16-hat-v9`): split planned from EBT's
+  live mirrors (`tooling/settle/settle-plan.mjs`), retry, never resubmits a
+  landed session; Gap B journal (countersigned bundle fsynced before submit,
+  replayed at startup; bundle refusals final, mirror refusals stay pending).
+  Devnet: settle 12345 via the service's real code; crash replay settled a
+  journaled-only bundle; a landed session was not resubmitted.
+- LD v3 relayer (`tooling/ld/`, token-guarded, pre-checks the member's
+  signature before proving) + pollpower-v2-api routes (`wi16-ld-v3-relayer`:
+  enroll / member / action, only the caller's member id). Devnet: claim,
+  touchLiveness, requestPayoutChange (+72 h), cancelPayoutChange relayed; a
+  replayed claim refused before proving.
+- Gap A: pp-settle-service requires the session id and puts amount + chip uWh
+  on `settled` events; v2-api (`wi16-gap-a`) links each outlet session
+  (settle id = sha256 prefix of the session id), starts delivery through
+  pp-settle-service and closes the session from events. Off unless
+  METERED_SETTLE_ENABLED=true.
+- Settle watcher service (`tooling/watcher/settle-watcher-service.mjs`):
+  per-member alert sinks (independent delivery, retried, persisted, never
+  re-alerted). Devnet: a forged-chip-signature settle with a valid
+  countersignature was accepted by the contract and alerted to all 3 council
+  members once; genuine settles silent.
+Open: the alert channel per council member (Garrett's choice); consumer app
+must call `/api/ld/v3/enroll` with the shim's member key after KYC; lanes in
+the settle planner are tested offline only (no statutory lane on the devnet
+class); everything above undeployed.
+
 **Preprod gates (all must hold before any Preprod deploy):**
 - Every step passes on the local devnet, and Joi confirms kenya is fully synced.
 - Council rotation (72 h delay) implemented (design doc, "Council rotation").

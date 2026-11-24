@@ -21,6 +21,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createEbtSettleChain } from '../settle/ebt-settle-chain.mjs';
 import { createLdRelay } from '../ld/ld-relay.mjs';
+import { planSettleArgs } from '../settle/settle-plan.mjs';
+import { createSettleWatcherService } from '../watcher/settle-watcher-service.mjs';
 import * as L9 from '@midnight-ntwrk/midnight-js-protocol/v9';
 import { checkFinalized, buildVerifierKeys, submitMaintenance, vkInsert, vkRemove, replaceAuthority } from '../deploy/finalize.mjs';
 import { devnetCouncilKey, buildCouncilConstructorArgs } from '../council/council-keys-guard.mjs';
@@ -606,6 +608,52 @@ const STAGES = {
     save();
   },
 
+  // Watcher end to end on chain: a settle with a GARBAGE chip signature but a
+  // valid meter-authority countersignature (a compromised service, or a
+  // firmware still signing host hashes) is ACCEPTED by the contract (ledger 9
+  // cannot verify Ed25519); the watcher must alert every council member for
+  // exactly that settle and stay silent on every genuine one.
+  async watcher(dn) {
+    const ebtMod = await loadModule('ebt-v8');
+    const ebt = await join(dn, 'ebt-v8', S.ebt);
+    const self = hexToBytes(S.ebt);
+    if (!S.badSettle) {
+      const amount = 1_000n;
+      const sid16 = new Uint8Array(createHash('sha256').update(`bad chip sig ${S.ebt} ${Date.now()}`).digest()).slice(0, 16);
+      const f = {
+        sessionID: sessionFrom16(sid16), amount, producerKey: PRODUCER.key, producerAddr: { bytes: PRODUCER.payout },
+        meterKeyHash: PRODUCER.meter, chipHwId: chipHwId(CHIP), chipSessionUwh: amount * 1000n + 5n,
+        chipUptimeMs: 9_000_000n, chipNonce: BigInt(Date.now()) * 7n,
+      };
+      const genuine = signSettle(ebtMod, { addressBytes: self }, f, { chip: CHIP, hatSk: METER_AUTHORITY.sk });
+      // Forge: garbage chip signature, then countersign THAT (as a compromised service would).
+      const chipSigR = new Uint8Array(32).fill(0x0b), chipSigS = new Uint8Array(32).fill(0x0d);
+      const rd = ebtMod.pureCircuits.settleRecordDigest(self, f.sessionID, f.amount, f.producerKey, f.producerAddr, f.meterKeyHash, f.chipHwId, f.chipSessionUwh, f.chipUptimeMs, f.chipNonce);
+      const hatSig = RT.jubjubSchnorrSign(MSG1, [ebtMod.pureCircuits.hatMessage(self, rd, genuine.chipPubkey, chipSigR, chipSigS)], METER_AUTHORITY.sk);
+      const args = planSettleArgs({
+        ebtModule: ebtMod, ledger: await ledgerOf(dn, 'ebt-v8', S.ebt), fields: f,
+        chip: { chipPubkey: genuine.chipPubkey, chipSigR, chipSigS, hatSig },
+        scheduleId: hexToBytes(S.scheduleId), classPath: CLASS, epoch: 1n, fiatValueAtMint: 2n, currentTime: nowSec(),
+      });
+      const r = await ebt.callTx.settle(...args);
+      S.badSettle = { tx: r?.public?.txId, sessionId: Buffer.from(f.sessionID).toString('hex') };
+      save();
+      console.log(`[watcher] forged-chip-signature settle ACCEPTED on chain (tx ${S.badSettle.tx}): the watcher's case`);
+    }
+    const got = { garrett: [], jonathan: [], timothy: [] };
+    const sinks = Object.keys(got).map((m) => ({ member: m, send: async (/** @type {any} */ a) => { /** @type {any} */ (got)[m].push(a); } }));
+    const stateFile = path.join(ROOT, 'build', 'devnet', `watcher-${S.ebt.slice(0, 8)}-${Date.now()}.json`);
+    const svc = await createSettleWatcherService({ publicDataProvider: dn.providersFor('ebt-v8').publicDataProvider, ebtBuildDir: buildDir('ebt-v8'), ebtAddress: S.ebt, sinks, stateFile });
+    const r = await svc.pass();
+    console.log(`[watcher] pass: checked ${r.checked}, alerts ${r.alerts}`);
+    for (const [m, a] of Object.entries(got)) console.log(`[watcher]   ${m}: ${a.length} alert(s) ${a.map((x) => `${x.problems.join(',')} session ${String(x.sessionId).slice(0, 12)}`).join('; ')}`);
+    const ok = r.alerts === 1 && Object.values(got).every((a) => a.length === 1 && a[0].sessionId === S.badSettle.sessionId && a[0].problems.includes('bad_chip_signature'));
+    if (!ok) throw new Error('watcher did not alert every council member for exactly the forged settle');
+    const again = await svc.pass();
+    if (again.alerts !== 0) throw new Error('watcher re-alerted an already-processed event');
+    console.log('[watcher] PASS: forged settle alerted to all 3 council members once; genuine settles silent; no re-alert');
+  },
+
   // Re-run the watcher over the events already on chain.
   async watch(dn) { await watchEvents(dn, 'watch'); },
 
@@ -654,7 +702,7 @@ const wanted = process.argv.slice(2);
 if (!wanted.length) { console.error(`usage: stack.mjs <${Object.keys(STAGES).join('|')}|all> ...`); process.exit(2); }
 // 'all': a settle before LD (budget accrued with nobody registered stays in
 // EBT) and one after registration, so the claim has something to mint.
-const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'service', 'relay', 'watch', 'attacks'];
+const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'service', 'relay', 'watcher', 'attacks'];
 const order = wanted.includes('all') ? ALL : wanted;
 const dn = await openDevnet();
 // Bind every deployed contract's build for cross-contract calls (TR/EBT -> Council, LD -> EBT).
