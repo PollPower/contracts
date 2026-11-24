@@ -23,7 +23,7 @@ import { createEbtSettleChain } from '../settle/ebt-settle-chain.mjs';
 import { createLdRelay } from '../ld/ld-relay.mjs';
 import { planSettleArgs } from '../settle/settle-plan.mjs';
 import { createSettleWatcherService } from '../watcher/settle-watcher-service.mjs';
-import { registerLaneActionHash, registerLaneArgs, findLane } from '../tariff/lane.mjs';
+import { registerLaneActionHash, registerLaneArgs, findLane, assertPollPowerRemit } from '../tariff/lane.mjs';
 import { deployCouncil, deployTariffRegistry, deployEbt, deployLd, suiteManifest } from '../deploy/deploy-suite.mjs';
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -106,7 +106,8 @@ const TR_WITNESSES = {
 };
 export const CLASS = new Uint8Array(32).fill(0xc1);
 // The Preprod class carries a statutory lane (Garrett, 2026-11-24): 300 bps here,
-// on-chain remit (minted to the lane's remit address at every settle).
+// minted on chain at every settle to PollPower's statutory account, which
+// remits in KES off-chain with a logged remittance (Garrett, 2026-11-25).
 export const SPLIT = { producerShareBps: 5700n, ldShareBps: 1000n, opsShareBps: 2000n, daoShareBps: 500n, operatorMarginBps: 500n, statutoryTotalBps: 300n };
 /** The devnet's statutory lane (scheduleId filled in at registration). */
 const LANE = {
@@ -376,6 +377,7 @@ const STAGES = {
     // (EBT's constructor mirrors the action-log root that includes it).
     if (!S.laneRegistered) {
       const lane = { ...LANE, scheduleId: hexToBytes(S.scheduleId) };
+      assertPollPowerRemit(lane, [LANE.remitAddress]);   // devnet: the one PollPower statutory account
       const t = nowSec();
       L = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
       await approve(dn, registerLaneActionHash(self, lane, L._currentEpoch, t));

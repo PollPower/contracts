@@ -51,3 +51,17 @@ export function findLane(/** @type {any} */ trLedger, /** @type {Uint8Array} */ 
   }
   throw new Error('lane not registered in the TariffRegistry');
 }
+
+/**
+ * Preprod lane policy (Garrett, 2026-11-25): the lane's slice is minted on
+ * chain (remittanceMode 1) to a statutory account controlled by PollPower,
+ * which remits to the authority in KES off-chain and logs each remittance
+ * (tooling/tariff/lane-remittance.mjs). Call before building the council
+ * approval for registerLane.
+ */
+export function assertPollPowerRemit(/** @type {LaneInput} */ l, /** @type {Uint8Array[]} */ statutoryAccounts) {
+  if (!statutoryAccounts.length) throw new Error('no PollPower statutory accounts configured');
+  if (BigInt(l.remittanceMode) !== 1n) throw new Error('statutory lanes must use remittanceMode 1 (minted on chain to the PollPower statutory account)');
+  const hex = (/** @type {Uint8Array} */ b) => Buffer.from(b).toString('hex');
+  if (!statutoryAccounts.some((a) => hex(a) === hex(l.remitAddress))) throw new Error(`remit address ${hex(l.remitAddress)} is not a PollPower statutory account`);
+}
