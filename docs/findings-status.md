@@ -137,8 +137,9 @@ verification, never in-circuit" encodes the same assumption.
 | M-2 | Medium | Ed25519 messages lack domain separation | Mitigated at the actionHash layer (contract address in preimage). Unchanged. Moot while C-1 is open. |
 | M-4 | Medium | `manualReissue` uncapped / single-key | Cap (1,000,000 per call) and 1-hour cooldown present in v8 (`manualReissue`). Its owner check is WI16-C-2 and its co-signature is a C-1 witness, so the "single-key" half is not actually fixed. |
 | L-3 | Low | Timestamps hardcoded | **Fixed (source)**: `settle` uses stdlib `blockTimeGte` (`ebt-v8.compact:970`). |
-| LD-C-1 | Critical | LD time gates trusted a prover-controlled `witness_blockTimeGte` | Fixed in LD v2.2.2 (settlement-api repo). Same bug class as C-1, already fixed once for time — the new LD must also drop the signature witnesses. |
-| LD-H-3 | High | `bumpOnMint` unauthenticated | Fixed in LD v2.2.2 via keeper signature — **which is a C-1 witness**; re-check in the new LD. |
+| LD-C-1 | Critical | LD time gates trusted a prover-controlled `witness_blockTimeGte` | **Fixed** in LD v2.2.2 (`settlement-api` commit `b50ee4d`, PR #5): stdlib `blockTimeGte`. A real fix of the same bug class as C-1. Carried into LD v3. |
+| LD-H-3 | High | `bumpOnMint` unauthenticated | **Not fixed.** v2.2.2 (`dded75e`, PR #6) adds a keeper signature, but checks it through `witness_multisigSignatureValid`, a C-1 witness, so any caller still passes. LD v3 removes `bumpOnMint` entirely (accrual is read from EBT): see `docs/design/living-dividend-v3-design.md`. |
+| **WI16-T-1** | Medium (test gap) | JS mirror `tests/lib.mjs` encoded integers big-endian; the circuit's `(x as Field) as Bytes<32>` is little-endian, so mirror tests on integer fields only checked themselves | **Fixed** (`b31e164`): mirror now little-endian, proven by parity test EBT-2. Live ceremony tooling was already correct. V2-split tooling (out of scope) is still big-endian. |
 
 ## Ledger 9 compile status (Compact 0.36.1, language 0.28.0, runtime 0.21.0)
 
@@ -146,9 +147,28 @@ verification, never in-circuit" encodes the same assumption.
 |---|---|---|---|---|
 | `ebt/ebt-v8.compact` | ✅ | 18 | pragma only (committed `c4a5240`) | ✅ kenya, 6 m 16 s; deploy needs the ceremony fence (84% of block) |
 | `ebt/ebt-v8-ceremony.compact` | ✅ | 8 | pragma only (committed `c4a5240`) | ✅ kenya, 4 m 01 s; deploy fits (36% of block) |
-| `multisig/multisig-v6.2-ed25519.compact` | ✅ | 12 | pragma only (not yet committed) | not run |
-| `tariff-registry/tariff-registry-v1.compact` | ✅ | 18 | pragma only (not yet committed) | not run |
-| `tariff-registry/tariff-registry-v1-ceremony.compact` | ✅ | 18 (11 stubs) | pragma only (not yet committed) | not run |
+| `multisig/multisig-v6.2-ed25519.compact` | ✅ | 12 | pragma only (committed `b7dfc89`) | not run |
+| `tariff-registry/tariff-registry-v1.compact` | ✅ | 18 | pragma only (committed `b7dfc89`) | not run |
+| `tariff-registry/tariff-registry-v1-ceremony.compact` | ✅ | 18 (11 stubs) | pragma only (committed `b7dfc89`) | not run |
+
+### C-1 / C-2 / H-1 pattern check per contract
+
+| Contract | C-1 (witness-trusted signatures) | C-2 (`ownPublicKey()` gate) | H-1 (first-caller init) |
+|---|---|---|---|
+| EBT v8 | present (`settle`, `redeem`, `manualReissue`, `execMultisigOp`) | **present** (6 circuits) | **present** (`initialize`) |
+| Multisig v6.2 | present (`approve`) | absent | **present** (`initialize` installs the admin set for the first caller) |
+| TariffRegistry v1 | present (`consumeFederationApproval`, `registerSchedule`, `retuneClass`) | absent | absent (constructor-seeded; `bootstrapActionLog` is open but deterministic) |
+| LD v2.2.1 / v2.2.2 | present (all council and member paths, incl. the LD-H-3 keeper gate) | absent | absent (constructor) |
+
+### Parity of compiled 0.36.1 contracts with the TypeScript side (`npm run test:parity`)
+
+| Test | Checks | Result |
+|---|---|---|
+| TR-1 | TariffRegistry empty action-log root + all 24 zero levels vs JS mirror and the compact-runtime builder (mirror daemon / ceremony) | pass |
+| EBT-1 | EBT attestation key computed in JS is accepted by the circuit; a wrong key is rejected | pass |
+| EBT-2 | EBT `settle` HAT payload hash (captured from the circuit) vs `ceremony.mjs` builder and JS mirror `signHat` | pass after fixing WI16-T-1 |
+
+Fix designs: [`docs/design/WI16-auth-fix-design.md`](design/WI16-auth-fix-design.md).
 
 `compact fixup --check` reports whitespace-only changes for all five, and the
 compiler emits no warnings. A clean compile does not show that hashes and
