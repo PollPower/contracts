@@ -1,7 +1,7 @@
 # WI-16 ledger 9 status
 
 Branch `wi16-ledger9`. Updated at the end of each task.
-Last update: 2026-11-24 (late JST), consumer app LD v3 member actions done (signing + service). Next: step 4, devnet scripts + LD v3 relayer + settle submit.
+Last update: 2026-11-24 (night JST), step 4 items 1-3 done (epoch-0 fix, manualReissue council gate, native chip attestation). Next: step 4 item 4, devnet scripts + LD v3 relayer.
 
 ## Current state (2026-11-24, evening JST)
 
@@ -42,11 +42,16 @@ work (step 4), since the deploy scripts touch TariffRegistry anyway.
   says so.
 
 **Step 4 order (ABI first, so the scripts are written once):**
-1. TR retire-at-epoch-0 fix.
-2. `manualReissue` council gate (contract + tests), co-sign endpoint, owner signer.
-3. Native chip attestation: settle carries the chip's own µWh / uptime /
-   nonce / hardware id (in-circuit amount check, audit event), meter-authority-
-   service verifies it, pp-settle-service uses `ATTEST` not `SIGN_HASH`.
+1. ~~TR retire-at-epoch-0 fix~~ done `49403b3` (3 tests).
+2. ~~`manualReissue` council gate~~ done `d1a0e36` (RC1-RC5), owner signer
+   `tooling/owner/` (OWN-1/2), co-sign endpoint meter-authority-service
+   `/reissue/v9` (`8e4caa1`, 4 tests).
+3. ~~Native chip attestation~~ done: contract `d1a0e36` (settle carries the
+   chip's own µWh / uptime / nonce / hardware id; amount == floor(µWh/1000)
+   in-circuit; event re-verifiable), meter-authority-service `c6f2b92`
+   (native attestation only, SIGN_HASH refused; 17 tests), pp-settle-service
+   `7aa0eaf` (`ATTEST`; session id = purchase id, Gap A; 36 tests).
+   Contracts: 136/136 + mirror 133/133.
 4. Devnet scripts (deploy, mirror, settle submit with retry), LD v3 relayer
    (`/api/ld/v3/*`), Gap A session linking; then the devnet run.
 
