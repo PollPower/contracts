@@ -999,6 +999,27 @@ if (!wanted.length) { console.error(`usage: stack.mjs <${Object.keys(STAGES).joi
 // EBT) and one after registration, so the claim has something to mint.
 const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'service', 'relay', 'watcher', 'attacks'];
 const order = wanted.includes('all') ? ALL : wanted;
+// Every full pass starts on a freshly restarted proof server (Garrett,
+// 2026-11-25: its memory grows across proofs; kenya OOM-killed it mid-pass).
+// DEVNET_PROOF_SERVER_RESTART overrides the command; failure stops the pass.
+let proofServerRestartedAt;
+if (RUN_ALL) {
+  const cmd = process.env.DEVNET_PROOF_SERVER_RESTART ?? 'ssh -o ConnectTimeout=15 kenya docker restart wi16-proof-server';
+  console.log(`[stack] restarting the proof server: ${cmd}`);
+  try { execSync(cmd, { stdio: 'inherit', timeout: 120_000 }); } catch (e) {
+    console.error(`[stack] REFUSING 'all': proof server restart failed (${String(/** @type {any} */ (e)?.message ?? e).slice(0, 200)})`);
+    process.exit(3);
+  }
+  const url = `${(process.env.MIDNIGHT_PROOF_SERVER_URL ?? '').replace(/\/$/, '')}/version`;
+  let up = false;
+  for (let i = 0; i < 30 && !up; i++) {
+    try { up = (await fetch(url, { signal: AbortSignal.timeout(5000) })).ok; } catch { /* starting */ }
+    if (!up) await new Promise((r) => setTimeout(r, 4000));
+  }
+  if (!up) { console.error(`[stack] REFUSING 'all': proof server not answering at ${url} after restart`); process.exit(3); }
+  proofServerRestartedAt = new Date().toISOString();
+  console.log('[stack] proof server restarted and answering');
+}
 const dn = await openDevnet();
 const PASS = RUN_ALL ? {
   startedAt: new Date().toISOString(),
@@ -1006,6 +1027,7 @@ const PASS = RUN_ALL ? {
   gitClean: execSync('git status --porcelain -- tooling ebt multisig tariff-registry living-dividend', { cwd: ROOT }).toString().trim() === '',
   manifest: suiteManifest(),
   network: dn.net.networkId,
+  proofServerRestartedAt,
   stages: /** @type {any[]} */ ([]),
 } : null;
 const writePass = (/** @type {string} */ result, /** @type {string | undefined} */ error) => {
