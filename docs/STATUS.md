@@ -76,6 +76,13 @@ recommend the firmware change before Preprod.
    `settleChip` event's chip Ed25519 signature against the chip's on-chain
    registered key, alert all council members on mismatch. Chip revocation stays
    2-of-3 (no single-member suspend); runbook `docs/runbooks/hat-settle-watcher.md`.
+   **Core done** (`tooling/watcher/settle-watcher-lib.mjs`, tests W-1..W-4):
+   W-2 shows the contract accepting a countersigned SIGN_HASH-style signature
+   and the watcher flagging it. Still to do: the indexer subscription + alert
+   sink (all council members), run on the devnet. Note: the runtime's value
+   encoding drops trailing zero bytes of event payloads (288 -> 257 here);
+   every event decoder must zero-pad (the devnet run must confirm the
+   indexer's `raw` form).
 4. Devnet scripts (deploy, mirror, settle submit with retry), LD v3 relayer
    (`/api/ld/v3/*`), Gap A session linking; then the devnet run.
 
