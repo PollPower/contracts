@@ -24,6 +24,32 @@ chip's Ed25519 signature now; chip signs directly after Preprod (tracked:
 epoch 0) is fixed before any Preprod deploy: scheduled with the devnet script
 work (step 4), since the deploy scripts touch TariffRegistry anyway.
 
+**Decisions (Garrett, 2026-11-24, late):**
+- Gap A: outlet stations meter through the Gateway HAT (INA226 → CC1352P7),
+  so outlet sessions settle through pp-settle-service; link each purchase /
+  outlet session to its metered settle (session id in both records).
+  Firmware checked: `ATTEST` (0x60) signs the chip's own INA226-fed
+  `session_uwh`, chip uptime and a TRNG nonce; the host supplies only the
+  16-byte session id.
+- Gap C: council gate on `manualReissue` (2-of-3 via Multisig v8, per-action
+  replay records) + attack tests + owner-signature tooling + co-sign
+  endpoint, before any Preprod deploy.
+- meter-authority-service must require the chip's native attestation and
+  refuse `SIGN_HASH` for settles (before Preprod); next firmware revision
+  disables `SIGN_HASH` for settle use.
+- Admin attest / revoke / reissue buttons: post-redeploy admin-app update.
+- pp-settle-service and the mint-worker change stay undeployed until Garrett
+  says so.
+
+**Step 4 order (ABI first, so the scripts are written once):**
+1. TR retire-at-epoch-0 fix.
+2. `manualReissue` council gate (contract + tests), co-sign endpoint, owner signer.
+3. Native chip attestation: settle carries the chip's own µWh / uptime /
+   nonce / hardware id (in-circuit amount check, audit event), meter-authority-
+   service verifies it, pp-settle-service uses `ATTEST` not `SIGN_HASH`.
+4. Devnet scripts (deploy, mirror, settle submit with retry), LD v3 relayer
+   (`/api/ld/v3/*`), Gap A session linking; then the devnet run.
+
 **Order of work from here:**
 1. ~~meter-authority-service~~ done: `POST /hat/v9` on branch `wi16-hat-v9`
    (`18f4dcb`), not deployed (Joi deploys). Contract side `84a748f`.
