@@ -331,6 +331,56 @@ Tests: `tests/contract/c1c-ebt-machine-signers.test.mjs` (18, 12 negative),
 `tests/contract/c1c-tariff-signers.test.mjs` (11, 7 negative); the PoC (a
 lying `signature_valid` witness) is supplied in every case.
 
+### Settle / reissue Q&A (Garrett, 2026-11-24, before the devnet run)
+
+- **Replay on chain, not only in the service.** A session settles once
+  (`_settledSessions`, "Session already settled"); each chip nonce settles once
+  (`_usedChipNonces` keyed by `chipNonceKey(chipPubkey, nonce)`,
+  `CHIP_NONCE_REPLAYED`). A duplicate countersignature cannot mint twice.
+  Tests `chip-registry` CR-5, CR-6.
+- **µWh ÷ 1000 remainder: dropped, documented.** The chip's session counter
+  is reset for every sale (`ENERGY_RESET`), so each settle mints
+  floor(uWh / 1000) and loses at most 999 µWh (< 0.001 kWh, about KES 0.03 at
+  KES 32/kWh) of the producer's energy per settle; it is not minted to anyone
+  else. Carrying it per chip would need an on-chain per-chip remainder that the
+  service must read before countersigning (a race between service and chain)
+  for a loss this small. Revisit if settles become very frequent and small.
+- **`/reissue/v9` token.** Issuer: the EBT owner (Garrett) generates it and
+  hands it to the admin tooling. The service stores only its SHA-256
+  (`REISSUE_COSIGN_TOKEN_SHA256`) and an expiry (`REISSUE_COSIGN_TOKEN_EXPIRES`);
+  unset or expired = endpoint off. Revocation: replace or remove the hash and
+  restart. It is defence in depth: on chain, a reissue also needs the owner's
+  signature and the council's 2-of-3 approval.
+- **Owner key file (`tooling/owner/`).** Both: AES-256-GCM encrypted under a
+  passphrase (PBKDF2-SHA256, 200k iterations; passphrase from
+  `OWNER_KEY_PASSPHRASE`, never stored) **and** owner-only file permissions
+  (0600/0400 enforced on POSIX; the tools refuse looser files).
+- **Chip allowlist (IEEE + USER_ID).** Now on chain and council-gated: EBT
+  `registerChip` / `revokeChip` need 2-of-3 council approval of
+  `councilChipHash(self, op, chipPubkey, hwId, meter, producer, payout, time)`,
+  and `settle` refuses an unregistered, revoked or mismatched chip
+  (`CHIP_NOT_REGISTERED` / `CHIP_REVOKED` / `CHIP_BINDING_MISMATCH`). The
+  meter-authority-service table (`approved_hats`) is a cache the relay admins
+  keep in step with the chain; the chain is authoritative, so a row added
+  there alone cannot mint. Tests CR-1 to CR-4.
+- **Devnet software chip can't be used elsewhere.** Devnet chips use the
+  reserved IEEE prefix `PPDEV` (not a TI address). meter-authority-service
+  refuses that prefix unless `MIDNIGHT_NETWORK_ID=undeployed` (test V9-P7), and
+  on any other network the chip would also need that network's council to
+  register it on chain. Devnet chip keys are generated per run, never stored.
+- **Does the contract reject non-native attestations while firmware still
+  has `SIGN_HASH`? No, and on ledger 9 it cannot.** The circuit cannot verify
+  Ed25519, so it cannot tell a native attestation from a `SIGN_HASH` signature.
+  What it does enforce: the meter-authority countersignature over the whole
+  record, amount == floor(chipSessionUwh / 1000), a registered chip bound to
+  this meter / producer / payout, and single-use session and chip nonce. A
+  `SIGN_HASH` signature only reaches the chain if meter-authority-service
+  accepts it, which it does not (test V9-P2); and every settle's event lets
+  anyone check that the signature is a native attestation. **Recommendation:**
+  ship the firmware revision that disables `SIGN_HASH` for settles before
+  Preprod rather than after (it is a small change: drop the 0x62 handler or
+  restrict it), so the only remaining trust is the service key.
+
 ### manualReissue: council gate (Gap C, Garrett 2026-11-24)
 
 An exceptional correction (`manualReissue`, capped at 1,000,000 base units per

@@ -137,12 +137,32 @@ export async function settleWorld(opts = {}) {
   const attestationKey = runtimePersistentHash([producerKey, meterKeyHash]);
   await ownerCall('attestProducerOwnership', [attestationKey, producerKey, meterKeyHash, 1n, b32(0x53), T0]);
 
+  // The HAT chip, registered on chain with council approval (WI-16).
+  let regTime = T0;
+  const registerChip = async (chip, binding = {}) => {
+    const b = { meterKeyHash, producerKey, producerAddr: { bytes: b32(0x64) }, ...binding };
+    const t = regTime++;
+    const h = ebtMod.pureCircuits.councilChipHash(ebt.addressBytes, 1n, chip.pk, chipHwId(chip), b.meterKeyHash, b.producerKey, b.producerAddr, t);
+    await approve(h);
+    await ebt.call('registerChip', chip.pk, chipHwId(chip), b.meterKeyHash, b.producerKey, b.producerAddr, t);
+  };
+  const revokeChip = async (chip) => {
+    const z = b32(0);
+    const t = regTime++;
+    await approve(ebtMod.pureCircuits.councilChipHash(ebt.addressBytes, 2n, chip.pk, z, z, z, { bytes: z }, t));
+    await ebt.call('revokeChip', chip.pk, t);
+  };
+  if (opts.registerChip !== false) await registerChip(keys.chip);
+
   let session = 0;
   /**
    * Settles `amount` with the given bps split (default: the class split) and
    * slice amounts computed by floor; the producer slice takes the rounding.
    */
-  const settle = async (amount, bps = {}) => {
+  /** over: { chip, chipNonce, session } override the chip key, its nonce or the session index. */
+  const settle = async (amount, bps = {}, over = {}) => {
+    const chipKey = over.chip ?? keys.chip;
+    const sessionIndex = over.session ?? session;
     const s = opts.split ?? SPLIT;
     const ld = bps.ld ?? s.ldShareBps;
     const ops = bps.ops ?? s.opsShareBps;
@@ -154,12 +174,13 @@ export async function settleWorld(opts = {}) {
     const producerAmt = amount - opsAmt - divAmt - daoAmt;
     // The chip's native attestation: its own metered uWh (amount = floor(uWh / 1000)).
     const fields = {
-      sessionID: sessionFrom16(new Uint8Array(16).fill(0x80 + (session % 120))), amount, producerKey,
-      producerAddr: { bytes: b32(0x64) }, meterKeyHash, chipHwId: chipHwId(keys.chip),
-      chipSessionUwh: amount * 1000n + 123n, chipUptimeMs: 60_000n + BigInt(session) * 1000n, chipNonce: BigInt(session + 1),
+      sessionID: sessionFrom16(new Uint8Array(16).fill(0x80 + (sessionIndex % 120))), amount, producerKey,
+      producerAddr: { bytes: b32(0x64) }, meterKeyHash, chipHwId: chipHwId(chipKey),
+      chipSessionUwh: amount * 1000n + 123n, chipUptimeMs: 60_000n + BigInt(sessionIndex) * 1000n,
+      chipNonce: over.chipNonce ?? BigInt(sessionIndex + 1),
     };
-    session++;
-    const chip = signSettle(ebtMod, ebt, fields, { chip: keys.chip, hatSk: keys.hat.sk });
+    if (over.session === undefined) session++;
+    const chip = signSettle(ebtMod, ebt, fields, { chip: chipKey, hatSk: keys.hat.sk });
     await ebt.call('settle', ...settleHatArgs(fields, chip),
       scheduleId, CLASS, 1n, 2n, [ZERO, ZERO, ZERO, ZERO], [0n, 0n, 0n, 0n], [0n, 0n, 0n, 0n],
       prod, ops, ld, dao, producerAmt, opsAmt, divAmt, daoAmt, T0);
@@ -169,5 +190,6 @@ export async function settleWorld(opts = {}) {
   return {
     world, ms, council, councilKeys, approve, tr, trMod, ebt, ebtMod, keys, ownerCall,
     scheduleId, record, tree, entries, syncTree, retune, mirrorSchedule, mirrorClass, settle,
+    registerChip, revokeChip,
   };
 }

@@ -1,7 +1,7 @@
 # WI-16 ledger 9 status
 
 Branch `wi16-ledger9`. Updated at the end of each task.
-Last update: 2026-11-24 (night JST), step 4 items 1-3 done (epoch-0 fix, manualReissue council gate, native chip attestation). Next: step 4 item 4, devnet scripts + LD v3 relayer.
+Last update: 2026-11-24 (night JST), pre-devnet questions answered (design doc "Settle / reissue Q&A"): on-chain chip registry (council-gated) + chip-nonce replay set; reissue token hashed with expiry; devnet chip guard. Next: step 4 item 4, devnet scripts + LD v3 relayer.
 
 ## Current state (2026-11-24, evening JST)
 
@@ -40,6 +40,14 @@ work (step 4), since the deploy scripts touch TariffRegistry anyway.
 - Admin attest / revoke / reissue buttons: post-redeploy admin-app update.
 - pp-settle-service and the mint-worker change stay undeployed until Garrett
   says so.
+
+**Pre-devnet answers (Garrett's questions, 2026-11-24):** see the design doc,
+"Settle / reissue Q&A". New on chain: council-gated HAT chip registry
+(`registerChip` / `revokeChip`) enforced in `settle`, and a used-chip-nonce set;
+µWh remainder documented (≤ 999 µWh per settle); reissue token stored as
+SHA-256 with an expiry; devnet chips (`PPDEV`) refused off-devnet; the contract
+cannot tell native attestations from SIGN_HASH (ledger 9 has no Ed25519):
+recommend the firmware change before Preprod.
 
 **Step 4 order (ABI first, so the scripts are written once):**
 1. ~~TR retire-at-epoch-0 fix~~ done `49403b3` (3 tests).

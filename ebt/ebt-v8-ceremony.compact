@@ -165,6 +165,17 @@ struct RedemptionEntry {
 // --- net-new for vNext -----------------------------------------------------
 
 // Per-coin fiat metadata (WI-06 A2 → I-14-E). Event-side state (design §2.3).
+// WI-16 (Garrett 2026-11-24): HAT chips allowed to back a settle. Each entry
+// binds the chip's Ed25519 key to its factory hardware id and the one meter /
+// producer / payout address it meters for. Written only with council approval.
+struct ChipRecord {
+  hwId:         Bytes<32>,
+  meterKeyHash: Bytes<32>,
+  producerKey:  Bytes<32>,
+  producerAddr: Bytes<32>,
+  active:       Boolean,
+}
+
 struct TariffPath {
   scheduleId:      Bytes<32>,
   classPath:       Bytes<32>,
@@ -271,6 +282,9 @@ export ledger _totalRedeemed: Uint<128>;
 
 export ledger settlementCount: Counter;
 export ledger _settledSessions: Set<Bytes<32>>;
+// WI-16: on-chain HAT chip registry (council-gated) + used chip nonces.
+export ledger _chips: Map<Bytes<32>, ChipRecord>;      // key: chip Ed25519 public key
+export ledger _usedChipNonces: Set<Bytes<32>>;         // key: chipNonceKey(chipPubkey, nonce)
 
 // v8: the four hard-coded bps splits (_bpsProducer/_bpsOperations/_bpsDividend/
 // _bpsDao) are REMOVED — splits now come from the Registry-mirror at settle
@@ -385,6 +399,13 @@ export pure circuit settleRecordDigest(
 // What meter-authority-service signs (Jubjub Schnorr): the settle record digest
 // plus the chip's key and signature, so the audit record in the settle event
 // cannot be swapped by the submitter.
+// Key of a chip nonce in _usedChipNonces.
+export pure circuit chipNonceKey(chipPubkey: Bytes<32>, nonce: Uint<64>): Bytes<32> {
+  return transientHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:ebt:v9:chipNonce"), chipPubkey, (nonce as Field) as Bytes<32>,
+  ]) as Bytes<32>;
+}
+
 export pure circuit hatMessage(
   self: Bytes<32>, digest: Bytes<32>, chipPubkey: Bytes<32>, chipSigR: Bytes<32>, chipSigS: Bytes<32>,
 ): Field {
@@ -893,6 +914,19 @@ export circuit settle(
   ]);
   assert(producerAttestations.member(disclose(attestationKey)), "PRODUCER_NOT_ATTESTED");
   assert(producerAttestations.lookup(disclose(attestationKey)).active, "OPERATOR_DEFEDERATED");
+
+  // 3b. HAT CHIP (WI-16): a council-registered, active chip bound to this
+  // meter / producer / payout address; each chip nonce settles once.
+  const cp = disclose(chipPubkey);
+  assert(_chips.member(cp), "CHIP_NOT_REGISTERED");
+  const chip = _chips.lookup(cp);
+  assert(chip.active, "CHIP_REVOKED");
+  assert(chip.hwId == disclose(chipHwId) && chip.meterKeyHash == disclose(meterKeyHash)
+         && chip.producerKey == disclose(producerKey) && chip.producerAddr == disclose(producerAddr).bytes,
+         "CHIP_BINDING_MISMATCH");
+  const nonceKey = chipNonceKey(cp, disclose(chipNonce));
+  assert(!_usedChipNonces.member(nonceKey), "CHIP_NONCE_REPLAYED");
+  _usedChipNonces.insert(nonceKey);
 
   // 4. MIRROR FRESHNESS PRECHECK — head tracker for §3.3.
   const headSeq = _registryActionLogHeadSeqMirror;
