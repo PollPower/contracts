@@ -1,0 +1,25 @@
+{
+  "name": "ebt-settle-flow",
+  "private": true,
+  "type": "module",
+  "description": "EBT v8 settle-flow ceremony scripts. Resolves the same hoisted ledger 9 packages as tariff-registry (see the root package.json overrides).",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "dependencies": {
+    "@midnight-ntwrk/compact-js": "3.0.2",
+    "@midnight-ntwrk/compact-runtime": "0.21.0",
+    "@midnight-ntwrk/midnight-js-contracts": "5.0.1",
+    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "5.0.1",
+    "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "5.0.1",
+    "@midnight-ntwrk/midnight-js-level-private-state-provider": "5.0.1",
+    "@midnight-ntwrk/midnight-js-node-zk-config-provider": "5.0.1",
+    "@midnight-ntwrk/midnight-js-types": "5.0.1",
+    "@midnightntwrk/ledger-v9": "1.0.2",
+    "@midnightntwrk/wallet-sdk": "2.0.1",
+    "@noble/ed25519": "^3.1.0",
+    "@noble/hashes": "^2.2.0",
+    "rxjs": "^7.8.0",
+    "ws": "^8.18.0"
+  }
+}

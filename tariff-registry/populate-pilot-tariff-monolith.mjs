@@ -14,7 +14,7 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { createHash, createPrivateKey, sign as nodeSign } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Buffer } from 'node:buffer';
 import {
   persistentHash as runtimePersistentHash,
@@ -28,10 +28,10 @@ ed.hashes.sha512 = sha512;
 import { bech32m } from 'bech32';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
 import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
-import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+// WI-16: network id comes from providers.config (MIDNIGHT_NETWORK_ID); midnight-js-network-id is gone in Midnight.js 5.
 
 // -------------------------- Static config --------------------------
-const REPO_ROOT = '/home/pollpower/contracts/tariff-registry';
+const REPO_ROOT = process.env.TARIFF_ROOT ?? fileURLToPath(new URL('.', import.meta.url)); // WI-16: was kenya's absolute path
 const BUILD_ROOT = path.join(REPO_ROOT, 'build');
 const BUILD_CONTRACT_JS = path.join(BUILD_ROOT, 'contract', 'index.js');
 const ARTIFACTS_DIR = path.join(REPO_ROOT, 'deploy', 'artifacts');
@@ -48,7 +48,7 @@ const LANES = [
 ];
 
 // Recipient addresses (bech32m) from ceremony/recipient-keys.json
-const RECIPIENT_KEYS_PATH = '/home/pollpower/contracts/ebt/ceremony/recipient-keys.json';
+const RECIPIENT_KEYS_PATH = process.env.RECIPIENT_KEYS_PATH ?? path.join(REPO_ROOT, '..', 'ebt', 'ceremony', 'recipient-keys.json'); // WI-16
 
 // Federation constants
 const CHARTER_DEPTH = 12;
@@ -311,7 +311,6 @@ async function loadCompiledMonolith(state) {
 }
 
 async function resolveDeployedMonolith(contractAddress, state) {
-  setNetworkId('preview');
   const runtime = await getRuntime();
   const compiled = await loadCompiledMonolith(state);
   const providersWithZk = runtime.deployUtils.withZkConfigDir(runtime.providers, BUILD_ROOT);

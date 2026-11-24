@@ -29,3 +29,6 @@ deployment.json
 CLAUDE.md
 
 .pr-body-*.md
+
+# WI-16: npm workspaces install at the repo root
+node_modules/

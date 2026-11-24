@@ -37,7 +37,7 @@ import {
   persistentHash,
   CompactTypeBytes,
   CompactTypeVector,
-  convertFieldToBytes,
+  convertBigintToBytes, // renamed from convertFieldToBytes in compact-runtime 0.21 (WI-16)
 } from '@midnight-ntwrk/compact-runtime';
 
 const Bytes32 = new CompactTypeBytes(32);
@@ -63,7 +63,7 @@ function padToBytes32(asciiTag: string): Uint8Array {
 //   (value as Field) as Bytes<32>
 // cast used for both the threshold and the nonce.
 function uintToBytes32(value: bigint, label: string): Uint8Array {
-  return convertFieldToBytes(32, value, label);
+  return convertBigintToBytes(32, value, label);
 }
 
 /**

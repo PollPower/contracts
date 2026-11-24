@@ -104,21 +104,26 @@ export function pad32(str) {
   return buf;
 }
 
-// Uint -> Bytes<32> big-endian (matches "(x as Field) as Bytes<32>" convention).
+// Uint -> Bytes<32> exactly as the circuit's "(x as Field) as Bytes<32>":
+// LITTLE-endian from offset 0 (compact-runtime convertBigintToBytes, called
+// convertFieldToBytes before runtime 0.21). Proven against the compiled
+// Compact 0.36.1 EBT v8 settle payload in tests/parity/ebt-v8.parity.test.mjs.
+// (This mirror used big-endian until WI-16; the live ceremony tooling always
+// used the runtime's little-endian conversion.)
 export function u64ToBytes32(u) {
   const v = BigInt(u);
   if (v < 0n) throw new Error('u64ToBytes32: negative');
   const buf = Buffer.alloc(32);
-  buf.writeBigUInt64BE(v & 0xFFFFFFFFFFFFFFFFn, 24); // low 8 bytes
+  buf.writeBigUInt64LE(v & 0xFFFFFFFFFFFFFFFFn, 0);
   return buf;
 }
 export const u16ToBytes32 = u64ToBytes32;
 export const u128ToBytes32 = (u) => {
   const v = BigInt(u);
   const buf = Buffer.alloc(32);
-  // high 8 bytes -> offset 8, low 8 bytes -> offset 16 (big-endian 128-bit)
-  buf.writeBigUInt64BE((v >> 64n) & 0xFFFFFFFFFFFFFFFFn, 8);
-  buf.writeBigUInt64BE(v & 0xFFFFFFFFFFFFFFFFn, 16);
+  // little-endian 128-bit: low 8 bytes at offset 0, high 8 bytes at offset 8
+  buf.writeBigUInt64LE(v & 0xFFFFFFFFFFFFFFFFn, 0);
+  buf.writeBigUInt64LE((v >> 64n) & 0xFFFFFFFFFFFFFFFFn, 8);
   return buf;
 };
 

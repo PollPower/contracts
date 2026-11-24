@@ -29,7 +29,9 @@ import * as Rx from 'rxjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const TARIFF_ROOT = '/home/pollpower/contracts/tariff-registry';
+// WI-16: was hardcoded to kenya's checkout; now this script's own package
+// directory, overridable with TARIFF_ROOT.
+const TARIFF_ROOT = process.env.TARIFF_ROOT ?? path.resolve(__dirname, '..');
 const BUILD_DIR = path.join(TARIFF_ROOT, 'build-ceremony');
 const CONTRACT_INDEX = path.join(BUILD_DIR, 'contract', 'index.js');
 const DEPLOYMENT_JSON = path.join(TARIFF_ROOT, 'deployment.json');
@@ -98,8 +100,7 @@ async function main() {
     return;
   }
 
-  const { setNetworkId } = await import('@midnight-ntwrk/midnight-js-network-id');
-  setNetworkId('preview');
+  // WI-16: network id comes from providers.config (MIDNIGHT_NETWORK_ID); midnight-js-network-id is gone in Midnight.js 5.
 
   const { deployContract } = await import('@midnight-ntwrk/midnight-js-contracts');
   const { CompiledContract } = await import('@midnight-ntwrk/compact-js');

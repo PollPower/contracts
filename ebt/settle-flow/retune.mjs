@@ -3,9 +3,12 @@
 // Coherent split: statutoryTotalBps=1785 (matches the enumerated statutory lane),
 // producer 4643 / ops 2000 / ld 1572 / dao 0 / operatorMargin 0 = 10000.
 //
-// Run as plain .mjs under node from ~/contracts/ebt (symlinked node_modules realm),
-// from a CLEAN cwd. OWNER_SEED env = deploy seed (submitter/DUST). Operator sig
-// uses the audit-writer PEM (schedule.operatorPubkey = 3e64530c...).
+// Run as plain .mjs under node from this workspace (repo-root node_modules,
+// ledger 9 package set). OWNER_SEED env = deploy seed (submitter/DUST).
+// Operator sig uses the PEM at OPERATOR_PEM (schedule.operatorPubkey).
+// WI-16: network, REGISTRY_ADDRESS, REGISTRY_BUILD_DIR and the private-state
+// password come from the environment via ./env.mjs. The retuneClass call
+// targets the CURRENT registry interface and changes with the WI16-C-1 fix.
 import { WebSocket } from 'ws'; globalThis.WebSocket = WebSocket;
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -14,36 +17,19 @@ import { Buffer } from 'node:buffer';
 import { createPrivateKey, sign as nodeSign } from 'node:crypto';
 import * as Rx from 'rxjs';
 
-import { setNetworkId, getNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
-import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
-import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
-import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
-import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
 import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
-import * as ledgerV8 from '@midnight-ntwrk/ledger-v8';
 import {
   CompactTypeBytes, CompactTypeVector, persistentHash,
 } from '@midnight-ntwrk/compact-runtime';
-import { WalletFacade } from '@midnight-ntwrk/wallet-sdk-facade';
-import { DustWallet } from '@midnight-ntwrk/wallet-sdk-dust-wallet';
-import { HDWallet, Roles } from '@midnight-ntwrk/wallet-sdk-hd';
-import { ShieldedWallet } from '@midnight-ntwrk/wallet-sdk-shielded';
-import { createKeystore, InMemoryTransactionHistoryStorage, PublicKey, UnshieldedWallet } from '@midnight-ntwrk/wallet-sdk-unshielded-wallet';
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 (ed).hashes.sha512 = sha512;
+import { REG_BUILD, contractAddress, ownerProviders } from './env.mjs';
 
-const REG = '556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9';
-// Full monolith build STAGED under a run dir whose node_modules symlinks to the
-// settlement-api realm (WASM ChargedState class unification). contract/index.js
-// here defines all 18 circuits incl retuneClass; deployed verifier matches.
-const REG_BUILD = '/home/pollpower/contracts/ebt/retune-full-run';
-const OPERATOR_PEM = '/home/pollpower/contracts/tariff-registry/deploy/artifacts/audit-writer-2026-07-31T03-55-44-865Z.pem';
-const INDEXER = 'https://indexer.preview.midnight.network/api/v3/graphql';
-const INDEXER_WS = 'wss://indexer.preview.midnight.network/api/v3/graphql/ws';
-const NODE_WS = 'wss://rpc.preview.midnight.network';
-const PROOF = 'http://127.0.0.1:6300';
+const REG = contractAddress('REGISTRY_ADDRESS');
+const OPERATOR_PEM = (process.env.OPERATOR_PEM ?? '').trim();
+if (!OPERATOR_PEM) throw new Error('OPERATOR_PEM must point at the schedule operator signing key (PEM)');
 
 const SCHEDULE_ID = '0a0ca2e41632da85802a34207c58883f54cc2a1375ca77887c7b8dc682df101a';
 // classPath — free choice, must match mirror+settle. Use a documented tag.
@@ -79,53 +65,13 @@ function fieldBytes32(v) {
 }
 
 async function main() {
-  setNetworkId('preview');
-  const seedHex = (process.env.OWNER_SEED || '').trim();
-  if (!/^[0-9a-fA-F]{64}$/.test(seedHex)) throw new Error('OWNER_SEED must be 64-hex');
-
   // Operator signing key (ed25519 PEM). We sign the messageHash the runtime hands
   // to the signature_valid witness — that IS retuneAuthHash. So the witness both
   // signs AND returns true, and the on-chain assert(signature_valid(...)) holds.
   const operatorKey = createPrivateKey(fs.readFileSync(OPERATOR_PEM, 'utf8'));
 
-  const hd = HDWallet.fromSeed(Buffer.from(seedHex, 'hex'));
-  const derived = hd.hdWallet.selectAccount(0).selectRoles([Roles.Zswap, Roles.NightExternal, Roles.Dust]).deriveKeysAt(0);
-  const networkId = getNetworkId();
-  const shieldedSecretKeys = ledgerV8.ZswapSecretKeys.fromSeed(derived.keys[Roles.Zswap]);
-  const dustSecretKey = ledgerV8.DustSecretKey.fromSeed(derived.keys[Roles.Dust]);
-  const unshieldedKeystore = createKeystore(derived.keys[Roles.NightExternal], networkId);
-  const configuration = {
-    networkId,
-    indexerClientConnection: { indexerHttpUrl: INDEXER, indexerWsUrl: INDEXER_WS },
-    txHistoryStorage: new InMemoryTransactionHistoryStorage(),
-    costParameters: { additionalFeeOverhead: 300000000000000n, feeBlocksMargin: 5 },
-    relayURL: new URL(NODE_WS),
-    provingServerUrl: new URL(PROOF),
-  };
-  const wallet = await WalletFacade.init({
-    configuration,
-    shielded: (c) => ShieldedWallet(c).startWithSecretKeys(shieldedSecretKeys),
-    unshielded: (c) => UnshieldedWallet(c).startWithPublicKey(PublicKey.fromKeyStore(unshieldedKeystore)),
-    dust: (c) => DustWallet(c).startWithSecretKey(dustSecretKey, ledgerV8.LedgerParameters.initialParameters().dust),
-  });
-  await wallet.start(shieldedSecretKeys, dustSecretKey);
-  console.log('waiting for owner wallet sync...');
-  const state = await Rx.firstValueFrom(wallet.state().pipe(Rx.filter((s) => s.isSynced), Rx.timeout(240000)));
-  console.log('owner wallet synced. dust:', String(state.dust?.balance ? state.dust.balance(new Date()) : 'n/a'));
-
-  const walletProvider = {
-    getCoinPublicKey: () => state.shielded.coinPublicKey.toHexString(),
-    getEncryptionPublicKey: () => state.shielded.encryptionPublicKey.toHexString(),
-    async balanceTx(tx, ttl) {
-      const recipe = await wallet.balanceUnboundTransaction(tx,
-        { shieldedSecretKeys, dustSecretKey }, { ttl: ttl ?? new Date(Date.now() + 30*60*1000) });
-      const signed = await wallet.signRecipe(recipe, (payload) => unshieldedKeystore.signData(payload));
-      return wallet.finalizeRecipe(signed);
-    },
-    submitTx: (tx) => wallet.submitTransaction(tx),
-  };
-  const pdp = indexerPublicDataProvider(INDEXER, INDEXER_WS);
-  const zkConfigProvider = new NodeZkConfigProvider(REG_BUILD);
+  // WI-16: wallet SDK 2 + Midnight.js 5 providers from the shared tooling.
+  const { providers } = await ownerProviders(REG_BUILD, 'reg-retune-ceremony');
 
   // Witnesses for the registry contract.
   const witnesses = {
@@ -148,19 +94,6 @@ async function main() {
       for (let i = 0; i < 24; i++) { bits.push((x & 1n) === 1n); x >>= 1n; }
       return [ctx.privateState ?? ctx, bits];
     },
-  };
-  const providers = {
-    privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'reg-retune-ceremony',
-      privateStoragePasswordProvider: () => 'RegRetuneCeremony2026-pw',
-      accountId: state.shielded.coinPublicKey.toHexString(),
-      walletProvider,
-    }),
-    publicDataProvider: pdp,
-    zkConfigProvider,
-    proofProvider: httpClientProofProvider(PROOF, zkConfigProvider),
-    walletProvider,
-    midnightProvider: walletProvider,
   };
   const regModule = await import(pathToFileURL(path.join(REG_BUILD, 'contract', 'index.js')).href);
   const compiled = CompiledContract.make('tariff-registry', regModule.Contract).pipe(

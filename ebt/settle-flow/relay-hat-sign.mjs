@@ -10,7 +10,7 @@ import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 ed.hashes.sha512 = sha512;
 
-const KEY_PATH = '/home/pollpower/meter-authority-service/data/authority-key.enc';
+const KEY_PATH = process.env.AUTHORITY_KEY_PATH ?? '/home/pollpower/meter-authority-service/data/authority-key.enc'; // relay default; WI-16 env override
 const EXPECT_PK = 'bf043807ba0112048d1ba073a47128bb094b3710036fe3da898fcd957fa6f09a';
 const SALT=16, IV=16, TAG=16, ITERS=200000, KEYLEN=32, DIGEST='sha256';
 

@@ -1,32 +1,25 @@
-// Read-only Preview state dump: registry head + EBT mirror + attestation.
-// Run: node state-dump.mjs  (from ~/contracts/ebt, symlinked node_modules realm)
+// Read-only state dump: registry head + EBT mirror + attestation.
+// Run: node state-dump.mjs  (network, addresses and build dirs from ./env.mjs)
 import { WebSocket } from 'ws'; globalThis.WebSocket = WebSocket;
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Buffer } from 'node:buffer';
-import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
-import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
+import { EBT_BUILD, REG_BUILD, contractAddress, publicDataProvider, readContractData } from './env.mjs';
 
-const EBT = 'c9ee61713d07c6d6e6f3c0bbe119d281307c643caaaf8d785813a9fb52f036e3';
-const REG = '556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9';
-const EBT_BUILD = '/home/pollpower/contracts/ebt/build/v8';
-const REG_BUILD = '/home/pollpower/contracts/ebt/registry-build/ceremony';
-const INDEXER = 'https://indexer.preview.midnight.network/api/v3/graphql';
-const INDEXER_WS = 'wss://indexer.preview.midnight.network/api/v3/graphql/ws';
+const EBT = contractAddress('EBT_ADDRESS');
+const REG = contractAddress('REGISTRY_ADDRESS');
 const toHex = (u) => Buffer.from(u).toString('hex');
 
-setNetworkId('preview');
 async function ledgerOf(buildPath) {
   const mod = await import(pathToFileURL(path.join(buildPath, 'contract', 'index.js')).href);
   return mod.ledger;
 }
-const pdp = indexerPublicDataProvider(INDEXER, INDEXER_WS);
+const pdp = publicDataProvider();
 
 // ---- registry ----
 const regLedger = await ledgerOf(REG_BUILD);
-const regSt = await pdp.queryContractState(REG);
-const r = regLedger(regSt.data);
-console.log('=== REGISTRY 556fe46f ===');
+const r = regLedger(await readContractData(pdp, REG));
+console.log(`=== REGISTRY ${REG.slice(0, 8)} ===`);
 console.log('_actionSeq       =', String(r._actionSeq));
 console.log('_actionLogBaseSeq=', String(r._actionLogBaseSeq));
 console.log('registryActionLogRoot =', toHex(new Uint8Array(r.registryActionLogRoot)));
@@ -55,9 +48,8 @@ try {
 
 // ---- EBT ----
 const ebtLedger = await ledgerOf(EBT_BUILD);
-const ebtSt = await pdp.queryContractState(EBT);
-const b = ebtLedger(ebtSt.data);
-console.log('\n=== EBT c9ee6171 ===');
+const b = ebtLedger(await readContractData(pdp, EBT));
+console.log(`\n=== EBT ${EBT.slice(0, 8)} ===`);
 console.log('_registryActionLogHeadSeqMirror =', String(b._registryActionLogHeadSeqMirror));
 console.log('_registryActionLogRootMirror    =', toHex(new Uint8Array(b._registryActionLogRootMirror)));
 console.log('_scheduleLiveMirror size =', b._scheduleLiveMirror && b._scheduleLiveMirror.size ? String(b._scheduleLiveMirror.size()) : '?');

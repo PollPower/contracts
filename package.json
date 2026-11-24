@@ -1,0 +1,26 @@
+{
+  "name": "pollpower-contracts",
+  "private": true,
+  "type": "module",
+  "description": "PollPower Midnight contracts: tooling workspaces on the ledger 9 package set (Midnight.js 5.0.1, wallet SDK 2.0.1, Compact runtime 0.21.0).",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "workspaces": [
+    "tariff-registry",
+    "ebt/settle-flow"
+  ],
+  "overrides": {
+    "@midnightntwrk/ledger-v9": "1.0.2",
+    "@midnightntwrk/onchain-runtime-v4": "4.0.2",
+    "@midnight-ntwrk/platform-js": "3.0.0"
+  },
+  "scripts": {
+    "build:contracts": "node tooling/build-contracts.mjs",
+    "test:mirror": "node --test --test-reporter=tap ebt/tests/vnext/*.test.mjs tariff-registry/tests/registry.test.mjs tariff-registry/tests/wi13.2/action-log.test.mjs tariff-registry/tests/wi13-3-bootstrap.test.mjs tariff-registry/tests/wi15.1/*.test.mjs tariff-registry/tests/wi15.2/*.test.mjs tariff-registry/tests/wi15.7/*.test.mjs tooling/tests/*.test.mjs",
+    "test:parity": "node --test --test-reporter=tap tests/parity/*.test.mjs",
+    "test": "npm run test:mirror && npm run test:parity",
+    "typecheck": "tsc -p tooling/tsconfig.json && npm run typecheck --workspace tariff-registry",
+    "check:single-copies": "node tooling/check-single-copies.mjs"
+  }
+}

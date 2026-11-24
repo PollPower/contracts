@@ -18,7 +18,7 @@ const CIRCUIT_ID = process.env.INSERT_CIRCUIT_ID || 'setFederationAuthority';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const TARIFF_ROOT = '/home/pollpower/contracts/tariff-registry';
+const TARIFF_ROOT = process.env.TARIFF_ROOT ?? path.resolve(__dirname, '..'); // WI-16: was kenya's absolute path
 const FULL_BUILD_DIR = path.join(TARIFF_ROOT, 'build');           // all 18 circuits
 const CEREMONY_BUILD_DIR = path.join(TARIFF_ROOT, 'build-ceremony'); // 7 KEEP
 const DEPLOYMENT_JSON_PATH = path.join(TARIFF_ROOT, 'deployment.json');
@@ -106,8 +106,7 @@ async function insertOrDryRun() {
   }
 
   const { submitInsertVerifierKeyTx } = await import('@midnight-ntwrk/midnight-js-contracts');
-  const { setNetworkId } = await import('@midnight-ntwrk/midnight-js-network-id');
-  setNetworkId('preview');
+  // WI-16: network id comes from providers.config (MIDNIGHT_NETWORK_ID); midnight-js-network-id is gone in Midnight.js 5.
 
   log('loading providers...');
   const { providers, walletCtx, contractAddress } = await getLiveProviders();

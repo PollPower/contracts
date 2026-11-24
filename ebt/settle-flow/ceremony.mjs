@@ -1,11 +1,16 @@
-// EBT v8 settle-flow ceremony orchestrator (Preview). Run as plain .mjs under
-// node from ~/contracts/ebt (node_modules symlink -> settlement-api realm).
+// EBT v8 settle-flow ceremony orchestrator. Run as plain .mjs under node from
+// this workspace (repo-root node_modules, ledger 9 package set).
 // Steps (subcommand argv[2]): head | attest | settle | revoke | inspect
 //
-// Owner wallet = deploy seed (also EBT/registry owner + DUST). Provide via
-// OWNER_SEED env. Meter-authority HAT signature for settle is produced by a
-// relay-side signer (key stays on relay); this script fetches it over SSH-less
-// HTTP only if SETTLE is run (see settle section).
+// WI-16: network, contract addresses, build dirs and the private-state
+// password come from the environment via ./env.mjs (no Preview hardcodes).
+// Owner wallet = deploy seed (also EBT/registry owner + DUST), via OWNER_SEED.
+// Meter-authority HAT signature for settle is produced by a relay-side signer
+// (key stays on relay) and supplied via HAT_SIG (see settle section).
+//
+// NOTE: the circuit calls below target the CURRENT v8 interface. The
+// WI16-C-1/C-2/H-1 fixes (docs/findings-status.md) change settle, the owner
+// gate and initialize, so this script is updated again with those fixes.
 import { WebSocket } from 'ws'; globalThis.WebSocket = WebSocket;
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -14,36 +19,22 @@ import { Buffer } from 'node:buffer';
 import * as crypto from 'node:crypto';
 import * as Rx from 'rxjs';
 
-import { setNetworkId, getNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
-import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
-import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
-import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
-import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
 import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
-import * as ledgerV8 from '@midnight-ntwrk/ledger-v8';
 import {
-  CompactTypeBytes, CompactTypeVector, convertFieldToBytes, persistentHash,
+  CompactTypeBytes, CompactTypeVector, convertBigintToBytes, persistentHash,
 } from '@midnight-ntwrk/compact-runtime';
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 (ed).hashes.sha512 = sha512;
 function edVerifySync(sig, msg, pk) { return ed.verify(sig, msg, pk); }
-import { WalletFacade } from '@midnight-ntwrk/wallet-sdk-facade';
-import { DustWallet } from '@midnight-ntwrk/wallet-sdk-dust-wallet';
-import { HDWallet, Roles } from '@midnight-ntwrk/wallet-sdk-hd';
-import { ShieldedWallet } from '@midnight-ntwrk/wallet-sdk-shielded';
-import { createKeystore, InMemoryTransactionHistoryStorage, PublicKey, UnshieldedWallet } from '@midnight-ntwrk/wallet-sdk-unshielded-wallet';
+import {
+  EBT_BUILD, REG_BUILD, contractAddress, ownerProviders, publicDataProvider, readContractData,
+} from './env.mjs';
 
 // ------------------------------------------------------------------ constants
-const EBT = 'c9ee61713d07c6d6e6f3c0bbe119d281307c643caaaf8d785813a9fb52f036e3';
-const REG = '556fe46f8dfd5234e97974bfd8b455ef4ea8c785641d80a4d7c12530a3776dd9';
-const EBT_BUILD = '/home/pollpower/contracts/ebt/build/v8';
-const REG_BUILD = '/home/pollpower/contracts/ebt/registry-build/ceremony';
-const INDEXER = 'https://indexer.preview.midnight.network/api/v3/graphql';
-const INDEXER_WS = 'wss://indexer.preview.midnight.network/api/v3/graphql/ws';
-const NODE_WS = 'wss://rpc.preview.midnight.network';
-const PROOF = 'http://127.0.0.1:6300';
+const EBT = contractAddress('EBT_ADDRESS');
+const REG = contractAddress('REGISTRY_ADDRESS');
 
 const ACTION_LOG_DEPTH = 24;
 const MIRROR_NODE_TAG = 'pp:tariff:v1:actionLogNode';
@@ -127,9 +118,7 @@ function toActionEntry(raw) {
 // {entries, tree, headSeq, root}.
 async function buildRegistryTree(pdp) {
   const regLedgerFn = await loadLedger(REG_BUILD);
-  const st = await pdp.queryContractState(REG);
-  if (!st) throw new Error('no registry state');
-  const r = regLedgerFn(st.data);
+  const r = regLedgerFn(await readContractData(pdp, REG));
   const actionSeq = BigInt(r._actionSeq);
   const baseSeq = BigInt(r._actionLogBaseSeq);
   const onChainRoot = new Uint8Array(r.registryActionLogRoot);
@@ -150,61 +139,10 @@ async function buildRegistryTree(pdp) {
 
 // ------------------------------------------------------------------ wallet
 async function makeOwnerContract() {
-  setNetworkId('preview');
-  const seedHex = (process.env.OWNER_SEED || '').trim();
-  if (!/^[0-9a-fA-F]{64}$/.test(seedHex)) throw new Error('OWNER_SEED must be 64-hex');
-  const hd = HDWallet.fromSeed(Buffer.from(seedHex, 'hex'));
-  const derived = hd.hdWallet.selectAccount(0).selectRoles([Roles.Zswap, Roles.NightExternal, Roles.Dust]).deriveKeysAt(0);
-  const networkId = getNetworkId();
-  const shieldedSecretKeys = ledgerV8.ZswapSecretKeys.fromSeed(derived.keys[Roles.Zswap]);
-  const dustSecretKey = ledgerV8.DustSecretKey.fromSeed(derived.keys[Roles.Dust]);
-  const unshieldedKeystore = createKeystore(derived.keys[Roles.NightExternal], networkId);
-  const configuration = {
-    networkId,
-    indexerClientConnection: { indexerHttpUrl: INDEXER, indexerWsUrl: INDEXER_WS },
-    txHistoryStorage: new InMemoryTransactionHistoryStorage(),
-    costParameters: { additionalFeeOverhead: 300000000000000n, feeBlocksMargin: 5 },
-    relayURL: new URL(NODE_WS),
-    provingServerUrl: new URL(PROOF),
-  };
-  const wallet = await WalletFacade.init({
-    configuration,
-    shielded: (c) => ShieldedWallet(c).startWithSecretKeys(shieldedSecretKeys),
-    unshielded: (c) => UnshieldedWallet(c).startWithPublicKey(PublicKey.fromKeyStore(unshieldedKeystore)),
-    dust: (c) => DustWallet(c).startWithSecretKey(dustSecretKey, ledgerV8.LedgerParameters.initialParameters().dust),
-  });
-  await wallet.start(shieldedSecretKeys, dustSecretKey);
-  console.log('waiting for owner wallet sync...');
-  const state = await Rx.firstValueFrom(wallet.state().pipe(Rx.filter((s) => s.isSynced), Rx.timeout(240000)));
-  const dustBal = state.dust?.balance ? state.dust.balance(new Date()) : 'n/a';
-  console.log('owner wallet synced. dust balance:', String(dustBal));
-
-  const walletProvider = {
-    getCoinPublicKey: () => state.shielded.coinPublicKey.toHexString(),
-    getEncryptionPublicKey: () => state.shielded.encryptionPublicKey.toHexString(),
-    async balanceTx(tx, ttl) {
-      const recipe = await wallet.balanceUnboundTransaction(tx,
-        { shieldedSecretKeys, dustSecretKey }, { ttl: ttl ?? new Date(Date.now() + 30*60*1000) });
-      const signed = await wallet.signRecipe(recipe, (payload) => unshieldedKeystore.signData(payload));
-      return wallet.finalizeRecipe(signed);
-    },
-    submitTx: (tx) => wallet.submitTransaction(tx),
-  };
-  const pdp = indexerPublicDataProvider(INDEXER, INDEXER_WS);
-  const zkConfigProvider = new NodeZkConfigProvider(EBT_BUILD);
-  const providers = {
-    privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'ebt-v8-ceremony',
-      privateStoragePasswordProvider: () => 'EbtV8Ceremony2026-pw',
-      accountId: state.shielded.coinPublicKey.toHexString(),
-      walletProvider,
-    }),
-    publicDataProvider: pdp,
-    zkConfigProvider,
-    proofProvider: httpClientProofProvider(PROOF, zkConfigProvider),
-    walletProvider,
-    midnightProvider: walletProvider,
-  };
+  // WI-16: wallet SDK 2 + Midnight.js 5 providers from the shared tooling.
+  const { walletCtx, providers } = await ownerProviders(EBT_BUILD, 'ebt-v8-ceremony');
+  const state = await Rx.firstValueFrom(walletCtx.wallet.state().pipe(Rx.filter((s) => s.isSynced)));
+  const pdp = providers.publicDataProvider;
   const ebtModule = await import(pathToFileURL(path.join(EBT_BUILD, 'contract', 'index.js')).href);
   const witnesses = {
     signature_valid: (ctx, _pubkey, messageHash, signature) => {
@@ -253,7 +191,7 @@ function txh(tx) {
 
 // ------------------------------------------------------------------ steps
 async function stepHead() {
-  const pdp = indexerPublicDataProvider(INDEXER, INDEXER_WS);
+  const pdp = publicDataProvider();
   const reg = await buildRegistryTree(pdp);
   const relHead = reg.headSeq - reg.baseSeq;
   const latest = reg.entries[Number(relHead)];
@@ -332,7 +270,7 @@ function entryToStruct(e) {
 
 // STEP B1: mirrorActionLogRoot owner-advance to the new registry root.
 async function stepMirrorRoot() {
-  const pdp = indexerPublicDataProvider(INDEXER, INDEXER_WS);
+  const pdp = publicDataProvider();
   const reg = await buildRegistryTree(pdp);
   // Use the HEAD entry (seq = headSeq) as the sample; inclusion proof vs NEW root.
   const relHead = reg.headSeq - reg.baseSeq;
@@ -353,7 +291,7 @@ async function stepMirrorRoot() {
 
 // STEP B2: mirrorClassStatutoryTotal for the kind-2 retuneClass event (seq 5).
 async function stepMirrorClass() {
-  const pdp = indexerPublicDataProvider(INDEXER, INDEXER_WS);
+  const pdp = publicDataProvider();
   const reg = await buildRegistryTree(pdp);
   // Find the kind-2 entry (retuneClass). Should be seq 5.
   let targetRel = -1;
@@ -403,7 +341,7 @@ const SETTLE = {
 
 // Build the v8 6-field settle payloadHash EXACTLY as the circuit does.
 function settlePayloadHash(sessionID, hatPubkey, amount, producerKey, producerAddrBytes) {
-  const amountBytes = convertFieldToBytes(32, amount, 'amount');
+  const amountBytes = convertBigintToBytes(32, amount, 'amount');
   return persistentHashBytes([
     padTag('pollpower:ebt:v8:epoch1'),
     sessionID, hatPubkey, new Uint8Array(amountBytes), producerKey, producerAddrBytes,

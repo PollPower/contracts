@@ -38,7 +38,7 @@ import {
   persistentHash,
   CompactTypeBytes,
   CompactTypeVector,
-  convertFieldToBytes,
+  convertBigintToBytes, // renamed from convertFieldToBytes in compact-runtime 0.21 (WI-16)
 } from '@midnight-ntwrk/compact-runtime';
 
 const Bytes32 = new CompactTypeBytes(32);
@@ -80,7 +80,7 @@ export function padToBytes32(asciiTag: string): Uint8Array {
 // uint -> Field -> Bytes<32>, matching the contract's
 //   (value as Field) as Bytes<32>
 export function uintToBytes32(value: bigint, label: string): Uint8Array {
-  return convertFieldToBytes(32, value, label);
+  return convertBigintToBytes(32, value, label);
 }
 
 function assert32(name: string, b: Uint8Array): void {

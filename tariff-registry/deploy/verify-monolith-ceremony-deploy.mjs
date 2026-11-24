@@ -18,8 +18,13 @@
 //   ROLLED_IN    — comma-separated list to override deployment.json.circuitsRolledIn
 //
 import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DEPLOYMENT_PATH = '/home/pollpower/contracts/tariff-registry/deployment.json';
+// WI-16: was hardcoded to kenya's checkout; now relative to this package,
+// overridable with TARIFF_ROOT.
+const TARIFF_ROOT = process.env.TARIFF_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const DEPLOYMENT_PATH = path.join(TARIFF_ROOT, 'deployment.json');
 
 let deployment = {};
 try {
@@ -66,15 +71,18 @@ console.log('[verify] rolled in so far:', rolledIn.size === 0 ? '(none)' : [...r
 console.log('[verify] still deferred:',
   DEFER.filter((c) => !rolledIn.has(c)).join(', ') || '(none — all 18 present)');
 
-const { setNetworkId } = await import('@midnight-ntwrk/midnight-js-network-id');
-setNetworkId('preview');
+// WI-16: network id comes from providers.config (MIDNIGHT_NETWORK_ID); midnight-js-network-id is gone in Midnight.js 5.
+// WI-16: endpoints from the environment (MIDNIGHT_INDEXER_URL etc.), and the
+// Midnight.js 5 read returns serialized state that we decode with our runtime.
+const { loadNetworkConfig, describeNetwork } = await import('../../tooling/midnight-network.mjs');
+const net = loadNetworkConfig();
+console.log('[verify] network:', describeNetwork(net));
 const { indexerPublicDataProvider } = await import('@midnight-ntwrk/midnight-js-indexer-public-data-provider');
-const pub = indexerPublicDataProvider(
-  'https://indexer.preview.midnight.network/api/v3/graphql',
-  'wss://indexer.preview.midnight.network/api/v3/graphql/ws',
-);
-const state = await pub.queryContractState(CONTRACT_ADDRESS);
-if (!state) { console.error('no contract state'); process.exit(1); }
+const { ContractState } = await import('@midnight-ntwrk/compact-runtime');
+const pub = indexerPublicDataProvider({ queryURL: net.indexer, subscriptionURL: net.indexerWS });
+const read = await pub.queryContractState(CONTRACT_ADDRESS);
+if (!read) { console.error('no contract state'); process.exit(1); }
+const state = read.contractState.deserialize({ v9: ContractState });
 
 let issues = 0;
 

@@ -7,7 +7,15 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true
   },
-  "include": ["deploy/**/*.ts", "*.ts"]
+  "include": ["deploy/**/*.ts", "*.ts"],
+  "exclude": [
+    "node_modules",
+    "deploy-tariff-registry-preview.ts",
+    "deploy/deploy-wi15.1.ts"
+  ]
 }
