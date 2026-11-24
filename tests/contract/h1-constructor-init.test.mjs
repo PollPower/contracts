@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BUILD, buildExists, loadContract, deploy, b32, hex } from '../parity/harness.mjs';
 import { newOwnerKey, signOwnerAction } from './owner-signer.mjs';
+import { newMachineKey } from './machine-signer.mjs';
 
 const circuitsOf = (name) =>
   JSON.parse(fs.readFileSync(path.join(BUILD, name, 'compiler', 'contract-info.json'), 'utf8')).circuits.map((c) => c.name);
@@ -21,14 +22,17 @@ const unused = (n) => () => { throw new Error(`witness ${n} must not be called`)
 const EBT = ['ebt-v8', 'ebt-v8-ceremony'];
 // Since WI16-C-2 the owner is a Jubjub Schnorr key.
 const OWNER = newOwnerKey();
+// WI16-C-1c: machine signers are Jubjub keys too.
+const AUTH = newMachineKey();
+const ESCROW = newMachineKey();
 const ebtArgs = () => [
   OWNER.pk,                 // ownerPk
-  b32(0xa1),                // meterAuthorityPubkey
+  AUTH.pk,                  // meterAuthorityPubkey
   { bytes: b32(0xa2) },     // council (Multisig v8 address; WI16-C-1b)
   { bytes: b32(0x21) },     // operationsRecipient
   { bytes: b32(0x22) },     // dividendRecipient
   { bytes: b32(0x23) },     // daoRecipient
-  b32(0xa3),                // escrowAttestorPubkey
+  ESCROW.pk,                // escrowAttestorPubkey
   b32(0xa4),                // registryActionLogRoot
 ];
 const ebtWitnesses = { signature_valid: unused('signature_valid'), multisig_signature_valid: unused('multisig_signature_valid') };
@@ -46,12 +50,12 @@ for (const name of EBT) {
     const L = c.ledger();
     assert.deepEqual(L._ownerPk, OWNER.pk);
     assert.equal(L._ownerNonce, 0n);
-    assert.equal(hex(L._meterAuthorityPubkey), hex(b32(0xa1)));
+    assert.deepEqual(L._meterAuthorityPubkey, AUTH.pk);
     assert.equal(hex(L._council.bytes), hex(b32(0xa2)));
     assert.equal(hex(L._operationsRecipient.bytes), hex(b32(0x21)));
     assert.equal(hex(L._dividendRecipient.bytes), hex(b32(0x22)));
     assert.equal(hex(L._daoRecipient.bytes), hex(b32(0x23)));
-    assert.equal(hex(L._escrowAttestorPubkey), hex(b32(0xa3)));
+    assert.deepEqual(L._escrowAttestorPubkey, ESCROW.pk);
     assert.equal(hex(L._registryActionLogRootMirror), hex(b32(0xa4)));
     assert.equal(L._registryActionLogHeadSeqMirror, 0n);
     assert.equal(L._livingDividendAddress.is_some, false);

@@ -21,6 +21,7 @@ import path from 'node:path';
 import { BUILD, buildExists, loadContract, deploy, createWorld, b32, hex } from '../parity/harness.mjs';
 import { newCouncilKey, approvalDigest, signDigest } from './council-signer.mjs';
 import { newOwnerKey } from './owner-signer.mjs';
+import { newMachineKey } from './machine-signer.mjs';
 
 const skip = buildExists('ebt-v8') && buildExists('multisig-v8') ? false : 'builds missing: run `npm run build:contracts` (multisig-v8 needs --zk)';
 const unused = (n) => () => { throw new Error(`witness ${n} must not be called`); };
@@ -28,7 +29,7 @@ const NOT_APPROVED = /Council has not approved/;
 
 const LD = { bytes: b32(0x4d) };
 const RECIP = { bytes: b32(0x5e) };
-const ATTESTOR = b32(0x6f);
+const ATTESTOR = newMachineKey().pk; // WI16-C-1c: the escrow attestor is a Jubjub key
 
 async function setup() {
   const world = createWorld();
@@ -39,8 +40,8 @@ async function setup() {
     world.register(await deploy(ms, {}, [keys.map((k) => k.point), 3n, 2n], {}, { world }), ms, 'multisig-v8');
   const council = await deployCouncil();
   const deployEbt = async (councilHandle) => deploy(ebt, { signature_valid: unused('signature_valid') }, [
-    newOwnerKey().pk, b32(0xa1), { bytes: councilHandle.addressBytes },
-    { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, b32(0xa3), b32(0xa4),
+    newOwnerKey().pk, newMachineKey().pk, { bytes: councilHandle.addressBytes },
+    { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, newMachineKey().pk, b32(0xa4),
   ], {}, { world });
   const e = await deployEbt(council);
 
@@ -137,7 +138,7 @@ test('C1b-EBT-9: 2-of-3 approval executes each council operation', { skip }, asy
 
   await approve(actionHash(e, 4n, 1002n));
   await exec(4n, 1002n);
-  assert.equal(hex(e.ledger()._escrowAttestorPubkey), hex(ATTESTOR));
+  assert.deepEqual(e.ledger()._escrowAttestorPubkey, ATTESTOR);
 
   await approve(actionHash(e, 1n, 1003n));
   await exec(1n, 1003n);

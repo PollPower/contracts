@@ -16,15 +16,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BUILD, buildExists, loadContract, deploy, b32 } from '../parity/harness.mjs';
 import { newOwnerKey, signOwnerAction, garbageSignature } from './owner-signer.mjs';
+import { newMachineKey } from './machine-signer.mjs';
 
 const NAME = 'ebt-v8';
 const skip = buildExists(NAME) ? false : 'build/l9/ebt-v8 missing: run `npm run build:contracts`';
 const unused = (n) => () => { throw new Error(`witness ${n} must not be called`); };
 const witnesses = { signature_valid: unused('signature_valid'), multisig_signature_valid: unused('multisig_signature_valid') };
+// WI16-C-1c: the meter authority and escrow attestor are Jubjub keys.
+const AUTH = newMachineKey();
+const ESCROW = newMachineKey();
 const ONLY_OWNER = /Only owner/;
 
 const ctorArgs = (ownerPk) => [
-  ownerPk, b32(0xa1), { bytes: b32(0xa2) }, { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, b32(0xa3), b32(0xa4),
+  ownerPk, AUTH.pk, { bytes: b32(0xa2) }, { bytes: b32(0x21) }, { bytes: b32(0x22) }, { bytes: b32(0x23) }, ESCROW.pk, b32(0xa4),
 ];
 async function setup() {
   const mod = await loadContract(NAME);
@@ -41,8 +45,8 @@ const ARGS = {
   attestProducerOwnership: { digest: [b32(0x31), b32(0x32), b32(0x33), 1n, b32(0x34), 0n], extra: [] },
   revokeProducerOwnership: { digest: [b32(0x31), 1n, b32(0x34), 0n], extra: [] },
   claimSplit: { digest: [0n, 0n], extra: [] },
-  execOwnerOp: { digest: [1n, { x: 0n, y: 1n }, b32(0x35)], extra: [] },
-  manualReissue: { digest: [b32(0x36), { bytes: b32(0x37) }, 1n, 1n, b32(0x38), ZERO_TARIFF_PATH, 0n], extra: [new Uint8Array(64)] },
+  execOwnerOp: { digest: [1n, { x: 0n, y: 1n }, AUTH.pk], extra: [] },
+  manualReissue: { digest: [b32(0x36), { bytes: b32(0x37) }, 1n, 1n, b32(0x38), ZERO_TARIFF_PATH, 0n], extra: [garbageSignature()] },
   mirrorActionLogRoot: { digest: [b32(0x39), ZERO_ENTRY], extra: [ZERO_PROOF] },
 };
 const callArgs = (circuit, sig) => [...ARGS[circuit].digest, ...ARGS[circuit].extra, sig];
@@ -93,7 +97,7 @@ test('C2-4 (negative): a signature for other arguments is rejected', { skip }, a
 
 test('C2-5 (negative): a used signature cannot be replayed (nonce)', { skip }, async () => {
   const { mod, c, owner } = await setup();
-  const newAuth = b32(0x35);
+  const newAuth = AUTH.pk;
   const sig = signOwnerAction(mod, c, 'execOwnerOp', [1n, { x: 0n, y: 1n }, newAuth], { sk: owner.sk });
   await c.call('execOwnerOp', 1n, { x: 0n, y: 1n }, newAuth, sig); // op 1 = setMeterAuthority
   await assert.rejects(c.call('execOwnerOp', 1n, { x: 0n, y: 1n }, newAuth, sig), ONLY_OWNER);
@@ -108,12 +112,12 @@ test('C2-6 (negative): a signature bound to another contract address is rejected
 test('C2-7: transferOwnership rotates the key; the old key stops working', { skip }, async () => {
   const { mod, c, owner } = await setup();
   const next = newOwnerKey();
-  const sig = signOwnerAction(mod, c, 'execOwnerOp', [0n, next.pk, b32(0)], { sk: owner.sk });
-  await c.call('execOwnerOp', 0n, next.pk, b32(0), sig); // op 0 = transferOwnership
+  const sig = signOwnerAction(mod, c, 'execOwnerOp', [0n, next.pk, AUTH.pk], { sk: owner.sk });
+  await c.call('execOwnerOp', 0n, next.pk, AUTH.pk, sig); // op 0 = transferOwnership
   assert.deepEqual(c.ledger()._ownerPk, next.pk);
-  const old = signOwnerAction(mod, c, 'execOwnerOp', [1n, { x: 0n, y: 1n }, b32(0x35)], { sk: owner.sk });
-  await assert.rejects(c.call('execOwnerOp', 1n, { x: 0n, y: 1n }, b32(0x35), old), ONLY_OWNER);
-  const fresh = signOwnerAction(mod, c, 'execOwnerOp', [1n, { x: 0n, y: 1n }, b32(0x35)], { sk: next.sk });
-  await c.call('execOwnerOp', 1n, { x: 0n, y: 1n }, b32(0x35), fresh);
+  const old = signOwnerAction(mod, c, 'execOwnerOp', [1n, { x: 0n, y: 1n }, AUTH.pk], { sk: owner.sk });
+  await assert.rejects(c.call('execOwnerOp', 1n, { x: 0n, y: 1n }, AUTH.pk, old), ONLY_OWNER);
+  const fresh = signOwnerAction(mod, c, 'execOwnerOp', [1n, { x: 0n, y: 1n }, AUTH.pk], { sk: next.sk });
+  await c.call('execOwnerOp', 1n, { x: 0n, y: 1n }, AUTH.pk, fresh);
   assert.equal(c.ledger()._ownerNonce, 2n);
 });

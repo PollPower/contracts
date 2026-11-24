@@ -8,6 +8,8 @@ import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
+throw new Error('relay-hat-sign.mjs: outdated after WI16-C-1c (machine signers are Jubjub Schnorr, verified in-circuit); rewrite pending for the devnet run');
+
 ed.hashes.sha512 = sha512;
 
 const KEY_PATH = process.env.AUTHORITY_KEY_PATH ?? '/home/pollpower/meter-authority-service/data/authority-key.enc'; // relay default; WI-16 env override

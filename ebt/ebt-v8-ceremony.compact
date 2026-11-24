@@ -120,15 +120,7 @@ pure circuit ACTION_LOG_DEPTH(): Uint<64> { return 24 as Uint<64>; }
 pure circuit REDEMPTION_KES(): Uint<8> { return 0 as Uint<8>; }
 pure circuit REDEMPTION_KWH(): Uint<8> { return 1 as Uint<8>; }
 
-// =============================================================================
-// Witnesses (shared shape with EBT v7.4.2 / TariffRegistry / LD)
-// =============================================================================
-
-witness signature_valid(
-  pubkey: Bytes<32>,
-  messageHash: Bytes<32>,
-  signature: Bytes<64>,
-): Boolean;
+// No witnesses: every signature is verified in-circuit (WI16-C-1, C-2).
 
 // =============================================================================
 // Structs
@@ -279,7 +271,7 @@ struct EventProof {
 // WI16-C-2: the owner is a Jubjub Schnorr key; _ownerNonce stops signature replay.
 export ledger _ownerPk: JubjubPoint;
 export ledger _ownerNonce: Counter;
-export ledger _meterAuthorityPubkey: Bytes<32>;
+export ledger _meterAuthorityPubkey: JubjubPoint;   // WI16-C-1c
 export sealed ledger _council: Council;
 export ledger _consumedCouncilActions: Set<Bytes<32>>;
 
@@ -329,7 +321,7 @@ export ledger _registryActionLogHeadSeqMirror: Uint<64>;
 
 // Escrow solvency-attestation signer (design §6.4). Rotated via a multisig
 // setter (same shape as meter-authority rotation).
-export ledger _escrowAttestorPubkey: Bytes<32>;
+export ledger _escrowAttestorPubkey: JubjubPoint;   // WI16-C-1c
 
 // settle audit log carrying per-coin TariffPath (design §2.3 / §5.2 step 15).
 export ledger _settleLog: Map<Uint<64>, SettleEntry>;
@@ -369,6 +361,40 @@ circuit requireOwner(action: Bytes<32>, argsDigest: Bytes<32>, ownerSig: JubjubS
   _ownerNonce.increment(1);
 }
 
+// WI16-C-1c: machine signers. The meter authority (HAT and reissue
+// co-signature) and the escrow attestor are Jubjub keys; each signs the Field
+// returned by one of these pure circuits and the contract checks it with
+// jubjubSchnorrVerify<1>. Every message carries this contract's address, so a
+// signature for one deployment is useless on another. The services call these
+// exported circuits from the compiled contract instead of re-implementing them.
+export pure circuit hatMessage(
+  self: Bytes<32>, sessionID: Bytes<32>, amount: Uint<128>, producerKey: Bytes<32>,
+  producerAddr: UserAddress, meterKeyHash: Bytes<32>,
+): Field {
+  return transientHash<Vector<7, Bytes<32>>>([
+    pad(32, "pollpower:ebt:v9:hat"), self, sessionID, (amount as Field) as Bytes<32>,
+    producerKey, producerAddr.bytes, meterKeyHash,
+  ]);
+}
+
+export pure circuit escrowMessage(
+  self: Bytes<32>, trustFloat: Uint<128>, outstandingEbt: Uint<128>, attestationEpoch: Uint<64>,
+): Field {
+  return transientHash<Vector<5, Bytes<32>>>([
+    pad(32, "pollpower:ebt:v9:escrow"), self, (trustFloat as Field) as Bytes<32>,
+    (outstandingEbt as Field) as Bytes<32>, (attestationEpoch as Field) as Bytes<32>,
+  ]);
+}
+
+export pure circuit reissueMessage(
+  self: Bytes<32>, producerKey: Bytes<32>, producerAddr: UserAddress, amount: Uint<128>, seq: Uint<64>,
+): Field {
+  return transientHash<Vector<6, Bytes<32>>>([
+    pad(32, "pollpower:ebt:v9:reissue"), self, producerKey, producerAddr.bytes,
+    (amount as Field) as Bytes<32>, (seq as Field) as Bytes<32>,
+  ]);
+}
+
 export pure circuit ownerDigest_attestProducerOwnership(
   attestationKey: Bytes<32>, producerBytes: Bytes<32>, meterKeyHash: Bytes<32>,
   reasonCode: Uint<8>, evidenceHash: Bytes<32>, currentTime: Uint<64>,
@@ -392,11 +418,12 @@ export pure circuit ownerDigest_claimSplit(kind: Uint<8>, currentTime: Uint<64>)
 }
 
 export pure circuit ownerDigest_execOwnerOp(
-  op: Uint<8>, newOwnerPk: JubjubPoint, newAuthorityPubkey: Bytes<32>,
+  op: Uint<8>, newOwnerPk: JubjubPoint, newAuthorityPubkey: JubjubPoint,
 ): Bytes<32> {
-  return persistentHash<Vector<4, Bytes<32>>>([
+  return persistentHash<Vector<5, Bytes<32>>>([
     (op as Field) as Bytes<32>, jubjubPointX(newOwnerPk) as Bytes<32>,
-    jubjubPointY(newOwnerPk) as Bytes<32>, newAuthorityPubkey,
+    jubjubPointY(newOwnerPk) as Bytes<32>,
+    jubjubPointX(newAuthorityPubkey) as Bytes<32>, jubjubPointY(newAuthorityPubkey) as Bytes<32>,
   ]);
 }
 
@@ -584,12 +611,12 @@ circuit assertSliceOnPolicy(amt: Uint<128>, amount: Uint<128>, bps: Uint<16>): [
 // make themselves owner. (The owner is a Jubjub Schnorr key: WI16-C-2.)
 constructor(
   ownerPk:               JubjubPoint,
-  meterAuthorityPubkey:  Bytes<32>,
+  meterAuthorityPubkey:  JubjubPoint,
   council:               Council,
   operationsRecipient:   UserAddress,
   dividendRecipient:     UserAddress,
   daoRecipient:          UserAddress,
-  escrowAttestorPubkey:  Bytes<32>,
+  escrowAttestorPubkey:  JubjubPoint,
   registryActionLogRoot: Bytes<32>,   // bootstrap: registry post-WI-13.2 root
 ) {
   _ownerPk = disclose(ownerPk);
@@ -745,14 +772,15 @@ export circuit mirrorClassStatutoryTotal(
 // =============================================================================
 
 export circuit settle(
-  // HAT bundle — 5-field signed payload including producerAddr (I-14-A).
+  // HAT bundle (WI16-C-1c): the meter authority signs hatMessage(self,
+  // sessionID, amount, producerKey, producerAddr, meterKeyHash) -- producerAddr
+  // stays bound (I-14-A / EBT-H-1).
   sessionID:    Bytes<32>,
-  hatPubkey:    Bytes<32>,
   amount:       Uint<128>,
   producerKey:  Bytes<32>,
   producerAddr: UserAddress,
   meterKeyHash: Bytes<32>,
-  hatSig:       Bytes<64>,
+  hatSig:       JubjubSchnorrSignature,
 
   // Tariff-path binding (per-coin metadata; I-14-E).
   scheduleId:      Bytes<32>,
@@ -785,19 +813,10 @@ export circuit settle(
   assert(disclose(blockTimeGte(disclose(currentTime))),
          "timestamp cannot be in the future");
 
-  // 2. HAT VERIFICATION — I-14-A (5-field payload includes producerAddr).
-  const amountBytes = (disclose(amount) as Field) as Bytes<32>;
-  const payloadHash = persistentHash<Vector<6, Bytes<32>>>([
-    pad(32, "pollpower:ebt:v8:epoch1"),
-    disclose(sessionID),
-    disclose(hatPubkey),
-    amountBytes,
-    disclose(producerKey),
-    disclose(producerAddr).bytes,
-  ]);
-  assert(disclose(hatPubkey) == _meterAuthorityPubkey, "HAT signer is not the meter authority");
-  assert(disclose(signature_valid(disclose(hatPubkey), payloadHash, disclose(hatSig))),
-         "Bad HAT signature");
+  // 2. HAT VERIFICATION (WI16-C-1c: in-circuit Schnorr under the meter authority).
+  const hatMsg: Vector<1, Field> = [hatMessage(kernel.self().bytes, disclose(sessionID), disclose(amount),
+    disclose(producerKey), disclose(producerAddr), disclose(meterKeyHash))];
+  assert(jubjubSchnorrVerify<1>(hatMsg, disclose(hatSig), _meterAuthorityPubkey), "Bad HAT signature");
 
   // 3. PRODUCER ATTESTATION — I-14-G (a de-federated producer cannot settle).
   const attestationKey = persistentHash<Vector<2, Bytes<32>>>([

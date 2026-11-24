@@ -77,9 +77,12 @@ export async function deploy(mod, witnesses, ctorArgs = [], privateState = {}, o
     privateState,
     ...(opts.world ? { parentBlockHash: PARENT_BLOCK, crossContract: opts.world.crossContract } : {}),
   });
+  let balance = null;
   return {
     contract,
     address,
+    /** Sets the contract's public token balances seen by later calls (Map<TokenType, bigint>). */
+    setBalance(b) { balance = b; },
     /** The contract address as the 32 bytes `kernel.self().bytes` sees. */
     addressBytes: Uint8Array.from(Buffer.from(String(address).replace(/^0x/, ''), 'hex')),
     async call(circuitId, ...args) {
@@ -96,6 +99,10 @@ export async function deploy(mod, witnesses, ctorArgs = [], privateState = {}, o
         callProofDataTrace: [],
         events: [],
       };
+      if (balance) {
+        const q = at.callContext.currentQueryContext;
+        q.block = { ...q.block, balance };
+      }
       const r = await contract.impureCircuits[circuitId](at, ...args);
       ctx = r.context;
       return r.result;

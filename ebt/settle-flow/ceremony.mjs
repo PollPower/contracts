@@ -26,6 +26,8 @@ import {
 } from '@midnight-ntwrk/compact-runtime';
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
+throw new Error('ceremony.mjs: outdated after WI16-C-1c (machine signers are Jubjub Schnorr, verified in-circuit); rewrite pending for the devnet run');
+
 (ed).hashes.sha512 = sha512;
 function edVerifySync(sig, msg, pk) { return ed.verify(sig, msg, pk); }
 import {
