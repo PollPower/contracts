@@ -16,7 +16,11 @@
 // constructor at the Preprod ceremony.
 import { createHash } from 'node:crypto';
 import * as RT from '@midnight-ntwrk/compact-runtime';
-import { openDevnet, deploy, join, loadModule, liveState, finalizeContract, buildDir, state } from './devnet-lib.mjs';
+import { openDevnet, deploy, join, loadModule, liveState, finalizeContract, buildDir, ROOT, state } from './devnet-lib.mjs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createEbtSettleChain } from '../settle/ebt-settle-chain.mjs';
+import { createLdRelay } from '../ld/ld-relay.mjs';
 import * as L9 from '@midnight-ntwrk/midnight-js-protocol/v9';
 import { checkFinalized, buildVerifierKeys, submitMaintenance, vkInsert, vkRemove, replaceAuthority } from '../deploy/finalize.mjs';
 import { devnetCouncilKey, buildCouncilConstructorArgs } from '../council/council-keys-guard.mjs';
@@ -488,6 +492,120 @@ const STAGES = {
     if (failed.length) throw new Error(`staged-deploy attacks: ${failed.map((r) => r.id).join('; ')}`);
   },
 
+  // pp-settle-service's REAL settle path on the devnet: prepare (the EBT's own
+  // record digest), the Gap B journal, submit through the chain adapter (split
+  // planned from EBT's live mirrors, retry, never resubmitting a landed
+  // session); then a crash simulation (journaled, never submitted) settled by
+  // replayPending, and a replay of a landed session that must not resubmit.
+  async service(dn) {
+    const svcDir = process.env.PP_SETTLE_SERVICE_DIR ?? path.resolve(ROOT, '..', 'pp-settle-service');
+    const { createSettleV9 } = await import(pathToFileURL(path.join(svcDir, 'settle_v9.mjs')).href);
+    const { createSettleJournal } = await import(pathToFileURL(path.join(svcDir, 'settle_journal.mjs')).href);
+    const ebtMod = await loadModule('ebt-v8');
+    const self = hexToBytes(S.ebt);
+    const journalDir = path.join(ROOT, 'build', 'devnet', `journal-${S.ebt.slice(0, 8)}`);
+    const providers = /** @type {any} */ (dn.providersFor('ebt-v8'));
+    let submits = 0;
+    const chain = await createEbtSettleChain({ providers, ebtBuildDir: buildDir('ebt-v8'), ebtAddress: S.ebt });
+    const counting = { ...chain, settle: async (/** @type {any} */ p) => { const r = await chain.settle(p); if (r.status === 'submitted') submits++; return r; } };
+    const svc = createSettleV9({
+      ebtBuildDir: buildDir('ebt-v8'), ebtAddressHex: S.ebt,
+      producerKeyHex: Buffer.from(PRODUCER.key).toString('hex'), producerAddrHex: Buffer.from(PRODUCER.payout).toString('hex'),
+      meterKeyHashHex: Buffer.from(PRODUCER.meter).toString('hex'),
+      tariff: { scheduleIdHex: S.scheduleId, classPathHex: Buffer.from(CLASS).toString('hex'), epoch: '1', fiatValueAtMint: '2' },
+      journal: createSettleJournal(journalDir), chain: async () => counting,
+    });
+    const identity = { ieee: [...CHIP.ieee].map((x) => x.toString(16).padStart(2, '0')).join(':'), userid: CHIP.userid, pubkey: Buffer.from(CHIP.pk).toString('hex') };
+    /** One software-chip session -> the bundle the service holds after countersign. */
+    const bundleFor = async (/** @type {number} */ k, /** @type {bigint} */ uwh) => {
+      const sid16 = new Uint8Array(createHash('sha256').update(`service ${S.ebt} ${k} ${Date.now()}`).digest()).slice(0, 16);
+      const att = { sessionUwh: uwh, uptimeMs: 5_000_000n + BigInt(k), nonce: BigInt(Date.now()) * 10n + BigInt(k) };
+      const pre = await svc.prepare({ attestation: att, identity, sessionId16: sid16 });
+      const f = {
+        sessionID: sessionFrom16(sid16), amount: BigInt(pre.amount), producerKey: PRODUCER.key, producerAddr: { bytes: PRODUCER.payout },
+        meterKeyHash: PRODUCER.meter, chipHwId: chipHwId(CHIP), chipSessionUwh: uwh, chipUptimeMs: att.uptimeMs, chipNonce: att.nonce,
+      };
+      const s = signSettle(ebtMod, { addressBytes: self }, f, { chip: CHIP, hatSk: METER_AUTHORITY.sk });
+      if (Buffer.from(s.recordDigest).toString('hex') !== pre.recordDigestHex) throw new Error('service record digest != contract record digest');
+      return {
+        fields: pre.fields, chipPubkeyHex: Buffer.from(s.chipPubkey).toString('hex'),
+        chipSigHex: Buffer.concat([Buffer.from(s.chipSigR), Buffer.from(s.chipSigS)]).toString('hex'),
+        hatSig: { announcement: { x: String(s.hatSig.announcement.x), y: String(s.hatSig.announcement.y) }, response: String(s.hatSig.response) },
+      };
+    };
+    const supply = async () => (await ledgerOf(dn, 'ebt-v8', S.ebt))._totalSupply;
+
+    // 1. Normal path: an odd amount (largest-remainder slices).
+    const s0 = await supply();
+    const b1 = await bundleFor(1, 12_345_678n);
+    const t0 = Date.now();
+    const r1 = await svc.submit(b1);
+    console.log(`[service] submit: ${r1.status} in ${((Date.now() - t0) / 1000).toFixed(0)}s, amount ${r1.amount}, split ${JSON.stringify(r1.split)}; supply ${s0} -> ${await supply()}`);
+    if (await supply() - s0 !== 12_345n) throw new Error('service settle minted the wrong amount');
+
+    // 2. Crash after countersign, before submit: journaled only; startup replay settles it.
+    const b2 = await bundleFor(2, 3_000_999n);
+    createSettleJournal(journalDir).begin(b2.fields.sessionId, b2);
+    // 3. A landed session journaled again as pending (crash after landing, before 'done').
+    createSettleJournal(journalDir).begin(b1.fields.sessionId + '', b1);
+    const before = submits;
+    const s1 = await supply();
+    const replay = await svc.replayPending();
+    console.log(`[service] replay: ${JSON.stringify(replay)}; new submits ${submits - before}; supply ${s1} -> ${await supply()}`);
+    const byId = Object.fromEntries(replay.map((x) => [x.sessionId, x.status]));
+    if (byId[b2.fields.sessionId] !== 'submitted') throw new Error('crashed bundle was not settled by replay');
+    if (byId[b1.fields.sessionId] !== 'already-settled') throw new Error('landed session was resubmitted on replay');
+    if (submits - before !== 1 || await supply() - s1 !== 3_000n) throw new Error('replay submitted the wrong number of settles');
+    if (createSettleJournal(journalDir).pending().length) throw new Error('journal still has pending bundles');
+    console.log('[service] PASS: submit, crash replay, no resubmit of a landed session');
+    S.service = { ok: true, tx: r1.txHash };
+    save();
+  },
+
+  // The LD v3 relayer on the devnet: the member signs as the wallet shim does
+  // (memberMessage over this action, its arguments and the current nonce); the
+  // relayer pre-checks and proves. claim -> touchLiveness -> requestPayoutChange
+  // -> cancelPayoutChange, then a replayed claim body must be refused.
+  async relay(dn) {
+    const ldMod = await loadModule('living-dividend-v3');
+    const P = ldMod.pureCircuits;
+    const relay = await createLdRelay({ providers: dn.providersFor('living-dividend-v3'), ldBuildDir: buildDir('living-dividend-v3'), ldAddress: S.ld, indexerUrl: dn.net.indexer, witnesses: LD_WITNESSES });
+    const ldSelf = hexToBytes(S.ld);
+    const id = hexToBytes(S.memberId);
+    const pk = { x: String(MEMBER.pk.x), y: String(MEMBER.pk.y) };
+    const signAs = (/** @type {string} */ action, /** @type {any} */ digest, /** @type {bigint} */ nonce) => {
+      const s = RT.jubjubSchnorrSign(MSG1, [P.memberMessage(ldSelf, padTag(action), id, digest, nonce)], MEMBER.sk);
+      return { announcement: { x: String(s.announcement.x), y: String(s.announcement.y) }, response: String(s.response) };
+    };
+    const act = async (/** @type {string} */ action, /** @type {string | undefined} */ newPayoutHex) => {
+      const st = await relay.memberState(S.memberId);
+      const t = BigInt(st.blockTime) - 5n;
+      const digest = action === 'requestPayoutChange' ? P.payoutDigest({ bytes: hexToBytes(newPayoutHex ?? '') }, t) : P.timeDigest(t);
+      const body = { action, memberIdHex: S.memberId, pk, currentTime: String(t), ...(newPayoutHex ? { newPayoutHex } : {}), signature: signAs(action, digest, BigInt(st.nonce)) };
+      const t0 = Date.now();
+      const r = await relay.submit(body);
+      console.log(`[relay] ${action}: tx ${r.txHash} (${((Date.now() - t0) / 1000).toFixed(0)}s), nonce ${st.nonce} -> ${(await relay.memberState(S.memberId)).nonce}`);
+      return body;
+    };
+    const ebtBefore = await ledgerOf(dn, 'ebt-v8', S.ebt);
+    const claimBody = await act('claim');
+    const ebtAfter = await ledgerOf(dn, 'ebt-v8', S.ebt);
+    console.log(`[relay]   EBT dividendMinted ${ebtBefore._dividendMinted} -> ${ebtAfter._dividendMinted}`);
+    await act('touchLiveness');
+    await act('requestPayoutChange', '32'.repeat(32));
+    const mid = await relay.memberState(S.memberId);
+    console.log(`[relay]   pending payout ${JSON.stringify(mid.pendingPayout)}`);
+    if (!mid.pendingPayout || mid.pendingPayout.payoutHex !== '32'.repeat(32)) throw new Error('payout change not pending');
+    await act('cancelPayoutChange');
+    if ((await relay.memberState(S.memberId)).pendingPayout) throw new Error('payout change not cancelled');
+    let refused = '';
+    try { await relay.submit(claimBody); } catch (e) { refused = String(/** @type {any} */ (e)?.message ?? e); }
+    if (!/signature does not verify/.test(refused)) throw new Error(`replayed claim was not refused before proving: ${refused || 'accepted'}`);
+    console.log(`[relay] PASS: claim, touchLiveness, requestPayoutChange, cancelPayoutChange relayed; replayed claim refused (${refused.slice(0, 60)})`);
+    S.relay = { ok: true };
+    save();
+  },
+
   // Re-run the watcher over the events already on chain.
   async watch(dn) { await watchEvents(dn, 'watch'); },
 
@@ -536,7 +654,7 @@ const wanted = process.argv.slice(2);
 if (!wanted.length) { console.error(`usage: stack.mjs <${Object.keys(STAGES).join('|')}|all> ...`); process.exit(2); }
 // 'all': a settle before LD (budget accrued with nobody registered stays in
 // EBT) and one after registration, so the claim has something to mint.
-const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'watch', 'attacks'];
+const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'service', 'relay', 'watch', 'attacks'];
 const order = wanted.includes('all') ? ALL : wanted;
 const dn = await openDevnet();
 // Bind every deployed contract's build for cross-contract calls (TR/EBT -> Council, LD -> EBT).
