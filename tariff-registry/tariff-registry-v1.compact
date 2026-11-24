@@ -120,12 +120,7 @@ pure circuit RETUNE_MIN_INTERVAL_S(): Uint<64> {
 // Witnesses
 // =============================================================================
 
-// Ed25519 sig verify — same shape as EBT/LD/msfed.
-witness signature_valid(
-  pubkey: Bytes<32>,
-  messageHash: Bytes<32>,
-  signature: Bytes<64>,
-): Boolean;
+// (signature_valid removed in WI16-C-1c: signatures are verified in-circuit.)
 
 // R-A structural fix. Returns a Merkle-inclusion proof (data, not truth):
 // the prover CANNOT forge a proof against a root it did not construct.
@@ -242,6 +237,8 @@ export ledger _bootstrapComplete: Boolean;
 // tier whose approval gates branch ops). Rotatable via setFederationAuthority
 // (federation-gated).
 export sealed ledger _council: Council;
+// WI16-C-1c: schedule validator key (rotated by the council via setValidator).
+export ledger _validatorPk: JubjubPoint;
 
 // Calibration constants — Garrett's 2026-07-14 written call
 // (CALIBRATION-DECISIONS-RESOLVED-2026-07-14.md). Not `sealed` because
@@ -662,6 +659,67 @@ circuit emitAction(
 
 // Assert federation approval + not-replayed + record consumption.
 // Shared skeleton for every branch op.
+// =============================================================================
+// WI16-C-1c: signed and approved action hashes (exported for the validator,
+// operator and admin tooling, so nobody re-implements them)
+// =============================================================================
+
+// The validator and operators are Jubjub keys. They sign signerMessage(h),
+// checked in-circuit with jubjubSchnorrVerify<1>.
+export pure circuit signerMessage(digest: Bytes<32>): Field {
+  return transientHash<Vector<2, Bytes<32>>>([pad(32, "pp:tariff:v2:signer"), digest]);
+}
+
+// A schedule records its operator as this 32-byte id of the operator's key.
+export pure circuit operatorKeyId(pk: JubjubPoint): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:operatorKey"), jubjubPointX(pk) as Bytes<32>, jubjubPointY(pk) as Bytes<32>,
+  ]);
+}
+
+// registerSchedule: the council approves this hash and the validator signs it.
+// It binds the operator key id and the reference rate (before WI-16 it did
+// not, so whoever submitted an approved registration first chose both).
+export pure circuit registerScheduleActionHash(
+  self: Bytes<32>, nodeId: Bytes<32>, scheduleHash: Bytes<32>, operatorKeyId: Bytes<32>,
+  refRateFiatPerKwh: Uint<64>, effectiveEpoch: Uint<64>, currentEpoch: Uint<64>,
+): Bytes<32> {
+  return persistentHash<Vector<8, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:registerSchedule"), self, nodeId, scheduleHash, operatorKeyId,
+    (refRateFiatPerKwh as Field) as Bytes<32>, (effectiveEpoch as Field) as Bytes<32>,
+    (currentEpoch as Field) as Bytes<32>,
+  ]);
+}
+
+// retuneClass: the schedule's operator signs this hash.
+export pure circuit retuneAuthHash(
+  self: Bytes<32>, scheduleId: Bytes<32>, classPath: Bytes<32>, s: SplitShares,
+  newRateFiatPerKwh: Uint<64>, currentEpoch: Uint<64>, nonce: Uint<64>, currentTime: Uint<64>,
+): Bytes<32> {
+  const shHash = persistentHash<Vector<7, Bytes<32>>>([
+    pad(32, "pp:tariff:v1:splitShares"),
+    (s.producerShareBps as Field) as Bytes<32>, (s.ldShareBps as Field) as Bytes<32>,
+    (s.opsShareBps as Field) as Bytes<32>, (s.daoShareBps as Field) as Bytes<32>,
+    (s.operatorMarginBps as Field) as Bytes<32>, (s.statutoryTotalBps as Field) as Bytes<32>,
+  ]);
+  return persistentHash<Vector<9, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:retuneClass"), self, scheduleId, classPath, shHash,
+    (newRateFiatPerKwh as Field) as Bytes<32>, (currentEpoch as Field) as Bytes<32>,
+    (nonce as Field) as Bytes<32>, (currentTime as Field) as Bytes<32>,
+  ]);
+}
+
+// setValidator: the council approves this hash.
+export pure circuit setValidatorActionHash(
+  self: Bytes<32>, newValidatorPk: JubjubPoint, currentEpoch: Uint<64>, currentTime: Uint<64>,
+): Bytes<32> {
+  return persistentHash<Vector<6, Bytes<32>>>([
+    pad(32, "pp:tariff:v2:setValidator"), self,
+    jubjubPointX(newValidatorPk) as Bytes<32>, jubjubPointY(newValidatorPk) as Bytes<32>,
+    (currentEpoch as Field) as Bytes<32>, (currentTime as Field) as Bytes<32>,
+  ]);
+}
+
 circuit consumeFederationApproval(actionHash: Bytes<32>, opLabel: Bytes<32>): [] {
   const dHash = disclose(actionHash);
   assert(!_consumedFederationApprovals.member(dHash),
@@ -679,10 +737,12 @@ constructor(
   council:             Council,
   governanceRoot:      Bytes<32>,
   refRateFiatPerKwh:   Uint<64>,
+  validatorPk:         JubjubPoint,
 ) {
   _council = disclose(council);
   _governanceRoot      = disclose(governanceRoot);
   _refRateFiatPerKwh   = disclose(refRateFiatPerKwh);
+  _validatorPk        = disclose(validatorPk);
 
   // CAL-1 / CAL-2 from CALIBRATION-DECISIONS-RESOLVED-2026-07-14.md.
   _LD_FLOOR_BPS    = 200 as Uint<16>;
@@ -740,11 +800,10 @@ export circuit bootstrapActionLog(shardEnd: Uint<64>): [] {
 export circuit registerSchedule(
   nodeId:              Bytes<32>,
   scheduleHash:        Bytes<32>,
-  operatorPubkey:      Bytes<32>,
+  operatorPubkey:      Bytes<32>,     // operatorKeyId(operator's Jubjub key)
   refRateFiatPerKwh:   Uint<64>,
   effectiveEpoch:      Uint<64>,
-  validatorAttestor:   Bytes<32>,
-  validatorSignature:  Bytes<64>,
+  validatorSignature:  JubjubSchnorrSignature,
   currentTime:         Uint<64>,
 ): [] {
   assertInitialized();
@@ -767,25 +826,16 @@ export circuit registerSchedule(
   const currentEpochBytes = (_currentEpoch.read() as Field) as Bytes<32>;
   const effectiveEpochBytes = (disclose(effectiveEpoch) as Field) as Bytes<32>;
 
-  // Federation actionHash: binds every input except the operator pubkey
-  // and refRate (those are within the schedule structure; the validator
-  // attestor signs off on them via scheduleHash — no double-binding).
-  const actionHash = persistentHash<Vector<6, Bytes<32>>>([
-    pad(32, "pp:tariff:v1:registerSchedule"),
-    selfBytes(),
-    disclose(nodeId),
-    disclose(scheduleHash),
-    effectiveEpochBytes,
-    currentEpochBytes,
-  ]);
+  // WI16-C-1c: the approved action binds every input, including the operator
+  // key id and the reference rate.
+  const actionHash = registerScheduleActionHash(selfBytes(), disclose(nodeId), disclose(scheduleHash),
+    disclose(operatorPubkey), disclose(refRateFiatPerKwh), disclose(effectiveEpoch),
+    _currentEpoch.read() as Uint<64>);
 
-  // WI-16 validator verdict: attestor signs the same actionHash.
-  const validatorOk = signature_valid(
-    disclose(validatorAttestor),
-    actionHash,
-    disclose(validatorSignature),
-  );
-  assert(disclose(validatorOk), "VALIDATOR_VERDICT_INVALID");
+  // Validator verdict: the registry's validator key signs signerMessage(actionHash).
+  const vMsg: Vector<1, Field> = [signerMessage(actionHash)];
+  assert(jubjubSchnorrVerify<1>(vMsg, disclose(validatorSignature), _validatorPk),
+         "VALIDATOR_VERDICT_INVALID");
 
   // I-D federation approval + replay guard.
   consumeFederationApproval(
@@ -1016,6 +1066,22 @@ export circuit setNationalContext(
 // Multisig v8 and rotates in place at the same address.
 
 // =============================================================================
+// WI16-C-1c: setValidator (council-gated validator key rotation)
+// =============================================================================
+
+export circuit setValidator(newValidatorPk: JubjubPoint, currentTime: Uint<64>): [] {
+  assertInitialized();
+  assert(disclose(blockTimeGte(disclose(currentTime))),
+         "setValidator: timestamp cannot be in the future");
+  const pk = disclose(newValidatorPk);
+  consumeFederationApproval(
+    setValidatorActionHash(selfBytes(), pk, _currentEpoch.read() as Uint<64>, disclose(currentTime)),
+    pad(32, "pp:tariff:v2:setValidator"),
+  );
+  _validatorPk = pk;
+}
+
+// =============================================================================
 // WI-13.1 Branch op: registerLane (V1.1-DESIGN.md §2.4)
 // =============================================================================
 
@@ -1228,8 +1294,8 @@ export circuit retuneClass(
   classPath:             Bytes<32>,
   newSplitBps:           SplitShares,
   newRateFiatPerKwh:     Uint<64>,      // WI-06 §5.5: rate is a leaf-op knob
-  operatorId:            Bytes<32>,
-  operatorSignature:     Bytes<64>,
+  operatorPk:            JubjubPoint,
+  operatorSignature:     JubjubSchnorrSignature,
   nonceIn:               Uint<64>,
   currentTime:           Uint<64>,
   divLo:                 DivResult,     // witness-divmod for low band edge
@@ -1249,6 +1315,8 @@ export circuit retuneClass(
   assert(rec.retiredEpoch == 0 as Uint<64>, "SCHEDULE_NOT_LIVE");
 
   // Operator pubkey binding: the schedule pins WHICH operator may retune it.
+  // WI16-C-1c: it stores operatorKeyId(pk); the caller supplies the key.
+  const operatorId = operatorKeyId(disclose(operatorPk));
   assert(disclose(operatorId) == rec.operatorPubkey,
          "RETUNE_OPERATOR_MISMATCH");
 
@@ -1270,30 +1338,13 @@ export circuit retuneClass(
     const _gap = (disclose(currentTime) - earliest) as Uint<64>;
   }
 
-  // Operator sig hash — binds all inputs + epoch + nonce + self.
-  const currentEpochBytes = (_currentEpoch.read() as Field) as Bytes<32>;
-  const nonceBytes = (disclose(nonceIn) as Field) as Bytes<32>;
-  const timeBytes  = (disclose(currentTime) as Field) as Bytes<32>;
-  const rateBytes  = (disclose(newRateFiatPerKwh) as Field) as Bytes<32>;
-  const shHash     = splitSharesHash(newSplitBps);
-
-  // WI-13.2 design decision #5: this is the operator AUTHORIZATION/signature
-  // hash (flows into emitAction's actionHash slot), NOT the new canonical
-  // mirror payloadHash. Renamed retuneAuthHash to avoid conflation with the
-  // RegistryActionEntry.payloadHash added by this amendment.
-  const retuneAuthHash = persistentHash<Vector<9, Bytes<32>>>([
-    pad(32, "pp:tariff:v1:retuneClass"),
-    selfBytes(),
-    dSid,
-    disclose(classPath),
-    shHash,
-    rateBytes,
-    currentEpochBytes,
-    nonceBytes,
-    timeBytes,
-  ]);
-  assert(disclose(signature_valid(disclose(operatorId), retuneAuthHash,
-                                  disclose(operatorSignature))),
+  // Operator signature (WI16-C-1c, in-circuit) over retuneAuthHash: binds all
+  // inputs + epoch + nonce + self. This is the AUTHORIZATION hash (it flows into
+  // emitAction's actionHash slot), not the canonical mirror payloadHash.
+  const authHash = retuneAuthHash(selfBytes(), dSid, disclose(classPath), disclose(newSplitBps),
+    disclose(newRateFiatPerKwh), _currentEpoch.read() as Uint<64>, disclose(nonceIn), disclose(currentTime));
+  const oMsg: Vector<1, Field> = [signerMessage(authHash)];
+  assert(jubjubSchnorrVerify<1>(oMsg, disclose(operatorSignature), disclose(operatorPk)),
          "RETUNE_OPERATOR_SIG_INVALID");
 
   // I-B floor re-check (F-5, per retune). Checked-casts, no Field <.
@@ -1370,7 +1421,7 @@ export circuit retuneClass(
     2 as Uint<8>,
     dSid,
     rec.nodeId,
-    retuneAuthHash,
+    authHash,
     payloadHash,
     currentTime,
   );

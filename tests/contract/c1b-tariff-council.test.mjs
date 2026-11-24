@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BUILD, buildExists, loadContract, deploy, createWorld, b32, hex, runtimePersistentHash, padTag } from '../parity/harness.mjs';
 import { newCouncilKey, approvalDigest, signDigest } from './council-signer.mjs';
+import { newMachineKey } from './machine-signer.mjs';
 
 const NAME = 'tariff-registry-v1';
 const skip = buildExists(NAME) && buildExists('multisig-v8') ? false : 'builds missing: run `npm run build:contracts` (multisig-v8 needs --zk)';
@@ -45,7 +46,7 @@ async function setup() {
     world.register(await deploy(ms, {}, [keys.map((k) => k.point), 3n, 2n], {}, { world }), ms, 'multisig-v8');
   const council = await deployCouncil();
   const deployTr = async (c) => {
-    const t = await deploy(tr, witnesses, [{ bytes: c.addressBytes }, b32(0xa2), 100n], {}, { world });
+    const t = await deploy(tr, witnesses, [{ bytes: c.addressBytes }, b32(0xa2), 100n, newMachineKey().pk], {}, { world });
     await t.call('bootstrapActionLog', BigInt(DEPTH));
     return t;
   };
