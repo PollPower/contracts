@@ -1,7 +1,7 @@
 # WI-16 ledger 9 status
 
 Branch `wi16-ledger9`. Updated at the end of each task.
-Last update: 2026-11-24 (kenya full-ZK compile still running).
+Last update: 2026-11-24 (kenya full-ZK compile of EBT v8 + ceremony done).
 
 ## Goal: Nov 30 Buildathon, Wave 3
 
@@ -60,8 +60,39 @@ No warnings; `compact fixup` wants whitespace only.
 
 ### Full ZK compile on kenya (EBT v8, EBT v8 ceremony)
 
-Pending — running from `~/wi16-ledger9-build/c4a5240/` with
-`compact compile +0.36.1`. Proving-key sizes vs the block limit go here.
+Built from the exact committed sources (`c4a5240`, sha256-checked) in
+`~/wi16-ledger9-build/c4a5240/` with `compact compile +0.36.1`. Both exit 0,
+no warnings.
+
+| Build | Wall time | Peak RAM | Verifier keys | Prover keys |
+|---|---|---|---|---|
+| EBT v8 (18 circuits) | 6 m 16 s | 2.4 GB | 35,106 B total (14 × 2,121 B, 4 × 1,353 B) | 2.3 GB total |
+| EBT v8 ceremony (8 circuits) | 4 m 01 s | 2.4 GB | 15,432 B total | 1.5 GB total |
+
+**Only verifier keys go on chain.** Proving keys stay on the prover machine.
+Deploy cost, priced with the ledger 9 cost model (`@midnightntwrk/ledger-v9`
+1.0.2; a port of the servicedesk `measure-deploy-cost.mjs`). Block limit is
+`bytes_written` = 50,000; one transaction can use only ~60–65% of it.
+
+| Transaction | `bytesWritten` | % of block | Verdict |
+|---|---|---|---|
+| Full EBT v8 deploy, 18 keys | 42,017 | 84.0% | **Too big for one tx** (would be rejected with 1010) |
+| Ceremony deploy, 8 keys | 18,157 | 36.3% | Fits |
+| One vk-insert maintenance tx | 2,248 | 4.5% | Fits; 10 needed to complete v8 |
+
+The 8 ceremony verifier keys are **byte-identical** to the full build's keys
+for the same circuits (sha256), so ceremony deploy + 10 inserts reproduces
+the full v8 key set. The estimate slightly understates the real deploy
+(constructor state and ~224 B of wallet balancing are not modelled); the
+margin at 36% is large.
+
+Proving-key cost to watch: the six mirror circuits (`mirrorActionLogHead`,
+`mirrorActionLogRoot`, `mirrorClassStatutoryTotal`, `mirrorRegisterLane`,
+`mirrorRetireLane`, `mirrorScheduleLifecycle`) each have a **~344 MiB**
+proving key, `settle` ~86 MiB. Every mirror update proves against one of
+those, so the mirror daemon host needs the RAM and time for it.
+
+TariffRegistry and Multisig v6.2 full ZK compiles: not run yet.
 
 ## kenya stack (read-only audit, 2026-11-24)
 

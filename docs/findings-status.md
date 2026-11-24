@@ -144,8 +144,8 @@ verification, never in-circuit" encodes the same assumption.
 
 | Contract | `--skip-zk` | Circuits | Source change needed | Full ZK |
 |---|---|---|---|---|
-| `ebt/ebt-v8.compact` | ✅ | 18 | pragma only (committed `c4a5240`) | running on kenya |
-| `ebt/ebt-v8-ceremony.compact` | ✅ | 8 | pragma only (committed `c4a5240`) | running on kenya |
+| `ebt/ebt-v8.compact` | ✅ | 18 | pragma only (committed `c4a5240`) | ✅ kenya, 6 m 16 s; deploy needs the ceremony fence (84% of block) |
+| `ebt/ebt-v8-ceremony.compact` | ✅ | 8 | pragma only (committed `c4a5240`) | ✅ kenya, 4 m 01 s; deploy fits (36% of block) |
 | `multisig/multisig-v6.2-ed25519.compact` | ✅ | 12 | pragma only (not yet committed) | not run |
 | `tariff-registry/tariff-registry-v1.compact` | ✅ | 18 | pragma only (not yet committed) | not run |
 | `tariff-registry/tariff-registry-v1-ceremony.compact` | ✅ | 18 (11 stubs) | pragma only (not yet committed) | not run |
