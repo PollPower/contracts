@@ -180,6 +180,14 @@ revisit if the ceremony set nears ~60% or chip-registry changes are expected.
   contract-type check) calling a circuit whose verifier key is not inserted
   must be rejected by the node, with state unchanged. The devnet SD-2 so far
   is refused client-side only.
+- **Secret scanning across all PollPower repos:** gitleaks pre-commit hook +
+  CI job (plain binary; the gitleaks Action needs a paid license for orgs),
+  custom rules for Midnight private-state stores and seed fields, and
+  `.gitignore` entries for local key stores and `.env` files. GitHub native
+  scanning + push protection on every public repo.
+- **Locked maintenance authority on EBT, TariffRegistry and LD v3** on
+  Preprod/mainnet (Garrett 2026-11-24); upgrades are a new version + council-
+  approved migration.
 - Done already: Gap C council gate on `manualReissue`, native attestation in
   meter-authority-service, epoch-0 retire fix, chip registry + nonce set.
 
