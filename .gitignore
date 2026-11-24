@@ -32,3 +32,6 @@ CLAUDE.md
 
 # WI-16: npm workspaces install at the repo root
 node_modules/
+
+# Local private-state store (holds contract maintenance signing keys). Never commit.
+midnight-level-db/

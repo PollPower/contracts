@@ -16,7 +16,9 @@
 // constructor at the Preprod ceremony.
 import { createHash } from 'node:crypto';
 import * as RT from '@midnight-ntwrk/compact-runtime';
-import { openDevnet, deploy, join, loadModule, insertMissingVks, liveState, state } from './devnet-lib.mjs';
+import { openDevnet, deploy, join, loadModule, liveState, finalizeContract, buildDir, state } from './devnet-lib.mjs';
+import * as L9 from '@midnight-ntwrk/midnight-js-protocol/v9';
+import { checkFinalized, buildVerifierKeys, submitMaintenance, vkInsert, vkRemove, replaceAuthority } from '../deploy/finalize.mjs';
 import { devnetCouncilKey, buildCouncilConstructorArgs } from '../council/council-keys-guard.mjs';
 import { signDigest } from '../../tests/contract/council-signer.mjs';
 import { signMessage } from '../../tests/contract/machine-signer.mjs';
@@ -124,6 +126,41 @@ async function watchLdEvents(dn) {
 const S = state.load();
 const save = () => state.save(S);
 
+/**
+ * Mirrors the TR schedule + class into an EBT (action-log proofs) and attests
+ * the producer (owner signature). `flags` records progress (S or S.atk).
+ * `joinAs`: the build to call through (the ceremony build mid-deploy).
+ */
+async function mirrorAndAttest(dn, ebtAddress, flags, rootHex, joinAs) {
+  const trL = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
+  const P = (await loadModule('ebt-v8')).pureCircuits;
+  const ebt = await join(dn, joinAs, ebtAddress);
+  const self = hexToBytes(ebtAddress);
+  // Rebuild the action log exactly as the TR holds it (checked against the mirrored root).
+  const tree = new ActionLogTree();
+  const entries = [];
+  for (let i = 0n; i < trL._actionSeq; i++) { const e = trL._actionLog.lookup(i); entries.push(e); tree.append(e.payloadHash); }
+  if (Buffer.from(tree.root()).toString('hex') !== rootHex) throw new Error('JS action-log tree != the root EBT mirrors');
+  const sid = hexToBytes(S.scheduleId);
+  if (!flags.mirrored) {
+    await ebt.callTx.mirrorScheduleLifecycle(entries[0], trL._registeredSchedules.lookup(sid), tree.proof(0));
+    await ebt.callTx.mirrorClassStatutoryTotal(entries[1], sid, CLASS, SPLIT, 100n, BigInt(S.retuneTime), tree.proof(1));
+    flags.mirrored = true;
+    save();
+    console.log('[stack] schedule + class mirrored into EBT');
+  }
+  if (!flags.attested) {
+    const attKey = runtimePersistentHash([PRODUCER.key, PRODUCER.meter]);
+    const args = [attKey, PRODUCER.key, PRODUCER.meter, 1n, new Uint8Array(32).fill(0x53), nowSec()];
+    const L = await ledgerOf(dn, 'ebt-v8', ebtAddress);
+    const msg = P.ownerActionMessage(self, padTag('attestProducerOwnership'), P.ownerDigest_attestProducerOwnership(...args), L._ownerNonce);
+    await ebt.callTx.attestProducerOwnership(...args, RT.jubjubSchnorrSign(MSG1, [msg], OWNER.sk));
+    flags.attested = true;
+    save();
+    console.log('[stack] producer attested');
+  }
+}
+
 /** Approve `actionHash` on the council with slots 0 and 1 (2-of-3). */
 async function approve(dn, actionHash, slots = [0, 1]) {
   const ms = await loadModule('multisig-v8');
@@ -154,6 +191,11 @@ const STAGES = {
       S.council = address;
       save();
     }
+    if (!S.councilLocked) {
+      await finalizeContract(dn, 'multisig-v8', S.council);   // full deploy: lock the authority
+      S.councilLocked = true;
+      save();
+    }
     // One on-chain approval end to end (in-circuit secp256k1, real proof).
     const probe = label('council probe action');
     await approve(dn, probe, [0]);
@@ -176,7 +218,7 @@ const STAGES = {
       dn.bind(address, 'tariff-registry-v1');
     }
     if (!S.trVks) {
-      S.trVks = await insertMissingVks(dn, 'tariff-registry-v1', S.tr, TR_WITNESSES);
+      S.trVks = await finalizeContract(dn, 'tariff-registry-v1', S.tr, TR_WITNESSES);   // last key + lock in one update
       save();
     }
     const trMod = await loadModule('tariff-registry-v1');
@@ -229,37 +271,14 @@ const STAGES = {
       dn.bind(address, 'ebt-v8');
     }
     if (!S.ebtVks) {
-      S.ebtVks = await insertMissingVks(dn, 'ebt-v8', S.ebt);
+      S.ebtVks = await finalizeContract(dn, 'ebt-v8', S.ebt);   // last key + lock in one update
       save();
     }
     const ebtMod = await loadModule('ebt-v8');
     const P = ebtMod.pureCircuits;
     const ebt = await join(dn, 'ebt-v8', S.ebt);
     const self = hexToBytes(S.ebt);
-    // Rebuild the action log exactly as the TR holds it (checked against the mirrored root).
-    const tree = new ActionLogTree();
-    const entries = [];
-    for (let i = 0n; i < trL._actionSeq; i++) { const e = trL._actionLog.lookup(i); entries.push(e); tree.append(e.payloadHash); }
-    if (Buffer.from(tree.root()).toString('hex') !== S.ebtRoot) throw new Error('JS action-log tree != the root EBT mirrors');
-    const sid = hexToBytes(S.scheduleId);
-    if (!S.mirrored) {
-      await ebt.callTx.mirrorScheduleLifecycle(entries[0], trL._registeredSchedules.lookup(sid), tree.proof(0));
-      await ebt.callTx.mirrorClassStatutoryTotal(entries[1], sid, CLASS, SPLIT, 100n, BigInt(S.retuneTime), tree.proof(1));
-      S.mirrored = true;
-      save();
-      console.log('[stack] schedule + class mirrored into EBT');
-    }
-    if (!S.attested) {
-      const producerKey = PRODUCER.key;
-      const attKey = runtimePersistentHash([producerKey, PRODUCER.meter]);
-      const args = [attKey, producerKey, PRODUCER.meter, 1n, new Uint8Array(32).fill(0x53), nowSec()];
-      const L = await ledgerOf(dn, 'ebt-v8', S.ebt);
-      const msg = P.ownerActionMessage(self, padTag('attestProducerOwnership'), P.ownerDigest_attestProducerOwnership(...args), L._ownerNonce);
-      await ebt.callTx.attestProducerOwnership(...args, RT.jubjubSchnorrSign(MSG1, [msg], OWNER.sk));
-      S.attested = true;
-      save();
-      console.log('[stack] producer attested');
-    }
+    await mirrorAndAttest(dn, S.ebt, S, S.ebtRoot, 'ebt-v8');
     if (!S.chipRegistered) {
       const t = nowSec();
       const h = P.councilChipHash(self, 1n, CHIP.pk, chipHwId(CHIP), PRODUCER.meter, PRODUCER.key, { bytes: PRODUCER.payout }, t);
@@ -279,6 +298,11 @@ const STAGES = {
       S.ld = address;
       save();
       dn.bind(address, 'living-dividend-v3');
+    }
+    if (!S.ldLocked) {
+      await finalizeContract(dn, 'living-dividend-v3', S.ld, LD_WITNESSES);   // full deploy: lock the authority
+      S.ldLocked = true;
+      save();
     }
     const ebtMod = await loadModule('ebt-v8');
     const ldMod = await loadModule('living-dividend-v3');
@@ -331,6 +355,139 @@ const STAGES = {
     await watchLdEvents(dn);
   },
 
+  // Staged-deploy window attacks (Garrett 2026-11-24). A fresh EBT, mid-deploy
+  // (ceremony keys only, mirrors + producer attested, i.e. everything settle
+  // needs except a registered chip). Each attack must be refused by the chain
+  // (or the contract), and the state must be unchanged afterwards.
+  async attacks(dn) {
+    const A = (S.atk ??= {});
+    const results = [];
+    const check = (/** @type {string} */ id, /** @type {boolean} */ ok, /** @type {string} */ detail) => {
+      results.push({ id, ok, detail });
+      console.log(`[attack] ${ok ? 'PASS' : 'FAIL'} ${id}: ${detail}`);
+    };
+    /** Runs `fn`, expecting the chain or the contract to refuse it. */
+    const refused = async (/** @type {() => Promise<any>} */ fn) => {
+      try {
+        const r = await fn();
+        const status = r?.status ?? r?.public?.status;
+        if (status && status !== 'SucceedEntirely') return { refused: true, why: `status ${status}` };
+        return { refused: false, why: `accepted (${status ?? 'no status'})` };
+      } catch (e) {
+        const msg = [/** @type {any} */ (e)?.message, /** @type {any} */ (e)?.cause?.message, /** @type {any} */ (e)?.cause?.cause?.message].filter(Boolean).join(' | ');
+        return { refused: true, why: msg.replace(/\s+/g, ' ').slice(0, 220) };
+      }
+    };
+    const providers = /** @type {any} */ (dn.providersFor('ebt-v8'));
+    const trL = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
+    if (!A.ebt) {
+      const root = trL.registryActionLogRoot;
+      const { address } = await deploy(dn, 'ebt-v8-ceremony', [
+        OWNER.pk, METER_AUTHORITY.pk, { bytes: hexToBytes(S.council) },
+        { bytes: new Uint8Array(32).fill(0x21) }, { bytes: new Uint8Array(32).fill(0x23) }, ESCROW.pk, root,
+      ]);
+      A.ebt = address;
+      A.root = Buffer.from(root).toString('hex');
+      save();
+    }
+    dn.bind(A.ebt, 'ebt-v8');
+    await mirrorAndAttest(dn, A.ebt, A, A.root, 'ebt-v8-ceremony');
+    const full = buildDir('ebt-v8');
+    const keys = buildVerifierKeys(full);
+    const state0 = await liveState(dn, 'ebt-v8', A.ebt);
+    const ops0 = state0.operations().length;
+
+    // SD-1: the finalized-state check refuses a mid-deploy contract.
+    const fz0 = checkFinalized(state0, full);
+    check('SD-1 finalized check refuses mid-deploy', !fz0.ok && fz0.problems.some((p) => p.startsWith('authority-not-locked')),
+      `${fz0.problems.filter((p) => p.startsWith('missing:')).length} missing, ${fz0.problems.filter((p) => !p.startsWith('missing:')).join(', ')}`);
+
+    // SD-2: a circuit whose key is not inserted yet cannot be called.
+    {
+      const self = hexToBytes(A.ebt);
+      const P = (await loadModule('ebt-v8')).pureCircuits;
+      const t = nowSec();
+      const r = await refused(async () => {
+        const ebtFull = await join(dn, 'ebt-v8', A.ebt);
+        return ebtFull.callTx.registerChip(CHIP.pk, chipHwId(CHIP), PRODUCER.meter, PRODUCER.key, { bytes: PRODUCER.payout }, t);
+      });
+      const L = await ledgerOf(dn, 'ebt-v8', A.ebt);
+      check('SD-2 call a not-yet-inserted circuit (registerChip)', r.refused && !L._chips.member(CHIP.pk), r.why);
+      void P; void self;
+    }
+
+    // SD-3: settle (in the ceremony set) with everything valid except a registered chip.
+    {
+      const ebtMod = await loadModule('ebt-v8');
+      const self = hexToBytes(A.ebt);
+      const amount = 10_000n;
+      const sessionId16 = new Uint8Array(createHash('sha256').update(`attack settle ${A.ebt}`).digest()).slice(0, 16);
+      const f = {
+        sessionID: sessionFrom16(sessionId16), amount, producerKey: PRODUCER.key, producerAddr: { bytes: PRODUCER.payout },
+        meterKeyHash: PRODUCER.meter, chipHwId: chipHwId(CHIP), chipSessionUwh: amount * 1000n + 1n,
+        chipUptimeMs: 7_200_000n, chipNonce: BigInt(Date.now()),
+      };
+      const s = signSettle(ebtMod, { addressBytes: self }, f, { chip: CHIP, hatSk: METER_AUTHORITY.sk });
+      const ld = (amount * SPLIT.ldShareBps) / 10000n, ops = (amount * SPLIT.opsShareBps) / 10000n, dao = (amount * SPLIT.daoShareBps) / 10000n;
+      const args = [...settleHatArgs(f, s), hexToBytes(S.scheduleId), CLASS, 1n, 2n,
+        [ZERO, ZERO, ZERO, ZERO], [0n, 0n, 0n, 0n], [0n, 0n, 0n, 0n],
+        10000n - SPLIT.ldShareBps - SPLIT.opsShareBps - SPLIT.daoShareBps, SPLIT.opsShareBps, SPLIT.ldShareBps, SPLIT.daoShareBps,
+        amount - ld - ops - dao, ops, ld, dao, nowSec()];
+      const r = await refused(async () => (await join(dn, 'ebt-v8-ceremony', A.ebt)).callTx.settle(...args));
+      const L = await ledgerOf(dn, 'ebt-v8', A.ebt);
+      check('SD-3 settle mid-deploy (valid HAT, no registered chip)', r.refused && L._totalSupply === 0n, `${r.why}; totalSupply ${L._totalSupply}`);
+    }
+
+    // SD-4..6: an outsider (fresh signing key) tries every maintenance action.
+    const attacker = L9.sampleSigningKey();
+    const attempt = async (/** @type {string} */ id, /** @type {any[]} */ updates, /** @type {() => Promise<boolean>} */ unchanged) => {
+      const st = await liveState(dn, 'ebt-v8', A.ebt);
+      const r = await refused(() => submitMaintenance(providers, A.ebt, st, updates, [attacker], dn.net.networkId));
+      check(id, r.refused && await unchanged(), r.why);
+    };
+    await attempt('SD-4 outsider inserts the genuine registerChip key', [vkInsert('registerChip', keys.get('registerChip'))],
+      async () => (await liveState(dn, 'ebt-v8', A.ebt)).operation('registerChip') === undefined);
+    await attempt('SD-5 outsider inserts a foreign key under manualReissue', [vkInsert('manualReissue', keys.get('redeem'))],
+      async () => (await liveState(dn, 'ebt-v8', A.ebt)).operation('manualReissue') === undefined);
+    await attempt('SD-6 outsider removes settle', [vkRemove('settle')],
+      async () => (await liveState(dn, 'ebt-v8', A.ebt)).operation('settle') !== undefined);
+    await attempt('SD-7 outsider takes over the authority', [replaceAuthority(new L9.ContractMaintenanceAuthority([L9.signatureVerifyingKey(attacker)], 1, state0.maintenanceAuthority.counter + 1n))],
+      async () => (await liveState(dn, 'ebt-v8', A.ebt)).maintenanceAuthority.committee.length === 1 && (await liveState(dn, 'ebt-v8', A.ebt)).maintenanceAuthority.counter === state0.maintenanceAuthority.counter);
+    {
+      const st = await liveState(dn, 'ebt-v8', A.ebt);
+      check('SD-8 state unchanged by all attempts', st.operations().length === ops0 && st.maintenanceAuthority.counter === state0.maintenanceAuthority.counter,
+        `${st.operations().length} operations, authority counter ${st.maintenanceAuthority.counter}`);
+    }
+
+    // SD-9: the authorized finalization: missing keys, the last one with the lock.
+    if (!A.finalized) {
+      await finalizeContract(dn, 'ebt-v8', A.ebt);
+      A.finalized = true;
+      save();
+    }
+    const fz1 = checkFinalized(await liveState(dn, 'ebt-v8', A.ebt), full);
+    check('SD-9 finalized: exact audited keys + locked authority', fz1.ok, fz1.ok ? `${keys.size} keys` : fz1.problems.join(', '));
+
+    // SD-10..12: after the lock, even the deployer's own key can change nothing.
+    const deployerKey = await providers.privateStateProvider.getSigningKey(A.ebt);
+    const after = async (/** @type {string} */ id, /** @type {any[]} */ updates, /** @type {any[]} */ signers) => {
+      const st = await liveState(dn, 'ebt-v8', A.ebt);
+      const r = await refused(() => submitMaintenance(providers, A.ebt, st, updates, signers, dn.net.networkId));
+      const fz = checkFinalized(await liveState(dn, 'ebt-v8', A.ebt), full);
+      check(id, r.refused && fz.ok, r.why);
+    };
+    await after('SD-10 deployer key removes settle after the lock', [vkRemove('settle')], [deployerKey]);
+    await after('SD-11 deployer key restores its authority after the lock',
+      [replaceAuthority(new L9.ContractMaintenanceAuthority([L9.signatureVerifyingKey(deployerKey)], 1, (await liveState(dn, 'ebt-v8', A.ebt)).maintenanceAuthority.counter + 1n))], [deployerKey]);
+    await after('SD-12 unsigned update after the lock', [vkRemove('settle')], []);
+
+    const failed = results.filter((r) => !r.ok);
+    console.log(`[attack] ${results.length - failed.length}/${results.length} passed`);
+    S.attackResults = results;
+    save();
+    if (failed.length) throw new Error(`staged-deploy attacks: ${failed.map((r) => r.id).join('; ')}`);
+  },
+
   // Re-run the watcher over the events already on chain.
   async watch(dn) { await watchEvents(dn, 'watch'); },
 
@@ -379,7 +536,7 @@ const wanted = process.argv.slice(2);
 if (!wanted.length) { console.error(`usage: stack.mjs <${Object.keys(STAGES).join('|')}|all> ...`); process.exit(2); }
 // 'all': a settle before LD (budget accrued with nobody registered stays in
 // EBT) and one after registration, so the claim has something to mint.
-const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'watch'];
+const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'watch', 'attacks'];
 const order = wanted.includes('all') ? ALL : wanted;
 const dn = await openDevnet();
 // Bind every deployed contract's build for cross-contract calls (TR/EBT -> Council, LD -> EBT).

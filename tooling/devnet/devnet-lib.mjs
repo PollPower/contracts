@@ -22,6 +22,7 @@ import { deployContract, findDeployedContract, submitInsertVerifierKeyTx } from 
 import { loadNetworkConfig, describeNetwork } from '../midnight-network.mjs';
 import { createProviders, withZkConfigDir } from '../midnight-providers.mjs';
 import { devnetMasterWallet, assertLocalDevnet } from './devnet-wallet.mjs';
+import { checkFinalized, buildVerifierKeys, submitMaintenance, vkInsert, replaceAuthority, lockedAuthority } from '../deploy/finalize.mjs';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const BUILD = path.join(ROOT, 'build', 'l9');
@@ -116,26 +117,34 @@ export async function liveState(dn, name, address) {
   return read ? read.contractState.deserialize({ v9: ContractState }) : null;
 }
 
+
 /**
- * Staged deploy, second half: insert every verifier key of the FULL build that
- * the (ceremony-deployed) contract does not have yet, one maintenance tx each.
- * Returns the circuit ids inserted.
+ * Finalizes a deployment: inserts every audited verifier key the contract
+ * lacks, the LAST one in the same maintenance update that locks the authority
+ * (so the complete contract never exists with a live deployer key), then
+ * requires checkFinalized() to pass. For a full deploy (nothing missing) the
+ * update only locks the authority.
  */
-export async function insertMissingVks(dn, fullName, address, witnesses = null) {
+export async function finalizeContract(dn, fullName, address, witnesses = null) {
   const providers = /** @type {any} */ (dn.providersFor(fullName));
   const c = await compiled(fullName, witnesses);
-  const live = await liveState(dn, fullName, address);
-  if (!live) throw new Error(`${fullName} at ${address}: no state from the indexer`);
-  const dir = path.join(buildDir(fullName), 'keys');
-  const inserted = [];
-  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.verifier')).sort()) {
-    const id = f.slice(0, -'.verifier'.length);
-    if (live.operation(id) !== undefined) continue;
-    const vk = fs.readFileSync(path.join(dir, f));
+  const keys = buildVerifierKeys(buildDir(fullName));
+  let live = await liveState(dn, fullName, address);
+  const missing = [...keys.keys()].filter((id) => live.operation(id) === undefined);
+  const last = missing.pop();
+  for (const id of missing) {
     const t0 = Date.now();
-    await submitInsertVerifierKeyTx(providers, /** @type {any} */ (c), address, id, vk);
-    console.log(`[devnet]   vk ${id} (${vk.length} B) inserted in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
-    inserted.push(id);
+    await submitInsertVerifierKeyTx(providers, /** @type {any} */ (c), address, id, keys.get(id));
+    console.log(`[devnet]   vk ${id} inserted in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   }
-  return inserted;
+  live = await liveState(dn, fullName, address);
+  const deployerKey = await providers.privateStateProvider.getSigningKey(address);
+  const updates = [...(last ? [vkInsert(last, keys.get(last))] : []), replaceAuthority(lockedAuthority(live.maintenanceAuthority.counter))];
+  const t0 = Date.now();
+  await submitMaintenance(providers, address, live, updates, [deployerKey], dn.net.networkId);
+  console.log(`[devnet]   ${last ? `final vk ${last} + ` : ''}authority locked in one update (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+  const r = checkFinalized(await liveState(dn, fullName, address), buildDir(fullName));
+  if (!r.ok) throw new Error(`${fullName} at ${address} NOT finalized: ${r.problems.join(', ')}`);
+  console.log(`[devnet]   ${fullName} finalized: ${keys.size} audited verifier keys, authority locked`);
+  return [...missing, ...(last ? [last] : [])];
 }
