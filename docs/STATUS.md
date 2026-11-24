@@ -17,7 +17,7 @@ calendar days. It only holds if each step lands in about a day.
 | Day | Planned | Actual | Status |
 |---|---|---|---|
 | Tue 24 | **H-1** (EBT, Multisig: constructor sets all authorities) · Tangem test tooling + admin-app "sign hash" · local devnet up | **H-1 done**: 9 contract tests (3 negative) green; EBT 18→17, ceremony 8→7, Multisig 12→11 circuits. Tangem tooling + software-key pipeline (5 tests) `3d29984`; admin app ring test `e77521b` (monorepo, branch `wi16-ledger9`); devnet up on kenya (node 2.1.101, indexer 4.4.101, proof 9.0.2; offset ports). **Waiting on:** ring signature (needs `read:packages` token for the APK build) | H-1 ✅ · Tangem ⏳ |
-| Wed 25 | **C-2** (EBT owner Schnorr) + Schnorr signer lib + parity · **Tangem ring verified on devnet** | **C-2 done early (Tue 24)** `d170a9f`: 13 contract tests (11 negative) green; owner = Jubjub key, in-circuit `jubjubSchnorrVerify` over (contract, circuit, args digest, nonce); signer uses the contract's exported pure helpers. Devnet path for the ring proven with a software key, low-S and high-S both verified on chain (`61cf805`). **Still waiting on:** the ring signature itself (admin APK build in progress) | C-2 ✅ · Tangem ⏳ |
+| Wed 25 | **C-2** (EBT owner Schnorr) + Schnorr signer lib + parity · **Tangem ring verified on devnet** | **C-2 done early (Tue 24)** `d170a9f`: 13 contract tests (11 negative) green; owner = Jubjub key, in-circuit `jubjubSchnorrVerify` over (contract, circuit, args digest, nonce); signer uses the contract's exported pure helpers. Devnet path for the ring proven with a software key, low-S and high-S both verified on chain (`61cf805`). **Tangem ring verified (Tue 24):** real ring secp256k1 signature (compressed 33-byte key, raw 64-byte r‖s, low-S) accepted by `@noble/curves`, the compiled circuit and **on chain with a real proof** (devnet block 627); wrong digest rejected. Council keys stay on the rings | C-2 ✅ · Tangem ✅ |
 | Thu 26 | **C-1 council**: Multisig secp256k1 `approve` + `isApproved`; EBT/TR/LD `requireCouncil` + replay records | | |
 | Fri 27 | **C-1 machine signers**: HAT, escrow attestor, schedule operators → Jubjub Schnorr; meter-authority-service signer | | |
 | Sat 28 | **LD v3** + EBT `dividendAccrued` / `mintDividend` callee | | |
@@ -139,7 +139,7 @@ claim with a view call and a minting call. No fix grows a verifier key past
 
 1. **Approve the C-1/C-2/H-1 fix design**, including Schnorr (recommended)
    or hash-preimage identity for the owner (C-2).
-2. **Can the Tangem rings sign secp256k1?** Decides whether council keys stay
+2. ~~Can the Tangem rings sign secp256k1?~~ **Yes** (devnet-verified 2026-11-24). Council keys stay
    on hardware (C-1a).
 3. **Schedule:** option A (fix everything, Buildathon demo on a local devnet,
    Preprod after) or B (Multisig + EBT + TariffRegistry fixed by Nov 30, LD v3

@@ -55,9 +55,8 @@ what the circuit checks about its output.
 ### C-1a: council approvals (Multisig v6.2 → "v7-L9")
 
 - Admin keys are **secp256k1 public keys**, set in the constructor (H-1).
-  Tangem cards sign secp256k1; the H-1 ring swap keeps the hardware.
-  **Decision needed:** confirm the Tangem rings can sign secp256k1 digests
-  (the validated ring path today is Ed25519).
+  **Confirmed 2026-11-24: council keys can stay on the Tangem rings** (see
+  "Tangem ring test" below).
 - `approve(actionHash, adminIndex, sig: Secp256k1EcdsaSignature)`:
   `digest = persistentHash([pad("pp:ms:v7:approve"), kernel.self().bytes, actionHash])`,
   `assert(secp256k1EcdsaVerify(digest, sig, adminPk[adminIndex]))`, record.
@@ -70,9 +69,35 @@ what the circuit checks about its output.
 - Cost: ~117 MB proving key per approval, ~2.7 KB verifier key. Approvals are
   rare council actions, so this is acceptable.
 
-Alternative if Tangem cannot sign secp256k1: council keys as Jubjub Schnorr on
-the admin phones (2 MB proving key), with Tangem dropped from the on-chain
-path. That weakens H-1's hardware guarantee; not recommended.
+#### Tangem ring test (2026-11-24): PASS
+
+A real Tangem ring signed the test digest
+`1f530333927aed3cadebc75edb1d176c3335015006bb8af0600c83cabd713176` with its
+secp256k1 wallet through the admin app's ring test screen (monorepo
+`wi16-ledger9`, `e77521b`/`f2d77c0`).
+
+| Property | Ring behaviour | What the tooling and contract must do |
+|---|---|---|
+| Public key format | **Compressed SEC1, 33 bytes** (`02`/`03` ‖ x). `publicKey` = `walletPublicKey` | Decompress off-chain to `Secp256k1Point {x, y, identity: false}` for the constructor / admin set |
+| Signature encoding | **Raw r ‖ s, 64 bytes** (big-endian), no DER, no recovery byte | Split into `{r, s}`; no DER parsing needed. The parser still accepts DER and 65-byte r‖s‖v |
+| Hashing | Signs the 32 bytes **as given** (no prehash) | The circuit's digest goes to the ring unchanged |
+| S value | **Low-S** on this signature | Nothing: the circuit accepts high-S as well (pinned by test), so normalisation can't fail a council approval |
+
+Verified three ways: `@noble/curves` (with and without the low-S rule); the
+compiled `secp256k1EcdsaVerify` circuit (as given, low-S and high-S forms);
+and **on the local ledger 9 devnet with a real proof**: `verifyAndRecord`
+accepted on chain (tx `00ad83ae…406228`, block 627), and a wrong digest was
+rejected.
+
+Design consequences:
+- Because the circuit accepts both `(r, s)` and `(r, n−s)`, a signature is not
+  unique. **Approvals must be recorded per `(actionHash, adminIndex)`**, never
+  per signature bytes, or one admin could approve twice.
+- The council public keys are read from the ring once (scan) and placed in
+  the constructor; the ring itself never leaves the admin.
+
+Fallback (no longer needed): council keys as Jubjub Schnorr on the admin
+phones, with Tangem dropped from the on-chain path.
 
 ### C-1b: consumers of council approval (EBT, TariffRegistry, LD)
 
@@ -214,6 +239,6 @@ review pass are done.
 ## Decisions needed
 
 1. Approve this design (or the hash-preimage alternative for C-2).
-2. Can the Tangem rings sign secp256k1? (Decides C-1a.)
+2. ~~Can the Tangem rings sign secp256k1?~~ **Yes**, verified on the devnet 2026-11-24 (C-1a stays on hardware).
 3. `_council` sealed for the Buildathon (recommended), or rotatable now.
 4. Schedule option A or B.
