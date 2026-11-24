@@ -1,7 +1,7 @@
 # WI-16 ledger 9 status
 
 Branch `wi16-ledger9`. Updated at the end of each task.
-Last update: 2026-11-24 (late JST), legacy mint path retired (disabled) with an inventory; HAT firmware located. Next: consumer app LD v3 member actions.
+Last update: 2026-11-24 (late JST), consumer app LD v3 member actions done (signing + service). Next: step 4, devnet scripts + LD v3 relayer + settle submit.
 
 ## Current state (2026-11-24, evening JST)
 
@@ -45,11 +45,19 @@ work (step 4), since the deploy scripts touch TariffRegistry anyway.
    `pp_gwattest.c`, `pp_keystore.c`). The chip has a native attestation that
    signs its own metered energy; production uses `SIGN_HASH` (host picks the
    amount). Interim hardening proposed in the follow-up doc.
-3. **Consumer app support for LD v3 member actions** (claim, payout-address
-   change): Jubjub member key + signing over `memberMessage`.
+3. ~~Consumer app LD v3 member actions~~ done (screens pending the backend):
+   wallet shim 0.3.0 (`pollpower-monorepo` `c71d06c`: Jubjub member key
+   derived from the mnemonic, `ldMemberIdentity`, `signLdMemberAction` that
+   builds the message itself; 4 vector tests vs the compiled LD v3) and
+   `consumer-standalone` branch `wi16-ld-v3` (`ecca925`: `ldV3Service`,
+   `useLdV3Member`, API client for `GET /api/ld/v3/member` and
+   `POST /api/ld/v3/action`; 7 tests, 5 negative). **Needs in step 4:** the
+   LD v3 relayer endpoints in pollpower-v2-api, a device check that the
+   shim's new WASM initialises in the WebView, and the screens.
 4. **Devnet scripts:** ceremony / HAT / retune / deploy (they refuse to run
    now); `tests/contract/settle-world.mjs` is the reference. Plus the TR
-   retire-at-epoch-0 fix.
+   retire-at-epoch-0 fix, pp-settle-service `submit` + retry (gap B), and the
+   LD v3 relayer (`/api/ld/v3/member`, `/api/ld/v3/action`).
 5. **Full devnet run**: confirm a mint inside a cross-contract call, two calls
    to EBT in one transaction, the indexer returning LD's `Misc` events (and
    EBT's `settleChip`); re-measure deploy sizes.
