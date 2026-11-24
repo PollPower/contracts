@@ -23,6 +23,9 @@ import { createEbtSettleChain } from '../settle/ebt-settle-chain.mjs';
 import { createLdRelay } from '../ld/ld-relay.mjs';
 import { planSettleArgs } from '../settle/settle-plan.mjs';
 import { createSettleWatcherService } from '../watcher/settle-watcher-service.mjs';
+import { deployCouncil, deployTariffRegistry, deployEbt, deployLd, suiteManifest } from '../deploy/deploy-suite.mjs';
+import { execSync } from 'node:child_process';
+import fs from 'node:fs';
 import * as L9 from '@midnight-ntwrk/midnight-js-protocol/v9';
 import { checkFinalized, buildVerifierKeys, submitMaintenance, vkInsert, vkRemove, replaceAuthority } from '../deploy/finalize.mjs';
 import { devnetCouncilKey, buildCouncilConstructorArgs } from '../council/council-keys-guard.mjs';
@@ -129,8 +132,28 @@ async function watchLdEvents(dn) {
   }
 }
 
+// A full pass ('all') is valid only from a fresh state: fresh council, keys
+// and contracts on the devnet, nothing resumed (Garrett, 2026-11-24).
+const RUN_ALL = process.argv.slice(2).includes('all');
+if (RUN_ALL && state.exists()) {
+  console.error(`[stack] REFUSING 'all': run state already exists (${state.file}). A full pass must start fresh: move it aside first.`);
+  process.exit(3);
+}
 const S = state.load();
 const save = () => state.save(S);
+
+/** The devnet's inputs to the shared deploy suite (Preprod passes real ones). */
+const DEVNET_INPUTS = {
+  council: { points: COUNCIL.map((k) => k.point), threshold: 2n },
+  tariff: { governanceRoot: charterRoot, refRateFiatPerKwh: 100n, validatorPk: VALIDATOR.pk, witnesses: TR_WITNESSES },
+  ebt: {
+    ownerPk: OWNER.pk, meterAuthorityPk: METER_AUTHORITY.pk, escrowAttestorPk: ESCROW.pk,
+    operationsRecipient: '21'.repeat(32), daoRecipient: '23'.repeat(32),
+  },
+  ld: { witnesses: LD_WITNESSES },
+};
+/** The run record IS the stack state: the suite resumes a step from it. */
+const suiteCtx = (/** @type {any} */ dn) => ({ dn, rec: S, save });
 
 /**
  * Mirrors the TR schedule + class into an EBT (action-log proofs) and attests
@@ -192,24 +215,20 @@ async function approve(dn, actionHash, slots = [0, 1]) {
 
 const STAGES = {
   async council(dn) {
-    if (!S.council) {
-      const { address } = await deploy(dn, 'multisig-v8', buildCouncilConstructorArgs(COUNCIL.map((k) => k.point), 2n, dn.net.networkId));
-      S.council = address;
-      save();
-      dn.bind(address, 'multisig-v8');   // callers (TR, EBT, LD) resolve the council's code
-    }
-    if (!S.councilLocked) {
-      await finalizeContract(dn, 'multisig-v8', S.council);   // full deploy: lock the authority
-      S.councilLocked = true;
-      save();
-    }
+    await deployCouncil(suiteCtx(dn), DEVNET_INPUTS.council);
     // One on-chain approval end to end (in-circuit secp256k1, real proof).
     const probe = label('council probe action');
     await approve(dn, probe, [0]);
-    const ms = await join(dn, 'multisig-v8', S.council);
+    // Read the approval back from the council's ledger (epoch 0: the epoch word is 32 zero bytes).
+    const msMod = await loadModule('multisig-v8');
     const st = await liveState(dn, 'multisig-v8', S.council);
-    console.log(`[stack] council at ${S.council}; live state read back: ${st ? 'yes' : 'no'}`);
-    void ms;
+    const V3 = new RT.CompactTypeVector(3, new RT.CompactTypeBytes(32));
+    const pad = new Uint8Array(32); pad.set(new TextEncoder().encode('pp:ms:v8:approvalKey'));
+    const key = RT.persistentHash(V3, [pad, probe, new Uint8Array(32)]);
+    const approvals = msMod.ledger(st.data)._approvals;
+    const recorded = approvals.member(key) && approvals.lookup(key).member(0n);
+    if (!recorded) throw new Error('council probe approval (slot 0) is not recorded in the council ledger');
+    console.log(`[stack] council at ${S.council}; probe approval by slot 0 recorded in the ledger`);
     S.councilProbe = true;
     save();
   },
@@ -217,17 +236,7 @@ const STAGES = {
   // TariffRegistry: staged deploy (ceremony variant + missing verifier keys),
   // bootstrap, a council-approved + validator-signed schedule, a retuned class.
   async tariff(dn) {
-    if (!S.tr) {
-      const { address } = await deploy(dn, 'tariff-registry-v1-ceremony',
-        [{ bytes: hexToBytes(S.council) }, charterRoot, 100n, VALIDATOR.pk], TR_WITNESSES);
-      S.tr = address;
-      save();
-      dn.bind(address, 'tariff-registry-v1');
-    }
-    if (!S.trVks) {
-      S.trVks = await finalizeContract(dn, 'tariff-registry-v1', S.tr, TR_WITNESSES);   // last key + lock in one update
-      save();
-    }
+    await deployTariffRegistry(suiteCtx(dn), DEVNET_INPUTS.tariff);
     const trMod = await loadModule('tariff-registry-v1');
     const P = trMod.pureCircuits;
     const tr = await join(dn, 'tariff-registry-v1', S.tr, TR_WITNESSES);
@@ -266,21 +275,7 @@ const STAGES = {
   // attestation (owner), a council-registered devnet chip.
   async ebt(dn) {
     const trL = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
-    if (!S.ebt) {
-      const root = trL.registryActionLogRoot;
-      const { address } = await deploy(dn, 'ebt-v8-ceremony', [
-        OWNER.pk, METER_AUTHORITY.pk, { bytes: hexToBytes(S.council) },
-        { bytes: new Uint8Array(32).fill(0x21) }, { bytes: new Uint8Array(32).fill(0x23) }, ESCROW.pk, root,
-      ]);
-      S.ebt = address;
-      S.ebtRoot = Buffer.from(root).toString('hex');
-      save();
-      dn.bind(address, 'ebt-v8');
-    }
-    if (!S.ebtVks) {
-      S.ebtVks = await finalizeContract(dn, 'ebt-v8', S.ebt);   // last key + lock in one update
-      save();
-    }
+    await deployEbt(suiteCtx(dn), DEVNET_INPUTS.ebt);
     const ebtMod = await loadModule('ebt-v8');
     const P = ebtMod.pureCircuits;
     const ebt = await join(dn, 'ebt-v8', S.ebt);
@@ -300,17 +295,7 @@ const STAGES = {
   // Living Dividend v3: deploy, bind to EBT (council op 0), register a member
   // (LD -> Council isApproved and LD -> EBT dividendAccrued in one tx).
   async ld(dn) {
-    if (!S.ld) {
-      const { address } = await deploy(dn, 'living-dividend-v3', [{ bytes: hexToBytes(S.ebt) }, { bytes: hexToBytes(S.council) }], LD_WITNESSES);
-      S.ld = address;
-      save();
-      dn.bind(address, 'living-dividend-v3');
-    }
-    if (!S.ldLocked) {
-      await finalizeContract(dn, 'living-dividend-v3', S.ld, LD_WITNESSES);   // full deploy: lock the authority
-      S.ldLocked = true;
-      save();
-    }
+    await deployLd(suiteCtx(dn), DEVNET_INPUTS.ld);
     const ebtMod = await loadModule('ebt-v8');
     const ldMod = await loadModule('living-dividend-v3');
     const P = ldMod.pureCircuits;
@@ -706,15 +691,43 @@ if (!wanted.length) { console.error(`usage: stack.mjs <${Object.keys(STAGES).joi
 const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'service', 'relay', 'watcher', 'attacks'];
 const order = wanted.includes('all') ? ALL : wanted;
 const dn = await openDevnet();
+const PASS = RUN_ALL ? {
+  startedAt: new Date().toISOString(),
+  gitCommit: execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim(),
+  gitClean: execSync('git status --porcelain -- tooling ebt multisig tariff-registry living-dividend', { cwd: ROOT }).toString().trim() === '',
+  manifest: suiteManifest(),
+  network: dn.net.networkId,
+  stages: /** @type {any[]} */ ([]),
+} : null;
+const writePass = (/** @type {string} */ result, /** @type {string | undefined} */ error) => {
+  if (!PASS) return;
+  const out = { ...PASS, result, error, finishedAt: new Date().toISOString(),
+    addresses: { council: S.council, tariffRegistry: S.tr, ebt: S.ebt, livingDividend: S.ld } };
+  const dir = path.join(ROOT, 'docs', 'devnet-passes');
+  fs.mkdirSync(dir, { recursive: true });
+  const f = path.join(dir, `${PASS.startedAt.replace(/[:.]/g, '-')}-${result}.json`);
+  fs.writeFileSync(f, `${JSON.stringify(out, null, 2)}\n`);
+  console.log(`[stack] pass record: ${f}`);
+};
 // Bind every deployed contract's build for cross-contract calls (TR/EBT -> Council, LD -> EBT).
 if (S.council) dn.bind(S.council, 'multisig-v8');
 if (S.tr) dn.bind(S.tr, 'tariff-registry-v1');
 if (S.ebt) dn.bind(S.ebt, 'ebt-v8');
 if (S.ld) dn.bind(S.ld, 'living-dividend-v3');
-for (const st of order) {
-  if (!STAGES[st]) throw new Error(`unknown stage ${st}`);
-  console.log(`[stack] === ${st}`);
-  await STAGES[st](dn);
+for (const st of order) if (!STAGES[st]) throw new Error(`unknown stage ${st}`);
+try {
+  for (const st of order) {
+    console.log(`[stack] === ${st}`);
+    const t0 = Date.now();
+    await STAGES[st](dn);
+    PASS?.stages.push({ stage: st, ok: true, seconds: Math.round((Date.now() - t0) / 1000) });
+  }
+} catch (e) {
+  const msg = String(/** @type {any} */ (e)?.message ?? e).slice(0, 500);
+  PASS?.stages.push({ stage: 'FAILED', error: msg });
+  writePass('fail', msg);
+  throw e;
 }
+writePass(PASS && PASS.gitClean ? 'pass' : 'pass-dirty-tree');
 console.log(`[stack] done; state in ${state.file}`);
 process.exit(0);
