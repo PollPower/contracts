@@ -189,6 +189,15 @@ differ from a passing record.
 - Every full pass starts by restarting the proof server (Garrett,
   2026-11-25, after kenya OOM-killed it mid-pass at 21.7 GB); a failed
   restart stops the pass. Joi caps the proof server's memory.
+- Statutory lane (Garrett, 2026-11-25): minted on chain to a council-approved
+  PollPower statutory account; KES remitted off-chain and recorded with
+  `tooling/tariff/remit.mjs` (hash-chained log; each head anchored in the ops
+  log `~/pollpower-ops/ops.log` on kenya, backed up nightly to md0, and in the
+  council Telegram group). Later: an on-chain anchor.
+- Proof server: one job, one worker; our tooling sends one proof at a time
+  (`555d32b`). Per-proof peak to be measured (`tooling/proving/measure-proof-peaks.mjs`)
+  once Joi recreates it with a temporary cap; then the final cap = peak + 20 %.
+  Cloud proving host (64 GB) on hold until the measurement.
 - Recorded demo on this pass: `docs/demo/wi16-demo.md` (ring in council slot 0
   of a separate demo deployment of the same suite).
 Open: consumer app must call `/api/ld/v3/enroll` with the shim's member key
