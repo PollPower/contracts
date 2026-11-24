@@ -89,6 +89,14 @@ pragma language_version 0.28;
 
 import CompactStandardLibrary;
 
+// WI16-C-1b: the federation council is Multisig v8. consumeFederationApproval
+// asks its witness-free `isApproved` through a ledger 9 cross-contract call;
+// replay protection stays here (_consumedFederationApprovals).
+contract Council {
+  circuit isApproved(actionHash: Bytes<32>): Boolean;
+}
+
+
 // =============================================================================
 // Constants (compile-time; NOT calibration values, which live in ledger)
 // =============================================================================
@@ -117,14 +125,6 @@ witness signature_valid(
   pubkey: Bytes<32>,
   messageHash: Bytes<32>,
   signature: Bytes<64>,
-): Boolean;
-
-// Multisig bundle verify — same shape as EBT v7.4.2 / LD v2.2.1. Off-chain
-// prover reconstructs a msfed 3-of-5 approval bundle over `payload`; returns
-// Boolean.
-witness multisig_signature_valid(
-  payload:       Bytes<32>,
-  authorityHash: Bytes<32>,
 ): Boolean;
 
 // R-A structural fix. Returns a Merkle-inclusion proof (data, not truth):
@@ -241,7 +241,7 @@ export ledger _bootstrapComplete: Boolean;
 // Federation multisig authority hash (SHA-256 of sorted seat pubkeys of the
 // tier whose approval gates branch ops). Rotatable via setFederationAuthority
 // (federation-gated).
-export ledger _federationAuthority: Bytes<32>;
+export sealed ledger _council: Council;
 
 // Calibration constants — Garrett's 2026-07-14 written call
 // (CALIBRATION-DECISIONS-RESOLVED-2026-07-14.md). Not `sealed` because
@@ -666,10 +666,8 @@ circuit consumeFederationApproval(actionHash: Bytes<32>, opLabel: Bytes<32>): []
   const dHash = disclose(actionHash);
   assert(!_consumedFederationApprovals.member(dHash),
          "FEDERATION_APPROVAL_REPLAYED");
-  assert(
-    disclose(multisig_signature_valid(dHash, _federationAuthority)),
-    "FEDERATION_APPROVAL_INVALID"
-  );
+  // WI16-C-1b: Multisig v8 approval, checked by cross-contract call.
+  assert(_council.isApproved(dHash), "FEDERATION_APPROVAL_INVALID");
   _consumedFederationApprovals.insert(dHash);
 }
 
@@ -678,11 +676,11 @@ circuit consumeFederationApproval(actionHash: Bytes<32>, opLabel: Bytes<32>): []
 // =============================================================================
 
 constructor(
-  federationAuthority: Bytes<32>,
+  council:             Council,
   governanceRoot:      Bytes<32>,
   refRateFiatPerKwh:   Uint<64>,
 ) {
-  _federationAuthority = disclose(federationAuthority);
+  _council = disclose(council);
   _governanceRoot      = disclose(governanceRoot);
   _refRateFiatPerKwh   = disclose(refRateFiatPerKwh);
 
@@ -915,14 +913,8 @@ export circuit setNationalContext(
   currentTime:     Uint<64>,
 ): [] { }
 
-// =============================================================================
-// Branch op 5: setFederationAuthority (Tangem ring swap, no redeploy)
-// =============================================================================
-
-export circuit setFederationAuthority(
-  newAuthorityHash: Bytes<32>,
-  currentTime:      Uint<64>,
-): [] { }
+// Branch op 5 (setFederationAuthority) was removed in WI-16: the council is
+// Multisig v8 and rotates in place at the same address.
 
 // =============================================================================
 // WI-13.1 Branch op: registerLane (V1.1-DESIGN.md §2.4)

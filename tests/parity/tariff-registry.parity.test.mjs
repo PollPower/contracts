@@ -30,7 +30,7 @@ function runtimeEmptyTree(depth) {
 
 test('TR-1: empty action-log root and every zero level match the mirror and the daemon builder', { skip }, async () => {
   const mod = await loadContract(NAME);
-  const c = await deploy(mod, witnesses, [b32(0xa1), b32(0xa2), 100n]);
+  const c = await deploy(mod, witnesses, [{ bytes: b32(0xa1) }, b32(0xa2), 100n]); // council (Multisig v8 address), governanceRoot, refRate
   await c.call('bootstrapActionLog', BigInt(DEPTH));
   const L = c.ledger();
   assert.equal(L._bootstrapComplete, true);

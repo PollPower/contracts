@@ -38,6 +38,11 @@ const DEPLOYMENT_JSON = path.join(TARIFF_ROOT, 'deployment.json');
 const ARTIFACTS_DIR = path.join(TARIFF_ROOT, 'deploy', 'artifacts');
 const DEPLOY_UTILS = path.join(TARIFF_ROOT, 'deploy', 'deploy-utils.mjs');
 
+// WI16-C-1b: the constructor now takes the Multisig v8 contract address
+// (`council`) instead of a federation authority hash, and setFederationAuthority
+// no longer exists. This script is rewritten for the local-devnet run; until
+// then it refuses to start rather than deploy with the old arguments.
+throw new Error('deploy-tariff-registry-monolith-ceremony: outdated after WI16-C-1b (council is Multisig v8); rewrite pending for the devnet run');
 const FEDERATION_AUTHORITY_HEX = 'f41fdb102441fda7eddd2d96e6920e6a9cd033ff110fc98c6594043c68391ba1';
 const GOVERNANCE_ROOT_HEX      = '4cb81c2f523a8c81cdddfc9a5a3bce6085bdd89b6822ca3b70ef7c315a37b40e';
 const REF_RATE_FIAT_PER_KWH    = 28n;
