@@ -22,5 +22,8 @@
     "test": "npm run test:mirror && npm run test:parity",
     "typecheck": "tsc -p tooling/tsconfig.json && npm run typecheck --workspace tariff-registry",
     "check:single-copies": "node tooling/check-single-copies.mjs"
+  },
+  "devDependencies": {
+    "@noble/curves": "2.4.0"
   }
 }

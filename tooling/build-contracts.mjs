@@ -18,6 +18,7 @@ export const CONTRACTS = {
   'tariff-registry-v1': 'tariff-registry/tariff-registry-v1.compact',
   'tariff-registry-v1-ceremony': 'tariff-registry/tariff-registry-v1-ceremony.compact',
   'multisig-v6.2': 'multisig/multisig-v6.2-ed25519.compact',
+  'tangem-verify': 'tooling/tangem/tangem-verify.compact',
 };
 export const BUILD_DIR = path.join(ROOT, 'build', 'l9');
 const EXPECTED = { compiler: '0.36.1', language: '0.28.0', runtime: '0.21.0' };
