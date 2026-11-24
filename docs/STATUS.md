@@ -1,7 +1,7 @@
 # WI-16 ledger 9 status
 
 Branch `wi16-ledger9`. Updated at the end of each task.
-Last update: 2026-11-24 (evening JST), settlement client (pp-settle-service) on v9. Next: consumer app LD v3 member actions.
+Last update: 2026-11-24 (late JST), legacy mint path retired (disabled) with an inventory; HAT firmware located. Next: consumer app LD v3 member actions.
 
 ## Current state (2026-11-24, evening JST)
 
@@ -30,11 +30,21 @@ work (step 4), since the deploy scripts touch TariffRegistry anyway.
 2. ~~Settlement client~~ done: `pp-settle-service` branch `wi16-hat-v9`
    (`54e3d66`), not deployed. Counter, chip signs `chipDigest`, `/hat/v9`
    countersign, digest cross-check; the on-chain `submit` is wired in step 4.
-   **Open (Garrett):** `pollpower-v2-api`'s mint worker settles through
-   `settlement-api` (`/api/settle`, kenya:7200), which calls a v4/v7-era EBT
-   `settle` with no HAT. EBT v9 accepts no un-attested mint, so that path
-   cannot mint on v9: retire it (all mints come from HAT-metered settles) or
-   route it through pp-settle-service.
+   **Legacy mint path retired** (Garrett: all mints via metered settles,
+   corrections via council-approved `manualReissue`): `pollpower-v2-api`
+   branch `wi16-retire-mint-path` (`1774a26`, from the deployed `49b0ac2`),
+   disabled behind `LEGACY_SETTLEMENT_MINT_ENABLED` (default off), not
+   deleted. Inventory: `pollpower-v2-api/docs/legacy-settlement-mint-retirement.md`.
+   **Gaps to decide/schedule:** (A) nothing connects a consumer outlet
+   purchase to a pp-settle-service metered settle (is the outlet meter the HAT
+   chip?); (B) pp-settle-service needs to persist a countersigned settle and
+   retry the submit (step 4); (C) EBT `manualReissue` is owner + meter-authority
+   co-signed, **not council-gated**: needs a contract change plus owner/co-sign
+   tooling. pp-settle-service stays undeployed until step 4.
+   **HAT firmware:** `PollPower/gateway-execution` (`firmware/pp_attest.c`,
+   `pp_gwattest.c`, `pp_keystore.c`). The chip has a native attestation that
+   signs its own metered energy; production uses `SIGN_HASH` (host picks the
+   amount). Interim hardening proposed in the follow-up doc.
 3. **Consumer app support for LD v3 member actions** (claim, payout-address
    change): Jubjub member key + signing over `memberMessage`.
 4. **Devnet scripts:** ceremony / HAT / retune / deploy (they refuse to run
