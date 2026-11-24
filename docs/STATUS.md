@@ -3,6 +3,46 @@
 Branch `wi16-ledger9`. Updated at the end of each task.
 Last update: 2026-11-24, C-1c machine signers (EBT, TariffRegistry) done, three days ahead. Next: LD v3.
 
+## Handoff (2026-11-24, before Garrett reboots throne)
+
+**Where we are.** H-1, C-2, C-1 council (Multisig v8, EBT, TR) and C-1c
+machine signers (EBT, TR) are done and committed on `wi16-ledger9`, all
+pushed to `origin` (PollPower/contracts). Tests green: contract + parity
+91/91, mirror 133/133, typecheck clean. Nothing deployed anywhere public.
+
+**Nothing is running.** No build or test job on throne or kenya. The only
+background process is an SSH tunnel from throne to kenya's local devnet
+(ports 19944 / 18088 / 16300); the reboot ends it, so restart it when
+needed:
+`ssh -N -L 19944:127.0.0.1:19944 -L 18088:127.0.0.1:18088 -L 16300:127.0.0.1:16300 kenya`.
+The local devnet itself runs on kenya and is unaffected.
+
+**First steps after the reboot:**
+1. Set `%UserProfile%\.wslconfig` back to `memory=8GB` (Garrett's
+   instruction), then `wsl -d Ubuntu -- echo ok` to confirm WSL starts.
+2. If it starts, compile on throne again (`npm run build:contracts`);
+   otherwise keep `COMPACT_REMOTE=kenya`.
+3. Check Tailscale is back up (`tailscale status`) before any kenya work.
+
+**Order of work from here (Garrett, 2026-11-24):**
+1. **LD v3**: cross-contract claim into EBT `mintDividend`, council via
+   `isApproved`, member claims via Schnorr. Write the design-doc updates
+   still pending (Garrett's choices (a), (b), (c), payout-delay length,
+   unshielded payouts are deliberate), attack tests first.
+2. **meter-authority-service and the settlement client** (`pollpower-v2-api`)
+   switched to Jubjub Schnorr (owned here; Joi deploys to kenya afterwards).
+   Message layouts: design doc, C-1c. Reference signer:
+   `tests/contract/machine-signer.mjs`.
+3. **Rewrite the ceremony / HAT / retune / deploy scripts** for the devnet
+   (they refuse to run now).
+4. **Full local-devnet run**, with the deploy sizes re-measured from full ZK
+   builds of EBT and TR.
+5. **Recorded demo** (Mon 30).
+
+Off-chain, not in the repo: `C:\Users\Garrett\PollPower-council\`
+(`council-keys.json`: Garrett's ring verified, Jonathan / Timothy / Yume
+pending; `ring-check-guide.md` sent to them).
+
 ## Day-by-day plan vs actual
 
 Scope (Garrett, 2026-11-24): the full fix set (C-1, C-2, H-1) plus LD v3 by
@@ -20,8 +60,9 @@ calendar days. It only holds if each step lands in about a day.
 | Wed 25 | **C-2** (EBT owner Schnorr) + Schnorr signer lib + parity · **Tangem ring verified on devnet** | **C-2 done early (Tue 24)** `d170a9f`: 13 contract tests (11 negative) green; owner = Jubjub key, in-circuit `jubjubSchnorrVerify` over (contract, circuit, args digest, nonce); signer uses the contract's exported pure helpers. Devnet path for the ring proven with a software key, low-S and high-S both verified on chain (`61cf805`). **Tangem ring verified (Tue 24):** real ring secp256k1 signature (compressed 33-byte key, raw 64-byte r‖s, low-S) accepted by `@noble/curves`, the compiled circuit and **on chain with a real proof** (devnet block 627); wrong digest rejected. Council keys stay on the rings | C-2 ✅ · Tangem ✅ |
 | Thu 26 | **C-1 council**: Multisig secp256k1 `approve` + `isApproved`; EBT/TR/LD `requireCouncil` + replay records | **Started early (Tue 24).** Multisig v8 done `6e818e3`: in-circuit `secp256k1EcdsaVerify`, no witnesses; approvals per (action, slot) under a council epoch; constructor for ≤7 slots with H-3 bounds and duplicate-key rejection. 14 tests (10 negative) green, incl. the PoC replayed against v6.2 (control: still vulnerable) and v8 (rejected). Council rotation designed (72 h delay) as a **Preprod gate**. **C-1b done (Tue 24):** EBT `1f9cf27` (10 tests, 8 negative) and TariffRegistry `de37277` (8 tests, 6 negative) check approval through a ledger 9 cross-contract call to `isApproved` on a real Multisig v8 (verifier keys checked), with their own replay records; council witnesses, EBT op 3 and TR `setFederationAuthority` removed (council rotates in place). LD gets the same with LD v3. Council 2-of-3 + standby procedure documented `14b3fde` | C-1 council ✅ (LD with LD v3) |
 | Fri 27 | **C-1 machine signers**: HAT, escrow attestor, schedule operators → Jubjub Schnorr; meter-authority-service signer | **Done early (Tue 24)**: EBT `1e90910` (18 tests, 12 negative) and TariffRegistry `a95e48b` (11 tests, 7 negative). No `signature_valid` witness left; HAT, reissue co-signature, escrow attestation, schedule validator and operators are Jubjub keys verified in-circuit over exported pure-circuit messages bound to the contract address. Found and fixed on the way: **TR `registerSchedule` front-run** (approval did not bind operator key or reference rate; validator key was a free argument) and the reissue co-signature not binding the recipient. PoC shown on the old builds. **Open (cross-app):** `meter-authority-service` signer change, notified to Joi; in-repo Ed25519 settle-flow scripts refuse to run until the devnet rewrite | C-1c ✅ (service signer ⏳) |
-| Sat 28 | **LD v3** + EBT `dividendAccrued` / `mintDividend` callee | | |
-| Sun 29 | **Full local-devnet run** of the whole stack (fenced deploys, settle, claim) | | |
+| Sat 28 | **LD v3** + EBT `dividendAccrued` / `mintDividend` callee | Moved up: starts Wed 25 after the throne reboot | ⏳ next |
+| (new) | **meter-authority-service + settlement client** → Jubjub Schnorr (Garrett 2026-11-24: owned here, Joi deploys to kenya) · rewrite ceremony / HAT / retune / deploy scripts | After LD v3, before the devnet run | |
+| Sun 29 | **Full local-devnet run** of the whole stack (fenced deploys, settle, claim), deploy sizes re-measured | | |
 | Mon 30 | Recorded demo + submission (shows what passed the devnet run) | | |
 
 Deploy gate: nothing goes to Preprod until every step passes on the local
