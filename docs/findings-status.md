@@ -34,9 +34,9 @@ until both are fixed.
 | WI16-C-2 | **Fixed**: EBT owner = Jubjub key, in-circuit Schnorr over (contract, circuit, args, nonce) | `d170a9f` | `tests/contract/c2-owner-schnorr.test.mjs` |
 | WI16-C-1 council | **Fixed**: Multisig v8 verifies secp256k1 in-circuit (no witnesses); EBT `execMultisigOp` and TR federation ops check `isApproved` by cross-contract call with their own replay records | `6e818e3`, `1f9cf27`, `de37277` | `c1-council-v8`, `c1b-ebt-council`, `c1b-tariff-council` (PoC replayed in each) |
 | WI16-C-1 machine signers | **Fixed** (C-1c): EBT HAT `settle`, `manualReissue` co-sign, escrow attestor `redeem`; TR validator (`registerSchedule`) and operator (`retuneClass`) are Jubjub keys verified in-circuit, no witness. Off-chain signers (`meter-authority-service`) still to switch | `1e90910`, `a95e48b` | `c1c-ebt-machine-signers`, `c1c-tariff-signers` (PoC replayed in each) |
-| WI16-E-1 (new, High) settle split not bound to the class | **Fixed**: settle must use the mirrored class shares for dividend / ops / DAO | (LD v3 commit) | `ld3-ebt-side` E-1 |
-| WI16-E-2 (new, High) registry mirror rollback | **Fixed**: per-item monotonic `actionSeq` on every mirror write | (LD v3 commit) | `ld3-ebt-side` E-2a/b/c |
-| WI16-E-3 (new, Medium) EventProof `actionSeq` unbound | **Fixed**: `actionSeq` must equal the leaf index encoded by the path bits | (LD v3 commit) | `ld3-ebt-side` E-3 |
+| WI16-E-1 (new, High) settle split not bound to the class | **Fixed**: settle must use the mirrored class shares for dividend / ops / DAO | `b236ea4` | `ld3-ebt-side` E-1 |
+| WI16-E-2 (new, High) registry mirror rollback | **Fixed**: per-item monotonic `actionSeq` on every mirror write | `b236ea4` | `ld3-ebt-side` E-2a/b/c |
+| WI16-E-3 (new, Medium) EventProof `actionSeq` unbound | **Fixed**: `actionSeq` must equal the leaf index encoded by the path bits | `b236ea4` | `ld3-ebt-side` E-3 |
 | TR retire at epoch 0 (new, Low) | **Open**: `retiredEpoch = 0` reads as live | | |
 | WI16-T-2 (new, High) TR `registerSchedule` front-run | **Fixed**: the approved hash now binds operator key id and reference rate; validator key pinned in the ledger | `a95e48b` | `c1c-tariff-signers` V3 |
 | WI16-C-1 Living Dividend | **Open**: fixed by LD v3 | | |
