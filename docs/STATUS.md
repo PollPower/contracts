@@ -1,7 +1,7 @@
 # WI-16 ledger 9 status
 
 Branch `wi16-ledger9`. Updated at the end of each task.
-Last update: 2026-11-24 (after the throne reboot), LD v3 done, about four days ahead. Next: meter-authority-service and settlement client → Jubjub Schnorr.
+Last update: 2026-11-24 (evening JST), meter-authority-service v9 HAT countersign done. Next: settlement client (pp-settle-service).
 
 ## Current state (2026-11-24, evening JST)
 
@@ -17,23 +17,29 @@ server answer). Nothing else running.
 
 Off-chain, not in the repo: `C:\Users\Garrett\PollPower-council\` (council keys: Garrett's ring verified; Jonathan / Timothy / Yume pending).
 
-**Order of work from here (Garrett, 2026-11-24):**
-1. ~~LD v3~~ done.
-2. **meter-authority-service and the settlement client** (`pollpower-v2-api`)
-   switched to Jubjub Schnorr (owned here; Joi deploys to kenya afterwards).
-   Message layouts: auth fix design, C-1c. Reference signer:
-   `tests/contract/machine-signer.mjs`. The settle ABI also changed with
-   LD v3 / WI16-E-1 (EBT constructor 7 arguments; settle bps must equal the
-   mirrored class split).
-3. **Rewrite the ceremony / HAT / retune / deploy scripts** for the devnet
-   (they refuse to run now). `tests/contract/settle-world.mjs` is a working
-   reference for the whole settle setup (schedule, class, mirrors with
-   action-log proofs, producer attestation, HAT).
-4. **Full local-devnet run** with re-measured deploy sizes. Must also confirm
-   on chain: a mint inside a callee (LD → EBT `mintDividend`), two calls to the
-   same callee in one transaction (`dividendAccrued` + `mintDividend`), and
-   that the indexer returns LD's `Misc` events.
-5. **Recorded demo** (Mon 30).
+**Decisions (Garrett, 2026-11-24, after LD v3):** 72 h payout-change delay
+approved. HAT signing: option 3, meter-authority-service countersigns the
+chip's Ed25519 signature now; chip signs directly after Preprod (tracked:
+`docs/design/hat-chip-signing-followup.md`). The Low finding (TR retire at
+epoch 0) is fixed before any Preprod deploy: scheduled with the devnet script
+work (step 4), since the deploy scripts touch TariffRegistry anyway.
+
+**Order of work from here:**
+1. ~~meter-authority-service~~ done: `POST /hat/v9` on branch `wi16-hat-v9`
+   (`18f4dcb`), not deployed (Joi deploys). Contract side `84a748f`.
+2. **Settlement client: `pp-settle-service`** (the production v8 HAT-metered
+   settle on the kenya mini-PC): chip signs `chipDigest`, call
+   `/hat/v9`, submit the new settle ABI. Also check `pollpower-v2-api` →
+   `settlement-api` (`/api/settle`, kenya:7200) for the same ABI.
+3. **Consumer app support for LD v3 member actions** (claim, payout-address
+   change): Jubjub member key + signing over `memberMessage`.
+4. **Devnet scripts:** ceremony / HAT / retune / deploy (they refuse to run
+   now); `tests/contract/settle-world.mjs` is the reference. Plus the TR
+   retire-at-epoch-0 fix.
+5. **Full devnet run**: confirm a mint inside a cross-contract call, two calls
+   to EBT in one transaction, the indexer returning LD's `Misc` events (and
+   EBT's `settleChip`); re-measure deploy sizes.
+6. **Recorded demo** (Mon 30).
 
 ## Day-by-day plan vs actual
 
@@ -53,7 +59,7 @@ calendar days. It only holds if each step lands in about a day.
 | Thu 26 | **C-1 council**: Multisig secp256k1 `approve` + `isApproved`; EBT/TR/LD `requireCouncil` + replay records | **Started early (Tue 24).** Multisig v8 done `6e818e3`: in-circuit `secp256k1EcdsaVerify`, no witnesses; approvals per (action, slot) under a council epoch; constructor for ≤7 slots with H-3 bounds and duplicate-key rejection. 14 tests (10 negative) green, incl. the PoC replayed against v6.2 (control: still vulnerable) and v8 (rejected). Council rotation designed (72 h delay) as a **Preprod gate**. **C-1b done (Tue 24):** EBT `1f9cf27` (10 tests, 8 negative) and TariffRegistry `de37277` (8 tests, 6 negative) check approval through a ledger 9 cross-contract call to `isApproved` on a real Multisig v8 (verifier keys checked), with their own replay records; council witnesses, EBT op 3 and TR `setFederationAuthority` removed (council rotates in place). LD gets the same with LD v3. Council 2-of-3 + standby procedure documented `14b3fde` | C-1 council ✅ (LD with LD v3) |
 | Fri 27 | **C-1 machine signers**: HAT, escrow attestor, schedule operators → Jubjub Schnorr; meter-authority-service signer | **Done early (Tue 24)**: EBT `1e90910` (18 tests, 12 negative) and TariffRegistry `a95e48b` (11 tests, 7 negative). No `signature_valid` witness left; HAT, reissue co-signature, escrow attestation, schedule validator and operators are Jubjub keys verified in-circuit over exported pure-circuit messages bound to the contract address. Found and fixed on the way: **TR `registerSchedule` front-run** (approval did not bind operator key or reference rate; validator key was a free argument) and the reissue co-signature not binding the recipient. PoC shown on the old builds. **Open (cross-app):** `meter-authority-service` signer change, notified to Joi; in-repo Ed25519 settle-flow scripts refuse to run until the devnet rewrite | C-1c ✅ (service signer ⏳) |
 | Sat 28 | **LD v3** + EBT `dividendAccrued` / `mintDividend` callee | **Done early (Tue 24, after the reboot):** EBT side `b236ea4` (12 tests, 8 negative), LD v3 `dcd9632` (20 tests, 11 negative). Members claim themselves; EBT mints to the payout address from an on-chain budget it cannot overdraw; LD bound once. Garrett's (a)/(b)/(c) built in; payout-change delay proposed at **72 h**. A full in-memory settle for these tests exposed **WI16-E-1** (High: settle split not bound to the class, dividend could be zeroed), **WI16-E-2** (High: registry mirror rollback) and **WI16-E-3** (Medium: proof sequence unbound); all shown on the old build and fixed. Harness gap fixed on the way: callee state is now written back after cross-contract calls (the budget test caught it) | LD v3 ✅ |
-| (new) | **meter-authority-service + settlement client** → Jubjub Schnorr (Garrett 2026-11-24: owned here, Joi deploys to kenya) · rewrite ceremony / HAT / retune / deploy scripts | Next (from Wed 25) | ⏳ next |
+| (new) | **meter-authority-service + settlement client** → Jubjub Schnorr (Garrett 2026-11-24: owned here, Joi deploys to kenya) · rewrite ceremony / HAT / retune / deploy scripts | **Started early (Tue 24).** The production HAT chip signs Ed25519 on chip, which the circuit cannot verify; Garrett chose option 3. **meter-authority-service done** (`wi16-hat-v9` `18f4dcb`): `/hat/v9` verifies the chip signature against the allowlist, applies the sanity rules and countersigns in Jubjub; 14 tests (10 negative), vectors from the compiled contract; runtime 0.15 → 0.21 (fixed the legacy `/attest` rename on the way). **Contract** `84a748f`: `chipDigest` + `hatMessage` bind the chip key/signature; `settleChip` audit event; 2 new tests. Next: pp-settle-service | service ✅ · client ⏳ |
 | Sun 29 | **Full local-devnet run** of the whole stack (fenced deploys, settle, claim), deploy sizes re-measured | | |
 | Mon 30 | Recorded demo + submission (shows what passed the devnet run) | | |
 
@@ -220,6 +226,11 @@ claim with a view call and a minting call. No fix grows a verifier key past
   pricing script lives in the session scratchpad; move it into `tooling/`
   before the devnet run.
 - **TR retire at epoch 0** (Low, open): `retiredEpoch = 0` reads as live.
+  Fix before any Preprod deploy; scheduled with the devnet scripts (step 4).
+- **HAT trust model:** until the chip signs a curve the circuit verifies,
+  the on-chain proof vouches for meter-authority-service, not the chip.
+  Follow-up after Preprod: `docs/design/hat-chip-signing-followup.md`
+  (needs the HAT firmware source location from Garrett).
 - **Consumer app** must sign LD v3 member actions (Jubjub Schnorr over
   `memberMessage`) before members can claim on the devnet/demo; not started.
 - **JS mirror** (`ebt/tests/lib.mjs`, `ebt/tests/vnext/T20…`) still models
