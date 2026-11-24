@@ -33,7 +33,8 @@ until both are fixed.
 | WI16-H-1 | **Fixed**: constructor sets every authority (EBT v8 + ceremony, Multisig v6.2; Multisig v8 born that way) | `9a1d7c0` | `tests/contract/h1-constructor-init.test.mjs` |
 | WI16-C-2 | **Fixed**: EBT owner = Jubjub key, in-circuit Schnorr over (contract, circuit, args, nonce) | `d170a9f` | `tests/contract/c2-owner-schnorr.test.mjs` |
 | WI16-C-1 council | **Fixed**: Multisig v8 verifies secp256k1 in-circuit (no witnesses); EBT `execMultisigOp` and TR federation ops check `isApproved` by cross-contract call with their own replay records | `6e818e3`, `1f9cf27`, `de37277` | `c1-council-v8`, `c1b-ebt-council`, `c1b-tariff-council` (PoC replayed in each) |
-| WI16-C-1 machine signers | **Open** (C-1c): HAT `settle`, escrow attestor `redeem`, `manualReissue` co-sign, TR validator / operator signatures still use `signature_valid` | | |
+| WI16-C-1 machine signers | **Fixed** (C-1c): EBT HAT `settle`, `manualReissue` co-sign, escrow attestor `redeem`; TR validator (`registerSchedule`) and operator (`retuneClass`) are Jubjub keys verified in-circuit, no witness. Off-chain signers (`meter-authority-service`) still to switch | `1e90910`, `a95e48b` | `c1c-ebt-machine-signers`, `c1c-tariff-signers` (PoC replayed in each) |
+| WI16-T-2 (new, High) TR `registerSchedule` front-run | **Fixed**: the approved hash now binds operator key id and reference rate; validator key pinned in the ledger | `a95e48b` | `c1c-tariff-signers` V3 |
 | WI16-C-1 Living Dividend | **Open**: fixed by LD v3 | | |
 
 Nothing here is deployed; no contract goes to any public network until all

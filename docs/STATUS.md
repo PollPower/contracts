@@ -1,7 +1,7 @@
 # WI-16 ledger 9 status
 
 Branch `wi16-ledger9`. Updated at the end of each task.
-Last update: 2026-11-24, C-1 council (Multisig v8, EBT, TariffRegistry) done, two days ahead. Next: C-1c machine signers.
+Last update: 2026-11-24, C-1c machine signers (EBT, TariffRegistry) done, three days ahead. Next: LD v3.
 
 ## Day-by-day plan vs actual
 
@@ -19,7 +19,7 @@ calendar days. It only holds if each step lands in about a day.
 | Tue 24 | **H-1** (EBT, Multisig: constructor sets all authorities) · Tangem test tooling + admin-app "sign hash" · local devnet up | **H-1 done**: 9 contract tests (3 negative) green; EBT 18→17, ceremony 8→7, Multisig 12→11 circuits. Tangem tooling + software-key pipeline (5 tests) `3d29984`; admin app ring test `e77521b` (monorepo, branch `wi16-ledger9`); devnet up on kenya (node 2.1.101, indexer 4.4.101, proof 9.0.2; offset ports). **Waiting on:** ring signature (needs `read:packages` token for the APK build) | H-1 ✅ · Tangem ⏳ |
 | Wed 25 | **C-2** (EBT owner Schnorr) + Schnorr signer lib + parity · **Tangem ring verified on devnet** | **C-2 done early (Tue 24)** `d170a9f`: 13 contract tests (11 negative) green; owner = Jubjub key, in-circuit `jubjubSchnorrVerify` over (contract, circuit, args digest, nonce); signer uses the contract's exported pure helpers. Devnet path for the ring proven with a software key, low-S and high-S both verified on chain (`61cf805`). **Tangem ring verified (Tue 24):** real ring secp256k1 signature (compressed 33-byte key, raw 64-byte r‖s, low-S) accepted by `@noble/curves`, the compiled circuit and **on chain with a real proof** (devnet block 627); wrong digest rejected. Council keys stay on the rings | C-2 ✅ · Tangem ✅ |
 | Thu 26 | **C-1 council**: Multisig secp256k1 `approve` + `isApproved`; EBT/TR/LD `requireCouncil` + replay records | **Started early (Tue 24).** Multisig v8 done `6e818e3`: in-circuit `secp256k1EcdsaVerify`, no witnesses; approvals per (action, slot) under a council epoch; constructor for ≤7 slots with H-3 bounds and duplicate-key rejection. 14 tests (10 negative) green, incl. the PoC replayed against v6.2 (control: still vulnerable) and v8 (rejected). Council rotation designed (72 h delay) as a **Preprod gate**. **C-1b done (Tue 24):** EBT `1f9cf27` (10 tests, 8 negative) and TariffRegistry `de37277` (8 tests, 6 negative) check approval through a ledger 9 cross-contract call to `isApproved` on a real Multisig v8 (verifier keys checked), with their own replay records; council witnesses, EBT op 3 and TR `setFederationAuthority` removed (council rotates in place). LD gets the same with LD v3. Council 2-of-3 + standby procedure documented `14b3fde` | C-1 council ✅ (LD with LD v3) |
-| Fri 27 | **C-1 machine signers**: HAT, escrow attestor, schedule operators → Jubjub Schnorr; meter-authority-service signer | | |
+| Fri 27 | **C-1 machine signers**: HAT, escrow attestor, schedule operators → Jubjub Schnorr; meter-authority-service signer | **Done early (Tue 24)**: EBT `1e90910` (18 tests, 12 negative) and TariffRegistry `a95e48b` (11 tests, 7 negative). No `signature_valid` witness left; HAT, reissue co-signature, escrow attestation, schedule validator and operators are Jubjub keys verified in-circuit over exported pure-circuit messages bound to the contract address. Found and fixed on the way: **TR `registerSchedule` front-run** (approval did not bind operator key or reference rate; validator key was a free argument) and the reissue co-signature not binding the recipient. PoC shown on the old builds. **Open (cross-app):** `meter-authority-service` signer change, notified to Joi; in-repo Ed25519 settle-flow scripts refuse to run until the devnet rewrite | C-1c ✅ (service signer ⏳) |
 | Sat 28 | **LD v3** + EBT `dividendAccrued` / `mintDividend` callee | | |
 | Sun 29 | **Full local-devnet run** of the whole stack (fenced deploys, settle, claim) | | |
 | Mon 30 | Recorded demo + submission (shows what passed the devnet run) | | |
@@ -53,7 +53,7 @@ Tailscale addresses.
 
 | ID | Severity | Summary | State |
 |---|---|---|---|
-| WI16-C-1 | Critical | Every signature/council check in all four contracts is a prover-supplied witness | Confirmed (runtime PoC). **Council part fixed** (Multisig v8 in-circuit secp256k1; EBT + TR via cross-contract `isApproved`). **Open:** machine signers (C-1c: HAT `settle`, escrow attestor `redeem`, `manualReissue` co-sign, TR validator/operator) and LD (v3) |
+| WI16-C-1 | Critical | Every signature/council check in all four contracts is a prover-supplied witness | Confirmed (runtime PoC). **Council part fixed** (Multisig v8 in-circuit secp256k1; EBT + TR via cross-contract `isApproved`). **Machine signers fixed** (C-1c: EBT HAT, reissue co-sign, escrow attestor; TR validator, operators; in-circuit Jubjub Schnorr). **Open:** LD (v3) |
 | WI16-C-2 | Critical | EBT v8 owner gate uses `ownPublicKey()` | **Fixed** `d170a9f` (owner Jubjub Schnorr, in-circuit) |
 | WI16-H-1 | High | EBT v8 and Multisig v6.2 `initialize` front-runnable | **Fixed** `9a1d7c0` (constructor sets every authority; Multisig v8 likewise) |
 | LD-H-3 | High | v2.2.2's keeper gate is itself a C-1 witness | Removed structurally in the LD v3 design |
@@ -139,10 +139,17 @@ claim with a view call and a minting call. No fix grows a verifier key past
 
 ### Environment notes
 
-- throne's WSL VM could not start (`ERROR_NO_SYSTEM_RESOURCES`; 7.9 GB free of
-  32 GB). `npm run build:contracts` needs it on Windows. A `memory=8GB` cap in
-  `%UserProfile%\.wslconfig` would fix it; not changed without asking. The
-  last spike compiled on kenya instead.
+- throne's WSL VM does not start (`ERROR_NO_SYSTEM_RESOURCES`), at **any**
+  size: tried `memory=4GB` (Garrett, 2026-11-24) and 2 GB, same error, with
+  ~11 GB RAM free. Not a size problem: 47 GB of 56 GB commit is in use, about
+  17 GB of it not attributable to any process, and kernel pools are ~4 GB
+  after 23 days up, so most likely leaked memory. Needs a reboot (or an admin
+  `Restart-Service vmcompute`). `.wslconfig` is now `memory=4GB` (backup
+  `.wslconfig.bak-8gb`). Builds run on kenya (`COMPACT_REMOTE=kenya`).
+- **Full ZK build memory, measured on kenya** (`/usr/bin/time -v`,
+  TariffRegistry v1, the largest): peak **5.0 GB** in one process, 9 min,
+  3.5 GB of keys written. **4 GB is not enough for full builds**; 6 GB is the
+  minimum, 8 GB recommended. Skip-zk builds fit easily in 4 GB.
 - No GitHub token is stored in WSL (it was passed to one process and cleared).
 
 ## Open decisions
@@ -157,8 +164,10 @@ claim with a view call and a minting call. No fix grows a verifier key past
 4. **LD v3:** zero-member dividend handling, events vs log maps, payout
    address changes (recommendations in the design).
 5. **`meter-authority-service` signer change** (Ed25519 → Jubjub Schnorr) is
-   cross-app; it needs an owner and a slot.
-6. **throne WSL memory cap** (`.wslconfig`), or keep compiling on kenya.
+   cross-app; it needs an owner and a slot. Message layouts are in the design
+   doc (C-1c); Joi notified 2026-11-24.
+6. **throne WSL:** needs a reboot to start at all; then `memory=8GB` (or 6 GB
+   minimum) for full ZK builds, 4 GB only for skip-zk.
 
 ## Follow-ups after the Preprod redeploy
 
@@ -175,8 +184,14 @@ claim with a view call and a minting call. No fix grows a verifier key past
   the old witness-based council checks; the contract tests are the reference
   for this path now. Mirror to be updated or retired for it.
 - **Off-chain tooling** still on the old interfaces: `ebt/settle-flow/ceremony.mjs`,
-  `retune.mjs`, the EBT and TR ceremony deploy scripts (both refuse to run).
-  Rewritten for the Sunday devnet run.
-- **TariffRegistry action hashes** are computed inside each circuit; there is
-  no exported pure helper per op yet for the admin app (the tests compute them
-  with the runtime's `persistentHash`). Add with the admin-app switch.
+  `retune.mjs`, `relay-hat-sign.mjs` (Ed25519), the EBT and TR ceremony deploy
+  scripts. All refuse to run; rewritten for the Sunday devnet run with
+  Jubjub signers (`tests/contract/machine-signer.mjs` is the reference).
+- **Deploy pricing** not re-measured after C-1c (needs full ZK builds of EBT
+  and TR, ~30 min on kenya). TR gained one circuit (`setValidator`, +1 vk
+  insert, ~4.5% of a block); staged deploys had ~25% headroom. Re-measure
+  with the devnet build.
+- **TariffRegistry action hashes**: `registerSchedule`, `retuneClass` and
+  `setValidator` now have exported pure helpers (C-1c); the other federation
+  ops (`retireSchedule`, `advanceEpoch`, `setNationalContext`, lanes) are
+  still computed inside each circuit. Add with the admin-app switch.

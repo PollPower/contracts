@@ -232,19 +232,73 @@ circuit requireCouncil(actionHash: Bytes<32>): [] {
 
 ### C-1c: machine signers (HAT, escrow attestor, schedule operators/validators)
 
-- Keys become **Jubjub** (Schnorr) public keys, verified in-circuit with
-  `jubjubSchnorrVerify<1>([transientHash(payload)], sig, pk)`.
-- EBT `settle`: same 5 HAT fields as today (EBT-H-1 binding kept), domain tag
-  bumped to `pollpower:ebt:v9:epoch1`.
-- EBT `redeem`: escrow attestation the same way.
-- TariffRegistry `registerSchedule` (validator) and `retuneClass` (operator):
-  the same way.
-- **Cross-app impact: `meter-authority-service` must sign Jubjub Schnorr
-  instead of Ed25519.** The signer must reproduce the circuit's challenge
-  exactly; the compiled contract exports the hash as a pure circuit for the
-  service to call. Joi is notified.
-- Why not ECDSA for the HAT: it would add ~117 MB to every `settle` proof
-  (already 86 MiB). Schnorr adds ~2 MB.
+**Implemented 2026-11-24** (EBT v8 + ceremony, TariffRegistry v1 + ceremony).
+No `signature_valid` witness is left in either contract. Each signer holds a
+**Jubjub** key; the contract verifies `jubjubSchnorrVerify<1>([m], sig, pk)`
+in-circuit, where `m` is the Field returned by an **exported pure circuit**.
+The signing services call that circuit from the compiled contract (or rebuild
+it from the layout below; parity test EBT-2 checks an independent rebuild).
+
+| Signer | Key held in | Signs | Layout of `m` (`transientHash<Vector<n, Bytes<32>>>`, integers little-endian) |
+|---|---|---|---|
+| Meter authority, HAT (`settle`) | EBT `_meterAuthorityPubkey: JubjubPoint` (owner rotates, `execOwnerOp` op 1) | `hatMessage` | `pad("pollpower:ebt:v9:hat"), self, sessionID, amount, producerKey, producerAddr.bytes, meterKeyHash` |
+| Meter authority, reissue co-signature (`manualReissue`) | same key | `reissueMessage` | `pad("pollpower:ebt:v9:reissue"), self, producerKey, producerAddr.bytes, amount, seq` (`seq` = `reissuanceCount`) |
+| Escrow attestor (`redeem`, KES) | EBT `_escrowAttestorPubkey: JubjubPoint` (council rotates, op 4) | `escrowMessage` | `pad("pollpower:ebt:v9:escrow"), self, trustFloat, outstandingEbt, attestationEpoch` |
+| Schedule validator (`registerSchedule`) | TR `_validatorPk: JubjubPoint` (constructor; council rotates with `setValidator`) | `signerMessage(registerScheduleActionHash(...))` | `pad("pp:tariff:v2:signer"), digest` |
+| Schedule operator (`retuneClass`) | schedule record stores `operatorKeyId(pk)`; caller passes `pk` | `signerMessage(retuneAuthHash(...))` | as above |
+
+Changes beyond swapping the signature scheme, all found while writing the
+attack tests:
+
+- **TR front-run (new, High, fixed):** the council-approved
+  `registerSchedule` hash left out `operatorPubkey` and `refRateFiatPerKwh`,
+  and the "validator" key was a free argument. Whoever submitted an approved
+  registration first chose the schedule's operator (the key that may retune
+  its splits) and its reference rate. Shown on the old build: a front-runner
+  registered with its own operator id and a 10× rate, using an approval the
+  council gave for another operator. Now `registerScheduleActionHash` binds
+  both, and the validator key is pinned in the ledger.
+- **Reissue co-signature** bound only `(producerKey, amount, seq)`; the
+  recipient address and the contract were free. It now binds both.
+- **HAT** also binds `meterKeyHash` and the contract address. `settle` no
+  longer takes `hatPubkey`: the key is the ledger's.
+- **Escrow attestation** binds the contract address.
+- Domain tags bumped (`pollpower:ebt:v9:*`, `pp:tariff:v2:*`), so nothing
+  signed for the old contracts verifies.
+- A degenerate key cannot be used to forge signatures: the stdlib verifier
+  refuses the identity point ("JubjubPoint identity is not a permitted
+  jubjubSchnorrVerify verifying key"), and the order-2 point fails too
+  (checked with a forged signature against both).
+
+Interface changes (callers must follow):
+
+- EBT constructor: `meterAuthorityPubkey` and `escrowAttestorPubkey` are
+  `JubjubPoint`. `execOwnerOp` op 1 and `execMultisigOp` op 4 take
+  `JubjubPoint`; `ownerDigest_execOwnerOp` and `councilActionHash` hash both
+  coordinates.
+- `settle(sessionID, amount, producerKey, producerAddr, meterKeyHash,
+  hatSig: JubjubSchnorrSignature, ...)`; `redeem(..., attestationSig:
+  JubjubSchnorrSignature, ...)`; `manualReissue(..., authoritySig:
+  JubjubSchnorrSignature, ownerSig)`.
+- TR constructor: `(council, governanceRoot, refRateFiatPerKwh,
+  validatorPk)`. `registerSchedule(nodeId, scheduleHash, operatorKeyId,
+  refRate, effectiveEpoch, validatorSignature, currentTime)`;
+  `retuneClass(..., operatorPk: JubjubPoint, operatorSignature, ...)`; new
+  `setValidator(newValidatorPk, currentTime)` (council-approved
+  `setValidatorActionHash`).
+
+**Cross-app impact: `meter-authority-service` must sign Jubjub Schnorr
+instead of Ed25519**, over `hatMessage` and `reissueMessage`; the escrow
+attestor, the schedule validator and operators likewise. The relay HAT signer,
+settle ceremony and retune scripts in this repo refuse to run until they are
+rewritten for the devnet run. Joi is notified.
+
+Why not ECDSA for the HAT: it would add ~117 MB to every `settle` proof
+(already 86 MiB). Schnorr adds ~2 MB.
+
+Tests: `tests/contract/c1c-ebt-machine-signers.test.mjs` (18, 12 negative),
+`tests/contract/c1c-tariff-signers.test.mjs` (11, 7 negative); the PoC (a
+lying `signature_valid` witness) is supplied in every case.
 
 ## C-2: EBT owner gate
 
