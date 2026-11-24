@@ -26,7 +26,7 @@ import { ActionLogTree } from '../../tests/contract/settle-world.mjs';
 import { signSettle, settleHatArgs, chipHwId, sessionFrom16 } from '../../tests/contract/hat-signer.mjs';
 import { submitSettleWithRetry } from '../settle/submit-settle.mjs';
 import { findSettleChipEvents, decodeSettleChipEvent, verifySettleChipEvent, SETTLE_CHIP_EVENT } from '../watcher/settle-watcher-lib.mjs';
-import { restoreIndexerMiscEvent } from '../events/event-codec.mjs';
+import { restoreIndexerMiscEvent, payloadWords } from '../events/event-codec.mjs';
 
 const big = (/** @type {Uint8Array} */ b) => b.reduce((a, x) => (a << 8n) | BigInt(x), 0n);
 const label = (/** @type {string} */ s) => new Uint8Array(createHash('sha256').update(`pollpower wi16 devnet ${s} (test key, not a secret)`).digest());
@@ -50,6 +50,10 @@ const CHIP = (() => {
   const sk = label('hat chip');
   return { sk, pk: ed25519.getPublicKey(sk), ieee: Buffer.concat([Buffer.from('PPDEV', 'ascii'), Buffer.from([0, 0, 1])]), userid: 1 };
 })();
+const MEMBER = { ...jubjub('ld member'), payout: new Uint8Array(32).fill(0x31), kyc: new Uint8Array(32).fill(0xd1) };
+const LD_WITNESSES = {
+  witness_divmod: (/** @type {any} */ ctx, /** @type {bigint} */ n, /** @type {bigint} */ d) => [ctx.privateState, { quotient: n / d, remainder: n % d }],
+};
 const PRODUCER = { key: new Uint8Array(32).fill(0x63), meter: new Uint8Array(32).fill(0x65), payout: new Uint8Array(32).fill(0x64) };
 const OPERATOR = jubjub('schedule operator');
 const nowSec = () => BigInt(Math.floor(Date.now() / 1000) - 120);   // safely not ahead of block time
@@ -101,6 +105,19 @@ async function watchEvents(dn, tag) {
     const chip = L._chips.member(ev.chipPubkey) ? L._chips.lookup(ev.chipPubkey) : null;
     const r = verifySettleChipEvent(ev, chip);
     console.log(`[watch:${tag}]   watcher: ${r.ok ? 'OK' : 'ALERT ' + r.problems.join(',')} (uWh ${ev.sessionUwh}, uptime ${ev.uptimeMs}, nonce ${ev.nonce})`);
+  }
+}
+
+/** LD v3 events read back from the indexer, restored to their exact layout. */
+async function watchLdEvents(dn) {
+  const evs = await /** @type {any} */ (dn.providersFor('living-dividend-v3')).publicDataProvider.queryContractEvents({ contractAddress: S.ld, types: ['Misc'] });
+  console.log(`[watch:ld] indexer returned ${evs.length} Misc event(s) for LD`);
+  for (const e of evs) {
+    try {
+      const r = restoreIndexerMiscEvent(e);
+      const w = payloadWords(r.bytes).map((x) => Buffer.from(x).toString('hex').slice(0, 16));
+      console.log(`[watch:ld]   event ${e.id}: ${r.name} (payload ${String(e.payload).length / 2} B -> ${r.bytes.length} B) words ${w.slice(0, 4).join(' ')}`);
+    } catch (err) { console.log(`[watch:ld]   event ${e.id}: REFUSED ${/** @type {any} */ (err).message}`); }
   }
 }
 
@@ -254,6 +271,66 @@ const STAGES = {
     }
   },
 
+  // Living Dividend v3: deploy, bind to EBT (council op 0), register a member
+  // (LD -> Council isApproved and LD -> EBT dividendAccrued in one tx).
+  async ld(dn) {
+    if (!S.ld) {
+      const { address } = await deploy(dn, 'living-dividend-v3', [{ bytes: hexToBytes(S.ebt) }, { bytes: hexToBytes(S.council) }], LD_WITNESSES);
+      S.ld = address;
+      save();
+      dn.bind(address, 'living-dividend-v3');
+    }
+    const ebtMod = await loadModule('ebt-v8');
+    const ldMod = await loadModule('living-dividend-v3');
+    const P = ldMod.pureCircuits;
+    const ldSelf = hexToBytes(S.ld);
+    if (!S.ldBound) {
+      const ebt = await join(dn, 'ebt-v8', S.ebt);
+      const t = nowSec();
+      const h = ebtMod.pureCircuits.councilActionHash(hexToBytes(S.ebt), 0n, { bytes: ldSelf }, ESCROW.pk, t);
+      await approve(dn, h);
+      await ebt.callTx.execMultisigOp(0n, { bytes: ldSelf }, ESCROW.pk, t);
+      S.ldBound = true;
+      save();
+      console.log('[stack] LD bound in EBT (op 0)');
+    }
+    if (!S.memberId) {
+      const ld = await join(dn, 'living-dividend-v3', S.ld, LD_WITNESSES);
+      const t = nowSec();
+      const h = P.registerActionHash(ldSelf, MEMBER.pk, { bytes: MEMBER.payout }, MEMBER.kyc, t);
+      await approve(dn, h);
+      const t0 = Date.now();
+      await ld.callTx.register(MEMBER.pk, { bytes: MEMBER.payout }, MEMBER.kyc, t);
+      S.memberId = Buffer.from(P.memberId(MEMBER.pk)).toString('hex');
+      save();
+      console.log(`[stack] member registered in ${((Date.now() - t0) / 1000).toFixed(0)}s (LD -> Council + LD -> EBT in one tx): ${S.memberId.slice(0, 16)}...`);
+    }
+  },
+
+  // Claim: LD -> EBT dividendAccrued, then LD -> EBT mintDividend (a mint
+  // inside a cross-contract call; two calls to EBT in one transaction).
+  async claim(dn) {
+    const ldMod = await loadModule('living-dividend-v3');
+    const P = ldMod.pureCircuits;
+    const ldSelf = hexToBytes(S.ld);
+    const id = hexToBytes(S.memberId);
+    const ld = await join(dn, 'living-dividend-v3', S.ld, LD_WITNESSES);
+    const before = await ledgerOf(dn, 'ebt-v8', S.ebt);
+    const ldL = await ledgerOf(dn, 'living-dividend-v3', S.ld);
+    const nonce = ldL._members.lookup(id).nonce;
+    const t = nowSec();
+    const sig = RT.jubjubSchnorrSign(MSG1, [P.memberMessage(ldSelf, padTag('claim'), id, P.timeDigest(t), nonce)], MEMBER.sk);
+    const t0 = Date.now();
+    const r = await ld.callTx.claim(id, t, sig);
+    const after = await ledgerOf(dn, 'ebt-v8', S.ebt);
+    const ldAfter = await ledgerOf(dn, 'living-dividend-v3', S.ld);
+    console.log(`[stack] claim in ${((Date.now() - t0) / 1000).toFixed(0)}s (tx ${r?.public?.txId ?? '-'})`);
+    console.log(`[stack]   EBT dividendMinted ${before._dividendMinted} -> ${after._dividendMinted}, totalSupply ${before._totalSupply} -> ${after._totalSupply}; LD totalClaimed ${ldAfter._totalClaimed}`);
+    S.claimed = String(ldAfter._totalClaimed);
+    save();
+    await watchLdEvents(dn);
+  },
+
   // Re-run the watcher over the events already on chain.
   async watch(dn) { await watchEvents(dn, 'watch'); },
 
@@ -300,7 +377,10 @@ const STAGES = {
 
 const wanted = process.argv.slice(2);
 if (!wanted.length) { console.error(`usage: stack.mjs <${Object.keys(STAGES).join('|')}|all> ...`); process.exit(2); }
-const order = wanted.includes('all') ? Object.keys(STAGES) : wanted;
+// 'all': a settle before LD (budget accrued with nobody registered stays in
+// EBT) and one after registration, so the claim has something to mint.
+const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'watch'];
+const order = wanted.includes('all') ? ALL : wanted;
 const dn = await openDevnet();
 // Bind every deployed contract's build for cross-contract calls (TR/EBT -> Council, LD -> EBT).
 if (S.council) dn.bind(S.council, 'multisig-v8');
