@@ -76,3 +76,51 @@ export function reconcile(/** @type {{ accrued: { total: bigint, throughEventId:
   if (remitted > accrued.total) throw new Error(`remittance log claims ${remitted} EBT remitted, more than accrued ${accrued.total}`);
   return { accrued: accrued.total, remitted, outstanding: accrued.total - remitted, throughEventId: accrued.throughEventId };
 }
+
+// --- Anchoring the log head (Garrett, 2026-11-25) ----------------------------
+// The hash chain catches edits, removals and reordering, but dropping records
+// from the END leaves a valid chain. So after every remittance the new head
+// (seq + hash) is written to the ops log and posted to the council Telegram
+// group; checkAnchors() then requires every anchored record to still be in the
+// log with the same hash. (Later: an on-chain anchor.)
+
+/**
+ * Anchors `record` (as returned by append). The ops log write must succeed;
+ * a Telegram failure is reported (repost by hand) but does not undo anything.
+ * @param {any} record
+ * @param {{ opsLogFile: string, telegram?: { token: string, chatId: string, fetchImpl?: typeof fetch } }} o
+ */
+export async function anchorHead(record, o) {
+  const anchor = { kind: 'statutory-remittance-anchor', seq: record.seq, hash: record.hash, lane: record.lane, reference: record.reference, at: new Date().toISOString() };
+  fs.mkdirSync(path.dirname(o.opsLogFile), { recursive: true });
+  const fd = fs.openSync(o.opsLogFile, 'a', 0o600);
+  try { fs.writeSync(fd, `${JSON.stringify(anchor)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  let telegram = 'not configured';
+  if (o.telegram) {
+    const { telegramPost } = await import('../watcher/alert-channels.mjs');
+    const text = [
+      `PollPower statutory remittance #${record.seq} recorded (${record.lane})`,
+      `${record.ebtAmount} EBT / KES ${record.kesAmount} to ${record.authority}, ref ${record.reference}`,
+      `Covers settle events through ${record.coversThroughEventId}`,
+      `Remittance log head: ${record.hash}`,
+    ].join('\n');
+    try { await telegramPost(o.telegram, text); telegram = 'sent'; } catch (e) { telegram = `failed: ${String(/** @type {any} */ (e)?.message ?? e).slice(0, 160)}`; }
+  }
+  return { opsLog: 'written', telegram };
+}
+
+/** Anchors from the ops log (other ops-log lines are ignored). */
+export function readAnchors(/** @type {string} */ opsLogFile) {
+  if (!fs.existsSync(opsLogFile)) return [];
+  return fs.readFileSync(opsLogFile, 'utf8').split('\n').filter((l) => l.trim()).map((l) => { try { return JSON.parse(l); } catch { return null; } })
+    .filter((a) => a?.kind === 'statutory-remittance-anchor');
+}
+
+/** Every anchored record must still be in the log with the anchored hash. */
+export function checkAnchors(/** @type {any[]} */ records, /** @type {any[]} */ anchors) {
+  for (const a of anchors) {
+    const r = records[a.seq];
+    if (!r) throw new Error(`remittance log truncated: anchored record ${a.seq} is missing (anchored ${a.at})`);
+    if (r.hash !== a.hash) throw new Error(`remittance log rewritten: anchored record ${a.seq} differs from its anchor (anchored ${a.at})`);
+  }
+}

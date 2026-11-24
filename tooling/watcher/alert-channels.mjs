@@ -53,26 +53,30 @@ export function formatAlert(/** @type {any} */ a, /** @type {{ network: string, 
   return { subject, text };
 }
 
-/** Telegram bot -> council group. One sink ("telegram:<chatId>"). */
-export function telegramSink(/** @type {{ token: string, chatId: string, fetchImpl?: typeof fetch, context: any }} */ o) {
+/** Posts plain text to a Telegram chat; errors never contain the bot token. */
+export async function telegramPost(/** @type {{ token: string, chatId: string, fetchImpl?: typeof fetch }} */ o, /** @type {string} */ text) {
   const doFetch = o.fetchImpl ?? fetch;
   const scrub = (/** @type {string} */ s) => s.split(o.token).join('<token>').replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot<token>');
+  let res;
+  try {
+    res = await doFetch(`https://api.telegram.org/bot${o.token}/sendMessage`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: o.chatId, text, disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (e) {
+    throw new Error(`telegram: ${scrub(String(/** @type {any} */ (e)?.message ?? e))}`);
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body.ok) throw new Error(`telegram: HTTP ${res.status} ${scrub(String(body.description ?? ''))}`.trim());
+}
+
+/** Telegram bot -> council group. One sink ("telegram:<chatId>"). */
+export function telegramSink(/** @type {{ token: string, chatId: string, fetchImpl?: typeof fetch, context: any }} */ o) {
   return {
     member: `telegram:${o.chatId}`,
     async send(/** @type {any} */ alert) {
-      const { text } = formatAlert(alert, o.context);
-      let res;
-      try {
-        res = await doFetch(`https://api.telegram.org/bot${o.token}/sendMessage`, {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ chat_id: o.chatId, text, disable_web_page_preview: true }),
-          signal: AbortSignal.timeout(15_000),
-        });
-      } catch (e) {
-        throw new Error(`telegram: ${scrub(String(/** @type {any} */ (e)?.message ?? e))}`);
-      }
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body.ok) throw new Error(`telegram: HTTP ${res.status} ${scrub(String(body.description ?? ''))}`.trim());
+      await telegramPost(o, formatAlert(alert, o.context).text);
     },
   };
 }

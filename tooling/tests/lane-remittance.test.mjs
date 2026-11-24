@@ -83,3 +83,55 @@ test('LR-7 (negative): a log that claims more remitted than accrued is refused',
   createRemittanceLog(f).append(REC({ ebtAmount: '900', coversThroughEventId: 9 }));
   assert.throws(() => reconcile({ accrued: { total: 671n, throughEventId: 9 }, records: createRemittanceLog(f).records() }), /more than accrued/);
 });
+
+// --- anchoring the log head (Garrett, 2026-11-25): after every remittance the
+// latest hash goes to the ops log and the council Telegram group, so dropping
+// records from the end (which leaves a valid chain) is caught.
+import { anchorHead, checkAnchors, readAnchors } from '../tariff/lane-remittance.mjs';
+
+const TG_TOKEN = '999:AAFAKE-not-a-real-token';
+const tgOk = (calls) => async (url, init) => { calls.push({ url: String(url), body: JSON.parse(init.body) }); return { ok: true, status: 200, json: async () => ({ ok: true }) }; };
+
+test('LR-8: each remittance anchors the log head in the ops log and the council Telegram group', async () => {
+  const f = tmp(); const ops = path.join(path.dirname(f), 'ops-log.jsonl');
+  const log = createRemittanceLog(f);
+  const rec = log.append(REC({ coversThroughEventId: 3 }));
+  const calls = [];
+  const r = await anchorHead(rec, { opsLogFile: ops, telegram: { token: TG_TOKEN, chatId: '-100', fetchImpl: tgOk(calls) } });
+  assert.deepEqual(r, { opsLog: 'written', telegram: 'sent' });
+  const a = readAnchors(ops);
+  assert.deepEqual(a.map((x) => [x.seq, x.hash]), [[0, rec.hash]]);
+  assert.ok(calls[0].body.text.includes(rec.hash) && calls[0].body.text.includes('MPESA-QX12AB34'));
+  assert.doesNotThrow(() => checkAnchors(createRemittanceLog(f).records(), a));
+});
+
+test('LR-9 (negative): records dropped from the end of the log are caught by the anchors', async () => {
+  const f = tmp(); const ops = path.join(path.dirname(f), 'ops-log.jsonl');
+  const log = createRemittanceLog(f);
+  for (const [i, ev] of [[1, 3], [2, 7], [3, 9]]) await anchorHead(log.append(REC({ reference: `BANK-${i}`, coversThroughEventId: ev })), { opsLogFile: ops });
+  const lines = fs.readFileSync(f, 'utf8').trim().split('\n');
+  fs.writeFileSync(f, `${lines[0]}\n${lines[1]}\n`);   // still a valid chain
+  const recs = createRemittanceLog(f).records();
+  assert.equal(recs.length, 2);
+  assert.throws(() => checkAnchors(recs, readAnchors(ops)), /anchored record 2 is missing/);
+});
+
+test('LR-10 (negative): a Telegram failure still writes the ops log, reports the failure, and never shows the token', async () => {
+  const f = tmp(); const ops = path.join(path.dirname(f), 'ops-log.jsonl');
+  const rec = createRemittanceLog(f).append(REC());
+  const down = async (url) => { throw new Error(`ECONNRESET ${url}`); };
+  const r = await anchorHead(rec, { opsLogFile: ops, telegram: { token: TG_TOKEN, chatId: '-100', fetchImpl: down } });
+  assert.equal(r.opsLog, 'written');
+  assert.match(r.telegram, /^failed/);
+  assert.ok(!r.telegram.includes('AAFAKE'));
+  assert.equal(readAnchors(ops).length, 1);
+});
+
+test('LR-11 (negative): an anchor whose hash differs from the log (record rewritten and chain rebuilt) is caught', async () => {
+  const f = tmp(); const ops = path.join(path.dirname(f), 'ops-log.jsonl');
+  await anchorHead(createRemittanceLog(f).append(REC()), { opsLogFile: ops });
+  // Rebuild the whole log with different content: a valid chain, different hashes.
+  fs.unlinkSync(f);
+  createRemittanceLog(f).append(REC({ ebtAmount: '1' }));
+  assert.throws(() => checkAnchors(createRemittanceLog(f).records(), readAnchors(ops)), /anchored record 0 differs/);
+});
