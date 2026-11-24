@@ -51,12 +51,41 @@ unacceptable.
 
 ## Where the firmware source lives
 
-**Not found on throne.** `C:\Users\Garrett\workspace_ccstheia` holds only the
-TI Wi-SUN example projects (`ns_br`, `ns_node`, `gpiointerrupt`), the same as
-the `pollpower-br-firmware` / `pollpower-node-firmware` repos, with no HAT
-command handler (`SIGN_HASH` 0x62, `IDENTITY` 0x61). `C:\Users\Garrett\ti` is
-empty. The host side of the protocol is `pp-settle-service/pp_hat_session.mjs`
-(commands `IDENTITY` 0x61, `SIGN_HASH` 0x62; the HAT is reached through a TCP
-proxy at `192.168.100.18:7300`). **Garrett: please point to the HAT firmware
-source** (another machine, or the device's build workspace) before this item
-starts.
+**`PollPower/gateway-execution`** (private, single branch `master`, last push
+2026-10-28), found by org-wide code search (Garrett, 2026-11-24):
+
+| Path | What |
+|---|---|
+| `firmware/pp_attest.c`, `pp_attest.h` | HAT attestation: TI `EDDSA` hardware driver (PKA, `ECCParams_Ed25519`), `SHA2` (SHA-512), `TRNG`; key generated on chip |
+| `firmware/pp_keystore.c`, `.h` | Ed25519 key persisted in its own flash page (`PPK1` at `0x000A0000`, CRC32), untouched by app-only reflash |
+| `firmware/pp_gwattest.c` | The command handler the settle service talks to (`IDENTITY` 0x61, `SIGN_HASH` 0x62, `SET_METER_LIMIT`, `ENERGY_RESET`, ...) |
+| `firmware/pp_energy.c`, `pp_gwenergy.c`, `pp_ina226.c` | Metering (INA226) and the energy limit / relay cut-off |
+| `firmware/*.syscfg`, `build_*.sh`, `*.lds` | SysConfig + GCC builds for `CC1352P7RGZ` / `LP_CC1352P7_1`, SimpleLink SDK **8.32.00.07**, SysConfig 1.21.1 (no CCS project files; command-line builds under `$HOME/ti`) |
+| `pi-bridge/` | Pi-side serial-to-TCP bridge (`pp_hat_bridge.mjs`, `pp_serial_tcp_proxy.py`) behind `192.168.100.18:7300`, plus flashing scripts |
+| `settle-service/` | An older copy of what is now `PollPower/pp-settle-service` |
+
+Unrelated CC1352P7 code in `pollpower-monorepo` (`src/cc1352p7-firmware`,
+`src/gateway-firmware/cc1352p7-relay`, `pollpower-v2/firmware/cc1352p7-mesh`,
+`hardware/gateway-v3.4|3.5/firmware`) is the earlier mesh / relay radio work,
+not the HAT signer.
+
+### What this changes for the evaluation
+
+- **The chip already has a stronger attestation than the one production uses.**
+  `pp_attest_sign` signs SHA-512 over a 75-byte pre-image that the chip fills
+  itself: domain `pollpower:hat:attest:v1`, factory IEEE address, USER_ID,
+  session id (16), **the chip's own metered uWh**, its monotonic uptime (ms)
+  and a TRNG nonce. pp-settle-service instead uses `SIGN_HASH` (0x62), where
+  the chip signs any 32-byte hash the host sends, so a compromised host can get
+  any amount signed. Whatever curve the chip moves to, the signed message
+  should be the chip-built attestation (amount from the chip's own meter),
+  not a host-supplied hash.
+- **Interim hardening (before the curve change, small):** meter-authority-
+  service could require the chip's native attestation (verify Ed25519 over the
+  SHA-512 digest of the pre-image, check the metered uWh equals the settle
+  amount × 1000 within rounding, uptime/nonce monotonic) instead of a
+  `SIGN_HASH` signature. That closes the "host picks the amount" hole without
+  firmware changes. Worth doing before Preprod; to be scheduled.
+- secp256k1 on the same hardware: the code already uses the PKA through TI's
+  drivers; option A swaps `EDDSA` for the `ECDSA` driver with custom curve
+  parameters (see SDK check). Key storage and the command protocol stay.
