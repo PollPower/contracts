@@ -12,8 +12,15 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const BUILD = path.join(ROOT, 'build', 'l9');
 export const COIN = '00'.repeat(32);
 
+/**
+ * Used by the tests as `skip: buildExists(name) ? false : '...'`. A missing
+ * build must FAIL, not skip: a silently skipped security test reads as green.
+ * So this reports "present" unless WI16_ALLOW_MISSING_BUILDS=1, and the test
+ * then fails in loadContract() with the missing path.
+ */
 export function buildExists(name) {
-  return fs.existsSync(path.join(BUILD, name, 'contract', 'index.js'));
+  const present = fs.existsSync(path.join(BUILD, name, 'contract', 'index.js'));
+  return present || process.env.WI16_ALLOW_MISSING_BUILDS !== '1';
 }
 
 export async function loadContract(name) {

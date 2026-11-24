@@ -51,12 +51,20 @@ function remoteCompile(host, src, outDir, zk) {
     `compact compile +${EXPECTED.compiler} ${zk ? '' : '--skip-zk'} '${src}' out >&2`,
     'tar cf - -C out .', 'cd ~ && rm -rf -- "$W"',
   ].join('; ');
-  const r = spawnSync('ssh', ['-o', 'ConnectTimeout=15', host, `mkdir -p ~/wi16-work && bash -c '${script.replace(/'/g, "'\\''")}'`],
-    { input: tarIn.stdout, maxBuffer: 1 << 30 });
-  if (r.status !== 0) return { status: r.status, out: String(r.stderr) };
+  // The ZK output (proving keys) is several GB: stream it to a file instead of
+  // buffering it in memory (a maxBuffer overflow killed ssh and lost the build).
   fs.mkdirSync(outDir, { recursive: true });
-  // cwd, not `-C <dir>`: Git-for-Windows tar reads "C:" in a path as a remote host.
-  const x = spawnSync('tar', ['xmf', '-'], { cwd: outDir, input: r.stdout, maxBuffer: 1 << 30 });
+  const tarName = 'remote-build.tar';
+  const fd = fs.openSync(path.join(outDir, tarName), 'w');
+  let r;
+  try {
+    r = spawnSync('ssh', ['-o', 'ConnectTimeout=15', host, `mkdir -p ~/wi16-work && bash -c '${script.replace(/'/g, "'\\''")}'`],
+      { input: tarIn.stdout, stdio: ['pipe', fd, 'pipe'], maxBuffer: 1 << 26 });
+  } finally { fs.closeSync(fd); }
+  if (r.status !== 0) return { status: r.status ?? 1, out: `${r.error ?? ''}${r.stderr ?? ''}` };
+  // cwd + relative name, not `-C <dir>`: Git-for-Windows tar reads "C:" in a path as a remote host.
+  const x = spawnSync('tar', ['xmf', tarName], { cwd: outDir, maxBuffer: 1 << 26 });
+  fs.rmSync(path.join(outDir, tarName), { force: true });
   return { status: x.status, out: String(r.stderr) + String(x.stderr) };
 }
 
@@ -76,13 +84,22 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let failed = 0;
   for (const [name, src] of Object.entries(CONTRACTS)) {
     if (only.length && !only.includes(name)) continue;
+    // Build into a staging directory; the previous build is replaced only on
+    // success, so a failed build never leaves the tests without a contract.
     const out = path.join(BUILD_DIR, name);
-    fs.rmSync(out, { recursive: true, force: true });
+    const staging = `${out}.staging`;
+    fs.rmSync(staging, { recursive: true, force: true });
     const r = remote
-      ? remoteCompile(remote, src, out, zk)
-      : run(bin, ['compile', ...(zk ? [] : ['--skip-zk']), src, out]);
+      ? remoteCompile(remote, src, staging, zk)
+      : run(bin, ['compile', ...(zk ? [] : ['--skip-zk']), src, staging]);
+    if (r.status !== 0 || !fs.existsSync(path.join(staging, 'compiler', 'contract-info.json'))) {
+      failed++; console.error(`FAIL ${name} (previous build kept)\n${r.out}`);
+      fs.rmSync(staging, { recursive: true, force: true });
+      continue;
+    }
+    fs.rmSync(out, { recursive: true, force: true });
+    fs.renameSync(staging, out);
     const info = path.join(out, 'compiler', 'contract-info.json');
-    if (r.status !== 0 || !fs.existsSync(info)) { failed++; console.error(`FAIL ${name}\n${r.out}`); continue; }
     const ci = JSON.parse(fs.readFileSync(info, 'utf8'));
     const ok = ci['compiler-version'] === EXPECTED.compiler && ci['language-version'] === EXPECTED.language && ci['runtime-version'] === EXPECTED.runtime;
     if (!ok) failed++;
