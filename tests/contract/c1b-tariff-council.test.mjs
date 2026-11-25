@@ -61,7 +61,7 @@ async function setup() {
     }
   };
   const setCtx = (args, target = t, time = 1000n) => target.call('setNationalContext', ...args.map(BigInt), time);
-  return { tr, t, council, deployCouncil, deployTr, ctxHash, approve, setCtx };
+  return { tr, t, council, deployCouncil, deployTr, ctxHash, approve, setCtx, keys, ms };
 }
 
 const CTX = [300, 2500, 25];
@@ -129,4 +129,29 @@ test('C1b-TR-7: 2-of-3 approval sets the national context and logs the action', 
   assert.equal(L._pendingSanityBandPct, 25n);
   assert.equal(L._consumedFederationApprovals.member(h), true, 'JS action hash == circuit action hash');
   assert.equal(L._actionSeq, seqBefore + 1n);
+});
+
+// Council rotation (Preprod gate): the registry keeps its sealed council
+// reference; after a rotation, approvals of the old generation stop counting
+// (even unused ones) and the new council's approvals work.
+test('C1b-TR-8 (negative): after a council rotation, old-generation approvals do not count; the new council approves', { skip }, async () => {
+  const { t, council, ctxHash, approve, setCtx, keys, ms } = await setup();
+  const T = 1_800_000_000n;
+  const h = ctxHash(t, CTX);
+  await approve(h); // 2-of-3 in generation 0, never used
+  const standby = newCouncilKey();
+  const pks = [keys[0].point, keys[1].point, standby.point, ...keys.slice(3).map((k) => k.point)];
+  const L = council.ledger();
+  await approve(ms.pureCircuits.rotationHash(council.addressBytes, L._epoch, L._rotationSeq, pks, 3n, 2n));
+  council.setTime(T);
+  await council.call('scheduleRotation', pks, 3n, 2n, T);
+  council.setTime(T + 72n * 3600n);
+  await council.call('executeRotation', pks, 3n, 2n);
+  assert.equal(council.ledger()._epoch, 1n);
+  await assert.rejects(setCtx(CTX), NOT_APPROVED, 'generation-0 approvals no longer count');
+  for (const [i, k] of [[0, keys[0]], [2, standby]]) {
+    await council.call('approve', h, BigInt(i), signDigest(approvalDigest(ms, council.addressBytes, h, 1n), k.sk));
+  }
+  await setCtx(CTX);
+  assert.equal(t.ledger()._consumedFederationApprovals.member(h), true);
 });
