@@ -31,7 +31,7 @@ import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
 // WI-16: network id comes from providers.config (MIDNIGHT_NETWORK_ID); midnight-js-network-id is gone in Midnight.js 5.
 
 // -------------------------- Static config --------------------------
-const REPO_ROOT = process.env.TARIFF_ROOT ?? fileURLToPath(new URL('.', import.meta.url)); // WI-16: was kenya's absolute path
+const REPO_ROOT = process.env.TARIFF_ROOT ?? fileURLToPath(new URL('.', import.meta.url)); // WI-16: was the node host's absolute path
 const BUILD_ROOT = path.join(REPO_ROOT, 'build');
 const BUILD_CONTRACT_JS = path.join(BUILD_ROOT, 'contract', 'index.js');
 const ARTIFACTS_DIR = path.join(REPO_ROOT, 'deploy', 'artifacts');

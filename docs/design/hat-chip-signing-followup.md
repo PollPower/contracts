@@ -32,7 +32,7 @@ Recommendation for the evaluation: start with **A**, measure settle proving
 time with the extra ECDSA verify, and fall back to B only if that cost is
 unacceptable.
 
-## SDK check (read-only, throne, 2026-11-24)
+## SDK check (read-only, the dev workstation, 2026-11-24)
 
 - SimpleLink CC13xx/CC26xx SDK **8.32.00.07** at `C:\ti\simplelink_cc13xx_cc26xx_sdk_8_32_00_07`
   (CCS 20.5.1 at `C:\ti\ccs2051`).
@@ -61,7 +61,7 @@ unacceptable.
 | `firmware/pp_gwattest.c` | The command handler the settle service talks to (`IDENTITY` 0x61, `SIGN_HASH` 0x62, `SET_METER_LIMIT`, `ENERGY_RESET`, ...) |
 | `firmware/pp_energy.c`, `pp_gwenergy.c`, `pp_ina226.c` | Metering (INA226) and the energy limit / relay cut-off |
 | `firmware/*.syscfg`, `build_*.sh`, `*.lds` | SysConfig + GCC builds for `CC1352P7RGZ` / `LP_CC1352P7_1`, SimpleLink SDK **8.32.00.07**, SysConfig 1.21.1 (no CCS project files; command-line builds under `$HOME/ti`) |
-| `pi-bridge/` | Pi-side serial-to-TCP bridge (`pp_hat_bridge.mjs`, `pp_serial_tcp_proxy.py`) behind `192.168.100.18:7300`, plus flashing scripts |
+| `pi-bridge/` | Pi-side serial-to-TCP bridge (`pp_hat_bridge.mjs`, `pp_serial_tcp_proxy.py`) behind `<pi-host>:7300`, plus flashing scripts |
 | `settle-service/` | An older copy of what is now `PollPower/pp-settle-service` |
 
 Unrelated CC1352P7 code in `pollpower-monorepo` (`src/cc1352p7-firmware`,

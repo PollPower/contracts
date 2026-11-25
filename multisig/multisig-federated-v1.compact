@@ -7,7 +7,7 @@
 // RENAMED from "multisig-v7-federated" (rev 4, 2026-07-08): a SEPARATE
 // "multisig v7" (v6 + self-address binding) was already DEPLOYED to preview
 // on 2026-07-05 at e03478718030d07eb1e7d8fa4fd322751e000fa48195b67ea442ec8b29f47ce5
-// (multisig-v7-deployment.public.json on kenya, settlement-api repo,
+// (multisig-v7-deployment.public.json on the node host, settlement-api repo,
 // dev/multisig-ed25519-v7). That lineage owns the "v7" name. This contract
 // is a NEW LINE: "federated-v1". Domain separators bumped pp:msv7:* →
 // pp:msfed:v1:* so the two contracts can never share signed preimages.
@@ -16,7 +16,7 @@
 //          the Fractal Federation (whitepaper section, 2026-07-07).
 // Author:  Joi (with Garrett)
 // Date:    2026-07-08 (rev 3, same night)
-// Related: ~/compile-scratch/multisig-v7/multisig-v7-ed25519.compact on kenya
+// Related: ~/compile-scratch/multisig-v7/multisig-v7-ed25519.compact on the node host
 //          (2026-07-04, dev/multisig-ed25519-v7 lineage) - a SEPARATE "v7"
 //          exploring self-address binding on the v6 base. Rev 3 adopts its
 //          key idea (kernel.self() folded into every actionHash - closes

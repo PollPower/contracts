@@ -51,7 +51,7 @@ See PR #31 for the review discussion.
 
 ## Preview deploy
 
-Preview deploy tooling and kenya handoff steps are documented in
+Preview deploy tooling and the node host handoff steps are documented in
 [`PREVIEW-DEPLOY.md`](./PREVIEW-DEPLOY.md).
 
 For WI-15.7 pilot smoke, `deploy-tariff-registry-preview.ts` accepts optional

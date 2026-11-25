@@ -5,7 +5,7 @@
 // and is shared, unchanged, with the Preprod ceremony.
 //
 // Endpoints come from the environment (tooling/midnight-network.mjs). Through
-// the SSH tunnel to kenya's devnet:
+// the SSH tunnel to the node host's devnet:
 //   MIDNIGHT_NETWORK_ID=undeployed
 //   MIDNIGHT_NODE_URL=http://127.0.0.1:19944
 //   MIDNIGHT_INDEXER_URL=http://127.0.0.1:18088/api/v4/graphql

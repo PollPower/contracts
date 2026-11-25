@@ -165,7 +165,7 @@ schema as ceremony deploy artifacts.
   remediation. v7 was probably right at the edge; v8's 18 circuits
   crossed it.
 - **We built the full artifact anyway.** All 18 verifier keys and prover
-  keys already exist on kenya (`build/v8/keys/`). No wasted work — the
+  keys already exist on the node host (`build/v8/keys/`). No wasted work — the
   10 deferred circuits will use the same keys they were built with.
 - **Contract upgrade path (`execMultisigOp` op-code changes) is NOT
   available for this rollout** because `execMultisigOp` itself is one
@@ -179,7 +179,7 @@ schema as ceremony deploy artifacts.
 
 ## Artifacts checklist (pre-ceremony)
 
-Before day of ceremony, the following must be on kenya:
+Before day of ceremony, the following must be on the node host:
 
 - [ ] `ebt-v8-ceremony.compact` (927 lines, 8 exports)
 - [ ] `build/v8-ceremony/` full artifact (contract/, keys/, zkir/)

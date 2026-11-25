@@ -7,13 +7,14 @@
 //   DEVNET_STATE_FILE=build/devnet/measure-state.json MIDNIGHT_*=... \
 //     node tooling/proving/measure-proof-peaks.mjs tariff
 //
-// Env: PROOF_HOST (ssh host, default kenya), PROOF_CONTAINER (default
+// Env: PROOF_HOST (ssh host of the proof server, required), PROOF_CONTAINER (default
 // wi16-proof-server). Refuses unless the container runs one job / one worker.
 import { spawn, execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const HOST = process.env.PROOF_HOST ?? 'kenya';
+const HOST = process.env.PROOF_HOST ?? '';
+if (!HOST) { console.error('PROOF_HOST is required (ssh host of the proof server)'); process.exit(2); }
 const CT = process.env.PROOF_CONTAINER ?? 'wi16-proof-server';
 const stages = process.argv.slice(2);
 if (!stages.length || stages.includes('all')) { console.error('usage: measure-proof-peaks.mjs <stage> [...] (never all)'); process.exit(2); }

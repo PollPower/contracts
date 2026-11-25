@@ -179,7 +179,7 @@ the cheaper circuit (2.1 MB vs 11.3 MB proving key in the spike).
 ## Spike evidence (Compact 0.36.1, throwaway)
 
 `ld_spike.compact` + `ebt_spike.compact` compile cleanly (`--skip-zk`, on
-kenya) with: two contract types, sealed contract-reference ledger fields,
+the node host) with: two contract types, sealed contract-reference ledger fields,
 `sync()` making a view call into EBT, `claim()` making a minting call into
 EBT, and EBT checking `kernel.caller()`. **Not yet shown:** run-time and
 on-chain behaviour (two calls to the same callee in one transaction; a mint

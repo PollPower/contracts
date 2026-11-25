@@ -6,7 +6,7 @@
 // Usage (devnet endpoints in the environment, MIDNIGHT_NETWORK_ID=undeployed):
 //   node tooling/tangem/tangem-verify-devnet.mjs --software      # stand-in key, proves the path
 //   node tooling/tangem/tangem-verify-devnet.mjs <result.json>   # the ring's shared result
-// Needs the full-ZK build: COMPACT_REMOTE=kenya node tooling/build-contracts.mjs --zk tangem-verify
+// Needs the full-ZK build: COMPACT_REMOTE=<build-host> node tooling/build-contracts.mjs --zk tangem-verify
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';

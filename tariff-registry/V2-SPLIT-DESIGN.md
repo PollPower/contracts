@@ -24,7 +24,7 @@ Branch target (proposed): `feat/wi15-v2-split`
 
 ### 1.1 The failing tx
 
-On 2026-07-27 parent session (Joi/main) attempted preview deploy of `tariff-registry-v1.compact` and observed, from `kenya:~/contracts/tariff-registry/deploy-2026-07-27.attempt3.log`, verbatim:
+On 2026-07-27 parent session (Joi/main) attempted preview deploy of `tariff-registry-v1.compact` and observed, from `the node host:~/contracts/tariff-registry/deploy-2026-07-27.attempt3.log`, verbatim:
 
 > `2026-07-27 12:45:58        RPC-CORE: submitAndWatchExtrinsic(extrinsic: Extrinsic): ExtrinsicStatus:: 1010: Invalid Transaction: Transaction would exhaust the block limits`
 
@@ -37,7 +37,7 @@ Parent session queried Preview live and measured `system.blockLength`:
 - `max.normal`      = **786,432 bytes** (768 KiB)
 - `max.operational` = 1,048,576 bytes (1 MiB)
 
-Measured monolith deploy payload from `kenya:~/contracts/tariff-registry/build/`:
+Measured monolith deploy payload from `the node host:~/contracts/tariff-registry/build/`:
 
 | Component | Bytes |
 |-----------|-------|
@@ -872,7 +872,7 @@ max.normal      = 786,432 bytes  (768 KiB)
 max.operational = 1,048,576 bytes (1024 KiB)
 ```
 
-### A.2 Monolith deploy-payload breakdown (measured on `kenya:~/contracts/tariff-registry/build/`)
+### A.2 Monolith deploy-payload breakdown (measured on `the node host:~/contracts/tariff-registry/build/`)
 
 ```
 18 verifier keys total: 35,838 bytes
@@ -943,7 +943,7 @@ Full 28-cell inventory (`tariff-registry-v1.compact:236-334`):
 
 Total: 28 cells (matches parent count; the parent-session cell inventory in the brief listed federation-family + governance + shared + action-log + init but the aggregate is consistent).
 
-### A.6 Failing tx signature (from `kenya:~/contracts/tariff-registry/deploy-2026-07-27.attempt3.log`)
+### A.6 Failing tx signature (from `the node host:~/contracts/tariff-registry/deploy-2026-07-27.attempt3.log`)
 
 ```
 2026-07-27 12:45:58        RPC-CORE: submitAndWatchExtrinsic(extrinsic: Extrinsic):
@@ -999,7 +999,7 @@ Failure point: first `submitAndWatchExtrinsic` inside `deployContract()`. No sta
 Proposed new files (do NOT modify `tariff-registry-v1.compact`):
 
 ```
-kenya:~/contracts/tariff-registry/
+the node host:~/contracts/tariff-registry/
 ├── tariff-registry-v1.compact       # UNCHANGED (kept for archive / rollback)
 ├── tariff-audit.compact             # NEW
 ├── tariff-governance.compact        # NEW
@@ -1015,7 +1015,7 @@ kenya:~/contracts/tariff-registry/
 And on `settlement-api`:
 
 ```
-kenya:/opt/pollpower/settlement-api/
+the node host:/opt/pollpower/settlement-api/
 ├── mirror-daemon/                   # NEW OR EXTENDED
 │   ├── mirror-writer.ts             # NEW — sig-verified state mirror pusher
 │   ├── outbox-follower.ts           # NEW — reads sibling _actionLog, commits to AuditLog

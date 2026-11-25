@@ -1,12 +1,12 @@
 // @ts-check
 // Network endpoints for every PollPower tooling script, from environment
-// variables only. No endpoint is hardcoded: kenya's self-hosted Preprod stack
-// (Tailscale) is the target, and its addresses come from docs/infra-status.md.
+// variables only. No endpoint is hardcoded: the node host's self-hosted Preprod stack
+// (private network) is the target, and its addresses come from docs/infra-status.md.
 //
 // Required:
 //   MIDNIGHT_NETWORK_ID         preprod | preview | mainnet | undeployed
-//   MIDNIGHT_INDEXER_URL        indexer GraphQL over HTTP(S), e.g. http://<kenya>:8088/api/v4/graphql
-//   MIDNIGHT_NODE_URL           node RPC over HTTP(S),       e.g. http://<kenya>:9944
+//   MIDNIGHT_INDEXER_URL        indexer GraphQL over HTTP(S), e.g. http://<node-host>:8088/api/v4/graphql
+//   MIDNIGHT_NODE_URL           node RPC over HTTP(S),       e.g. http://<node-host>:9944
 // Optional:
 //   MIDNIGHT_INDEXER_WS_URL     default: MIDNIGHT_INDEXER_URL with http->ws and a /ws suffix
 //   MIDNIGHT_NODE_WS_URL        default: MIDNIGHT_NODE_URL with http->ws

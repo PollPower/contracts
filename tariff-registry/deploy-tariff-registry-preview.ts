@@ -583,7 +583,7 @@ async function main() {
 
   if (!existsSync(BUILD_CONTRACT_INDEX)) {
     throw new Error(
-      `Compiled artifact missing: ${BUILD_CONTRACT_INDEX}. Compile on kenya first (compactc.bin).`,
+      `Compiled artifact missing: ${BUILD_CONTRACT_INDEX}. Compile on the node host first (compactc.bin).`,
     );
   }
   if (!existsSync(DEPLOYMENT_JSON_PATH)) {

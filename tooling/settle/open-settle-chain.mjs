@@ -1,6 +1,6 @@
 // @ts-check
 // Entry point pp-settle-service loads (EBT_CHAIN_MODULE) where the contracts
-// checkout lives (kenya). Builds the fee-paying wallet + Midnight.js providers
+// checkout lives (the node host). Builds the fee-paying wallet + Midnight.js providers
 // from env and returns the EBT settle chain adapter. The wallet seed is passed
 // in by the caller (from its own env) and never logged.
 import { WebSocket } from 'ws';

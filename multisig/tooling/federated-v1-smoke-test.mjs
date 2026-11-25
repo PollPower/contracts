@@ -1,7 +1,7 @@
 // =============================================================================
 // federated-v1-smoke-test.mjs - offline smoke tests for multisig-federated-v1
 //
-// Run on kenya (needs the compiled build + settlement-api node_modules):
+// Run on the node host (needs the compiled build + settlement-api node_modules):
 //   cd /opt/pollpower/settlement-api
 //   node /path/to/federated-v1-smoke-test.mjs /path/to/build/contract/index.js
 //

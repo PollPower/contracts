@@ -1010,12 +1010,14 @@ if (!wanted.length) { console.error(`usage: stack.mjs <${Object.keys(STAGES).joi
 const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'service', 'relay', 'watcher', 'attacks'];
 const order = wanted.includes('all') ? ALL : wanted;
 // Every full pass starts on a freshly restarted proof server (Garrett,
-// 2026-11-25: its memory grows across proofs; kenya OOM-killed it mid-pass).
-// DEVNET_PROOF_SERVER_RESTART overrides the command; failure stops the pass.
+// 2026-11-25: its memory grows across proofs; the node host OOM-killed it mid-pass).
+// DEVNET_PROOF_SERVER_RESTART (required; the shell command that restarts the
+// devnet proof server, kept with the ops docs) runs first; failure stops the pass.
 let proofServerRestartedAt;
 if (RUN_ALL) {
-  const cmd = process.env.DEVNET_PROOF_SERVER_RESTART ?? 'ssh -o ConnectTimeout=15 kenya docker restart wi16-proof-server';
-  console.log(`[stack] restarting the proof server: ${cmd}`);
+  const cmd = process.env.DEVNET_PROOF_SERVER_RESTART;
+  if (!cmd) { console.error("[stack] REFUSING 'all': DEVNET_PROOF_SERVER_RESTART is required (the command that restarts the devnet proof server)"); process.exit(3); }
+  console.log('[stack] restarting the proof server (DEVNET_PROOF_SERVER_RESTART)');
   try { execSync(cmd, { stdio: 'inherit', timeout: 120_000 }); } catch (e) {
     console.error(`[stack] REFUSING 'all': proof server restart failed (${String(/** @type {any} */ (e)?.message ?? e).slice(0, 200)})`);
     process.exit(3);
@@ -1040,7 +1042,7 @@ const PASS = RUN_ALL ? {
   gitCommit: execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim(),
   gitClean: execSync('git status --porcelain -- tooling ebt multisig tariff-registry living-dividend', { cwd: ROOT }).toString().trim() === '',
   manifest: suiteManifest(),
-  proofServerResetPerProof: process.env.MIDNIGHT_PROOF_SERVER_RESET ?? null,
+  proofServerResetPerProof: Boolean(process.env.MIDNIGHT_PROOF_SERVER_RESET),
   network: dn.net.networkId,
   proofServerRestartedAt,
   stages: /** @type {any[]} */ ([]),

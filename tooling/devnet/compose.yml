@@ -2,9 +2,9 @@
 # deploy. Derived from midnightntwrk/midnight-local-dev standalone.yml, moved
 # to the ledger 9 set (node 2.1.101, indexer 4.4.101, proof server 9.0.2).
 #
-# Runs on kenya beside Joi's Preprod stack, so it uses its own project name,
-# offset ports and volumes, bound to 127.0.0.1 only. Reach it from throne with
-#   ssh -N -L 19944:127.0.0.1:19944 -L 18088:127.0.0.1:18088 -L 16300:127.0.0.1:16300 kenya
+# Runs on the node host beside Joi's Preprod stack, so it uses its own project name,
+# offset ports and volumes, bound to 127.0.0.1 only. Reach it from the dev workstation with
+#   ssh -N -L 19944:127.0.0.1:19944 -L 18088:127.0.0.1:18088 -L 16300:127.0.0.1:16300 the node host
 # then MIDNIGHT_NETWORK_ID=undeployed MIDNIGHT_NODE_URL=http://127.0.0.1:19944
 #      MIDNIGHT_INDEXER_URL=http://127.0.0.1:18088/api/v4/graphql
 #      MIDNIGHT_PROOF_SERVER_URL=http://127.0.0.1:16300

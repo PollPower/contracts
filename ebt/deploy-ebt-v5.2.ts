@@ -13,7 +13,7 @@
 //      compactc.bin /path/to/ebt-v5.2.compact /path/to/build
 //      (NOT --skip-zk — full compile required for deployment)
 //   2. Copy build/ directory to settlement-api:
-//      scp -r build/ pollpower@kenya:/opt/pollpower/settlement-api/contracts/dev/ebt-v5.2/build/
+//      scp -r build/ <user>@<node-host>:/opt/pollpower/settlement-api/contracts/dev/ebt-v5.2/build/
 //
 // Usage:
 //   cd /opt/pollpower/settlement-api

@@ -43,7 +43,7 @@ fi
 echo "[preview] repo: $REPO"
 
 # Skip compile if build/keys already populated (~17 circuit provers).
-# Full ZK compile takes ~30 min on kenya-class hardware; re-runs of the
+# Full ZK compile takes ~30 min on node-host-class hardware; re-runs of the
 # deploy step should not pay that cost when the source hasn't changed.
 # Pass --force-rebuild to override.
 NEED_COMPILE=1

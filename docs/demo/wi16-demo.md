@@ -21,53 +21,6 @@ and a ring can only approve for a council it sits in.
 - Proof generation takes 30–120 s per transaction; those waits are sped up
   in the edit, with a visible "proving, sped up" label.
 
-## Preparation (not recorded, ~45 min)
-
-One command deploys the demo stack: council with the ring in slot 0, staged
-and locked TariffRegistry with the statutory lane, staged and locked EBT, the
-chip, LD v3 with one existing member, two settles:
-
-```sh
-DEVNET_RING_KEYS=<off-chain council keys file> DEVNET_RING_HOLDER=<holder> \
-DEVNET_STATE_FILE=build/devnet/demo-state.json \
-MIDNIGHT_NETWORK_ID=undeployed MIDNIGHT_NODE_URL=... MIDNIGHT_INDEXER_URL=... MIDNIGHT_PROOF_SERVER_URL=... \
-  node tooling/devnet/stack.mjs council tariff ebt settle ld settle
-```
-
-Ring mode refuses the pass state file and `all`: a demo run is never a pass.
-Real alerts in scene 5 go through the council alert bridge on kenya
-(`127.0.0.1:7140`, one webhook per member -> council Telegram group + that
-member's email): forward it (`ssh -N -L 17140:127.0.0.1:7140 kenya`) and set
-`DEMO_ALERT_BRIDGE=http://127.0.0.1:17140` and `DEMO_ALERT_MEMBERS=<the
-bridge's three member keys>`. Every alert is labelled DEMO (event id
-`DEMO-<n>`, first problem "DEMO: devnet recording, not a real incident",
-action "DEMO ONLY ... no action needed"). Alternatively the direct channels
-(`WATCHER_TELEGRAM_*`, `WATCHER_EMAIL_*`, `WATCHER_SMTP_*`; runbook
-`docs/runbooks/hat-settle-watcher.md`). With neither, test sinks.
-
-Prep and scenes set `MIDNIGHT_PROOF_SERVER_RESET` (fresh proof server per
-proof). Run while Preprod's node and indexer are paused: dry run 2026-11-25
-took 40 min of prep, scenes 3:01 / 1:53 / 1:12 / 0:05 / 1:55.
-
-## On camera
-
-Same environment, one scene per command (each resumable if a take fails):
-
-```sh
-node tooling/devnet/stack.mjs demo-ring      # waits for the ring result
-node tooling/devnet/stack.mjs demo-settle
-node tooling/devnet/stack.mjs demo-claim
-node tooling/devnet/stack.mjs demo-attack
-node tooling/devnet/stack.mjs demo-forged
-```
-
-Scene 1 prints the 32-byte hash (also written to
-`build/devnet/demo-ring-digest.txt`). Send it to the phone (e.g. a note to
-self), sign it in the admin app (Profile > Tools > Ring signature test), share
-the result back and paste it into the terminal. Or set `DEMO_RING_RESULT=<file>`.
-The script checks the hash, that the key is the slot-0 ring, and the signature,
-before submitting.
-
 ## Shot list and narration (≈ 2:30)
 
 | Time | Picture | Narration |
@@ -80,9 +33,7 @@ before submitting.
 | 2:10–2:35 | Scene 5: forged settle accepted, watcher pass, Telegram group message + email arriving | "The hardest case: a compromised meter service countersigns a reading with a fake chip signature. The chain cannot check that signature type, so it accepts it. The watcher re-checks every settle, catches it within a minute, and alerts the whole council on Telegram and by email, so two of them can revoke the chip." |
 | 2:35–2:45 | End card | "Next: the same contracts, the same deploy script, on Midnight Preprod." |
 
-## Checks before recording
+## Preparation, recording procedure and checks
 
-- [ ] Prep finished; `node tooling/devnet/stack.mjs demo-ring` prints the hash.
-- [ ] Admin app installed, ring access code to hand.
-- [ ] Telegram group and the three inboxes on screen (if real channels).
-- [ ] Terminal font large; scroll-back cleared between scenes.
+Kept in the private ops repository (`PollPower/ops`, private) at
+`contracts/docs/demo/wi16-demo.md` (hosts, environment, on-camera steps).

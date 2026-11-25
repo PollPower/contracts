@@ -10,11 +10,6 @@ C-1c machine signers (EBT, TR), **LD v3** with its EBT side, and the new
 settle-path fixes WI16-E-1..3. Tests: contract + parity 123/123 (0 skipped),
 mirror 133/133, typecheck clean. Nothing deployed anywhere public.
 
-**Environment:** throne rebooted; WSL starts with `memory=8GB` and compiles
-locally again (EBT full ZK build: 7 min on throne). Tailscale healthy. SSH
-tunnel to kenya's devnet open (19944 / 18088 / 16300; node, indexer and proof
-server answer). Nothing else running.
-
 Off-chain, not in the repo: the council-keys file (council keys: one council member's ring verified; standby ring verified 2026-11-24, off-chain + compiled circuit; council members 1 and 2 pending).
 
 **Decisions (Garrett, 2026-11-24, after LD v3):** 72 h payout-change delay
@@ -49,7 +44,7 @@ SHA-256 with an expiry; devnet chips (`PPDEV`) refused off-devnet; the contract
 cannot tell native attestations from SIGN_HASH (ledger 9 has no Ed25519):
 recommend the firmware change before Preprod.
 
-**Devnet run progress (kenya local devnet, 2026-11-24):** council (Multisig v8,
+**Devnet run progress (the node host local devnet, 2026-11-24):** council (Multisig v8,
 marked devnet keys) -> TR staged deploy + registerSchedule via TR->Council
 cross-contract call with real proofs + retuneClass -> EBT staged deploy (14
 VK inserts, 16-20 s each) + mirrors + producer attestation + council chip
@@ -103,7 +98,7 @@ those stores can rewrite them. Not touched; flagged to Garrett and Joi.
 `midnight-level-db/` is now gitignored.
 
 **Staged-deploy window: devnet attack tests (`stack.mjs attacks`), 12/12
-pass on kenya's devnet.** Fresh EBT, mid-deploy (7 ceremony keys, mirrors and
+pass on the node host's devnet.** Fresh EBT, mid-deploy (7 ceremony keys, mirrors and
 producer attested):
 - SD-1 the finalized check refuses it (14 missing, authority not locked);
 - SD-2 calling a circuit not yet inserted (registerChip) fails -- refused by
@@ -154,7 +149,7 @@ state); the Preprod ceremony (`tooling/deploy/preprod-ceremony.mjs`, manual,
 not run) uses the same deploy suite and refuses builds or deploy code that
 differ from a passing record.
 
-**Step 4 item 4: code complete, each part run on kenya's devnet (2026-11-24).**
+**Step 4 item 4: code complete, each part run on the node host's devnet (2026-11-24).**
 - pp-settle-service on-chain submit (`wi16-hat-v9`): split planned from EBT's
   live mirrors (`tooling/settle/settle-plan.mjs`), retry, never resubmits a
   landed session; Gap B journal (countersigned bundle fsynced before submit,
@@ -188,12 +183,14 @@ differ from a passing record.
   with the lane: **PASS** (2026-11-25, `08c94b8`, clean tree, 67 min; 11
   stages, 12/12 attacks refused; record `docs/devnet-passes/2026-11-25T05-42-47-913Z-pass.json`).
 - Every full pass starts by restarting the proof server (Garrett,
-  2026-11-25, after kenya OOM-killed it mid-pass at 21.7 GB); a failed
+  2026-11-25, after the node host OOM-killed it mid-pass at 21.7 GB); a failed
   restart stops the pass. Joi caps the proof server's memory.
+- Operational procedures, hosts and council logistics live in the private
+  ops repository (`PollPower/ops`, private; 2026-11-25); this repo stays public.
 - Statutory lane (Garrett, 2026-11-25): minted on chain to a council-approved
   PollPower statutory account; KES remitted off-chain and recorded with
   `tooling/tariff/remit.mjs` (hash-chained log; each head anchored in the ops
-  log `~/pollpower-ops/ops.log` on kenya, backed up nightly to md0, and in the
+  log `the ops log` on the node host, backed up nightly to the backup array, and in the
   council Telegram group). Later: an on-chain anchor.
 - Proof server: one job, one worker, `--job-timeout 3600`, 15 GiB cap (Joi);
   our tooling sends one proof at a time (`555d32b`) with a 3600 s client
@@ -224,7 +221,11 @@ Open: consumer app must call `/api/ld/v3/enroll` with the shim's member key
 after KYC; everything above undeployed.
 
 **Preprod gates (all must hold before any Preprod deploy):**
-- Every step passes on the local devnet, and Joi confirms kenya is fully synced.
+- **Fresh pass pending: covers ops move + fix #5.** The deploy code changed
+  after the 2026-11-25 pass (`council-keys-guard.mjs` comment, the ops move);
+  one fresh pass runs after fix #5 (registry-root anchor), not before.
+- **The ring key behind the July fragment is retired: never in any new council.**
+- Every step passes on the local devnet, and Joi confirms the node host is fully synced.
 - Council rotation (72 h delay) implemented (design doc, "Council rotation").
 - **HAT firmware with `SIGN_HASH` disabled for settle use** (hard gate,
   Garrett 2026-11-24): the contract cannot tell `SIGN_HASH` signatures from
@@ -373,22 +374,22 @@ calendar days. It only holds if each step lands in about a day.
 
 | Day | Planned | Actual | Status |
 |---|---|---|---|
-| Tue 24 | **H-1** (EBT, Multisig: constructor sets all authorities) · Tangem test tooling + admin-app "sign hash" · local devnet up | **H-1 done**: 9 contract tests (3 negative) green; EBT 18→17, ceremony 8→7, Multisig 12→11 circuits. Tangem tooling + software-key pipeline (5 tests) `3d29984`; admin app ring test `e77521b` (monorepo, branch `wi16-ledger9`); devnet up on kenya (node 2.1.101, indexer 4.4.101, proof 9.0.2; offset ports). **Waiting on:** ring signature (needs `read:packages` token for the APK build) | H-1 ✅ · Tangem ⏳ |
+| Tue 24 | **H-1** (EBT, Multisig: constructor sets all authorities) · Tangem test tooling + admin-app "sign hash" · local devnet up | **H-1 done**: 9 contract tests (3 negative) green; EBT 18→17, ceremony 8→7, Multisig 12→11 circuits. Tangem tooling + software-key pipeline (5 tests) `3d29984`; admin app ring test `e77521b` (monorepo, branch `wi16-ledger9`); devnet up on the node host (node 2.1.101, indexer 4.4.101, proof 9.0.2; offset ports). **Waiting on:** ring signature (needs `read:packages` token for the APK build) | H-1 ✅ · Tangem ⏳ |
 | Wed 25 | **C-2** (EBT owner Schnorr) + Schnorr signer lib + parity · **Tangem ring verified on devnet** | **C-2 done early (Tue 24)** `d170a9f`: 13 contract tests (11 negative) green; owner = Jubjub key, in-circuit `jubjubSchnorrVerify` over (contract, circuit, args digest, nonce); signer uses the contract's exported pure helpers. Devnet path for the ring proven with a software key, low-S and high-S both verified on chain (`61cf805`). **Tangem ring verified (Tue 24):** real ring secp256k1 signature (compressed 33-byte key, raw 64-byte r‖s, low-S) accepted by `@noble/curves`, the compiled circuit and **on chain with a real proof** (devnet block 627); wrong digest rejected. Council keys stay on the rings | C-2 ✅ · Tangem ✅ |
 | Thu 26 | **C-1 council**: Multisig secp256k1 `approve` + `isApproved`; EBT/TR/LD `requireCouncil` + replay records | **Started early (Tue 24).** Multisig v8 done `6e818e3`: in-circuit `secp256k1EcdsaVerify`, no witnesses; approvals per (action, slot) under a council epoch; constructor for ≤7 slots with H-3 bounds and duplicate-key rejection. 14 tests (10 negative) green, incl. the PoC replayed against v6.2 (control: still vulnerable) and v8 (rejected). Council rotation designed (72 h delay) as a **Preprod gate**. **C-1b done (Tue 24):** EBT `1f9cf27` (10 tests, 8 negative) and TariffRegistry `de37277` (8 tests, 6 negative) check approval through a ledger 9 cross-contract call to `isApproved` on a real Multisig v8 (verifier keys checked), with their own replay records; council witnesses, EBT op 3 and TR `setFederationAuthority` removed (council rotates in place). LD gets the same with LD v3. Council 2-of-3 + standby procedure documented `14b3fde` | C-1 council ✅ (LD with LD v3) |
 | Fri 27 | **C-1 machine signers**: HAT, escrow attestor, schedule operators → Jubjub Schnorr; meter-authority-service signer | **Done early (Tue 24)**: EBT `1e90910` (18 tests, 12 negative) and TariffRegistry `a95e48b` (11 tests, 7 negative). No `signature_valid` witness left; HAT, reissue co-signature, escrow attestation, schedule validator and operators are Jubjub keys verified in-circuit over exported pure-circuit messages bound to the contract address. Found and fixed on the way: **TR `registerSchedule` front-run** (approval did not bind operator key or reference rate; validator key was a free argument) and the reissue co-signature not binding the recipient. PoC shown on the old builds. **Open (cross-app):** `meter-authority-service` signer change, notified to Joi; in-repo Ed25519 settle-flow scripts refuse to run until the devnet rewrite | C-1c ✅ (service signer ⏳) |
 | Sat 28 | **LD v3** + EBT `dividendAccrued` / `mintDividend` callee | **Done early (Tue 24, after the reboot):** EBT side `b236ea4` (12 tests, 8 negative), LD v3 `dcd9632` (20 tests, 11 negative). Members claim themselves; EBT mints to the payout address from an on-chain budget it cannot overdraw; LD bound once. Garrett's (a)/(b)/(c) built in; payout-change delay proposed at **72 h**. A full in-memory settle for these tests exposed **WI16-E-1** (High: settle split not bound to the class, dividend could be zeroed), **WI16-E-2** (High: registry mirror rollback) and **WI16-E-3** (Medium: proof sequence unbound); all shown on the old build and fixed. Harness gap fixed on the way: callee state is now written back after cross-contract calls (the budget test caught it) | LD v3 ✅ |
-| (new) | **meter-authority-service + settlement client** → Jubjub Schnorr (Garrett 2026-11-24: owned here, Joi deploys to kenya) · rewrite ceremony / HAT / retune / deploy scripts | **Started early (Tue 24).** The production HAT chip signs Ed25519 on chip, which the circuit cannot verify; Garrett chose option 3. **meter-authority-service done** (`wi16-hat-v9` `18f4dcb`): `/hat/v9` verifies the chip signature against the allowlist, applies the sanity rules and countersigns in Jubjub; 14 tests (10 negative), vectors from the compiled contract; runtime 0.15 → 0.21 (fixed the legacy `/attest` rename on the way). **Contract** `84a748f`: `chipDigest` + `hatMessage` bind the chip key/signature; `settleChip` audit event; 2 new tests. **pp-settle-service** (`wi16-hat-v9` `54e3d66`): v9 flow with a persisted per-chip counter and `/hat/v9` client, 36 tests green; on-chain submit left for step 4 (throws until then). Found: `settlement-api`'s settle (v2-api mint worker) has no HAT and cannot mint on v9 (decision for Garrett) | service ✅ · client ✅ (submit in step 4) |
+| (new) | **meter-authority-service + settlement client** → Jubjub Schnorr (Garrett 2026-11-24: owned here, Joi deploys to the node host) · rewrite ceremony / HAT / retune / deploy scripts | **Started early (Tue 24).** The production HAT chip signs Ed25519 on chip, which the circuit cannot verify; Garrett chose option 3. **meter-authority-service done** (`wi16-hat-v9` `18f4dcb`): `/hat/v9` verifies the chip signature against the allowlist, applies the sanity rules and countersigns in Jubjub; 14 tests (10 negative), vectors from the compiled contract; runtime 0.15 → 0.21 (fixed the legacy `/attest` rename on the way). **Contract** `84a748f`: `chipDigest` + `hatMessage` bind the chip key/signature; `settleChip` audit event; 2 new tests. **pp-settle-service** (`wi16-hat-v9` `54e3d66`): v9 flow with a persisted per-chip counter and `/hat/v9` client, 36 tests green; on-chain submit left for step 4 (throws until then). Found: `settlement-api`'s settle (v2-api mint worker) has no HAT and cannot mint on v9 (decision for Garrett) | service ✅ · client ✅ (submit in step 4) |
 | Sun 29 | **Full local-devnet run** of the whole stack (fenced deploys, settle, claim), deploy sizes re-measured | | |
 | Mon 30 | Recorded demo + submission (shows what passed the devnet run) | | |
 
 Deploy gate: nothing goes to Preprod until every step passes on the local
-devnet **and** Joi confirms kenya is fully synced.
+devnet **and** Joi confirms the node host is fully synced.
 
 ## Goal: Nov 30 Buildathon, Wave 3
 
 Run the PollPower contract stack on **Midnight Preprod (ledger 9)** against
-kenya's self-hosted stack:
+the node host's self-hosted stack:
 
 - Multisig v6.2 (H-3 hardening; Tangem admin swap done manually by Garrett)
 - TariffRegistry monolith (ceremony-fenced deploy + vk-insert rollout)
@@ -401,11 +402,11 @@ green-lights; nothing in this branch deploys. **Rule (Garrett, 2026-11-24): no
 contract goes to any public network, Preprod included, until WI16-C-1, C-2 and
 H-1 are fixed.**
 
-Infrastructure (kenya Cardano node, db-sync, midnight-node 2.1.101, indexer
+Infrastructure (the node host Cardano node, db-sync, midnight-node 2.1.101, indexer
 4.4.101, proof server 9.0.2) is **Joi's**; status lives in
 `docs/infra-status.md`, target Thursday evening. The tooling reads every
-endpoint from environment variables (`.env.example`), ready for kenya's
-Tailscale addresses.
+endpoint from environment variables (`.env.example`), ready for the node host's
+private-network addresses.
 
 ## Blocking: authorization (docs/findings-status.md)
 
@@ -428,18 +429,18 @@ in the design).
 
 | Contract | Compact 0.36.1 `--skip-zk` | Full ZK | Commit |
 |---|---|---|---|
-| EBT v8 (18 circuits) | ✅ pragma pinned to 0.28 only change | ✅ kenya 6 m 16 s, 2.4 GB peak | `c4a5240` |
-| EBT v8 ceremony (8) | ✅ | ✅ kenya 4 m 01 s | `c4a5240` |
+| EBT v8 (18 circuits) | ✅ pragma pinned to 0.28 only change | ✅ the node host 6 m 16 s, 2.4 GB peak | `c4a5240` |
+| EBT v8 ceremony (8) | ✅ | ✅ the node host 4 m 01 s | `c4a5240` |
 | Multisig v6.2 (12) | ✅ | not run | `b7dfc89` |
 | TariffRegistry v1 + ceremony (18 + 18) | ✅ | not run | `b7dfc89` |
 
-**After H-1 + C-2 (`d170a9f`, full ZK on kenya, Tue 24):** EBT v8 17 proved
+**After H-1 + C-2 (`d170a9f`, full ZK on the node host, Tue 24):** EBT v8 17 proved
 circuits (+7 pure helpers, no keys), ceremony 7. Owner-gated verifier keys
 grew 2,121 → 2,313 B (in-circuit Schnorr); prover keys ~24 MB each. Full
 deploy 85.3% of the block (still needs the fence), **ceremony deploy 35.6%
 (fits in one tx)**, each vk insert 4.9%. The fence plan holds.
 
-**After C-1 council (full ZK on kenya, 30 min, Tue 24):** every staged deploy fits.
+**After C-1 council (full ZK on the node host, 30 min, Tue 24):** every staged deploy fits.
 
 | Contract | Full deploy | Staged (ceremony) deploy | Each vk insert |
 |---|---|---|---|
@@ -497,18 +498,8 @@ claim with a view call and a minting call. No fix grows a verifier key past
 
 ### Environment notes
 
-- throne's WSL VM does not start (`ERROR_NO_SYSTEM_RESOURCES`), at **any**
-  size: tried `memory=4GB` (Garrett, 2026-11-24) and 2 GB, same error, with
-  ~11 GB RAM free. Not a size problem: 47 GB of 56 GB commit is in use, about
-  17 GB of it not attributable to any process, and kernel pools are ~4 GB
-  after 23 days up, so most likely leaked memory. Needs a reboot (or an admin
-  `Restart-Service vmcompute`). `.wslconfig` is now `memory=4GB` (backup
-  `.wslconfig.bak-8gb`). Builds run on kenya (`COMPACT_REMOTE=kenya`).
-- **Full ZK build memory, measured on kenya** (`/usr/bin/time -v`,
-  TariffRegistry v1, the largest): peak **5.0 GB** in one process, 9 min,
-  3.5 GB of keys written. **4 GB is not enough for full builds**; 6 GB is the
-  minimum, 8 GB recommended. Skip-zk builds fit easily in 4 GB.
-- No GitHub token is stored in WSL (it was passed to one process and cleared).
+Host and workstation notes are kept in the private ops repository
+(`PollPower/ops`, private).
 
 ## Open decisions
 
@@ -524,7 +515,7 @@ claim with a view call and a minting call. No fix grows a verifier key past
 5. **`meter-authority-service` signer change** (Ed25519 → Jubjub Schnorr) is
    cross-app; it needs an owner and a slot. Message layouts are in the design
    doc (C-1c); Joi notified 2026-11-24.
-6. **throne WSL:** needs a reboot to start at all; then `memory=8GB` (or 6 GB
+6. **the dev workstation WSL:** needs a reboot to start at all; then `memory=8GB` (or 6 GB
    minimum) for full ZK builds, 4 GB only for skip-zk.
 
 ## Follow-ups after the Preprod redeploy
@@ -560,7 +551,7 @@ claim with a view call and a minting call. No fix grows a verifier key past
   scripts. All refuse to run; rewritten for the Sunday devnet run with
   Jubjub signers (`tests/contract/machine-signer.mjs` is the reference).
 - **Deploy pricing** not re-measured after C-1c (needs full ZK builds of EBT
-  and TR, ~30 min on kenya). TR gained one circuit (`setValidator`, +1 vk
+  and TR, ~30 min on the node host). TR gained one circuit (`setValidator`, +1 vk
   insert, ~4.5% of a block); staged deploys had ~25% headroom. Re-measure
   with the devnet build.
 - **TariffRegistry action hashes**: `registerSchedule`, `retuneClass` and

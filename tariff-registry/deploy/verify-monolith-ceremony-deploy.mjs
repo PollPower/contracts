@@ -21,7 +21,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// WI-16: was hardcoded to kenya's checkout; now relative to this package,
+// WI-16: was hardcoded to the node host's checkout; now relative to this package,
 // overridable with TARIFF_ROOT.
 const TARIFF_ROOT = process.env.TARIFF_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEPLOYMENT_PATH = path.join(TARIFF_ROOT, 'deployment.json');

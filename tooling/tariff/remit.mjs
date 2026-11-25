@@ -7,7 +7,7 @@
 //        --ref <receipt/M-Pesa/bank ref> --covers <last settle event id> --by <who>
 //
 // Env: REMITTANCE_LOG, REMITTANCE_OPS_LOG (both required; the ops log is
-// ~/pollpower-ops/ops.log on kenya, backed up nightly to md0 by Joi; keep both outside the
+// the ops log on the node host, backed up nightly to the backup array by Joi; keep both outside the
 // repo and backed up), WATCHER_TELEGRAM_TOKEN_FILE + WATCHER_TELEGRAM_CHAT_ID
 // (the council group; optional until the bot exists, then expected).
 import { createRemittanceLog, anchorHead, readAnchors, checkAnchors } from './lane-remittance.mjs';

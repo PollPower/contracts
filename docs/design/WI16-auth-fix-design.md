@@ -438,7 +438,7 @@ circuit takes `sk` as a private argument. Simpler signer (no curve maths), but:
 
 - **Whoever runs the proof server sees `sk`**: the proof server receives every
   private input. Today the consumer app proves on a LAN proof server
-  (`192.168.50.116:6300`), and kenya proves for the daemons. With Schnorr, the
+  (`<proof-host>:6300`), and the node host proves for the daemons. With Schnorr, the
   proof server sees only a signature that is useless for any other action.
 - 11.3 MB proving key versus 2.1 MB for Schnorr.
 

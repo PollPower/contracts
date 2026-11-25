@@ -1,7 +1,7 @@
 // Shared configuration for the EBT settle-flow scripts (WI-16, ledger 9).
 //
 // Before WI-16 each script hardcoded the Preview endpoints, the Preview
-// contract addresses (gone since the 2026-11-07 Preview reset), kenya build
+// contract addresses (gone since the 2026-11-07 Preview reset), the node host build
 // paths and a private-state password. All of that now comes from here.
 //
 // Environment:

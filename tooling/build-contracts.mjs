@@ -44,7 +44,7 @@ function run(bin, args) {
 }
 
 // COMPACT_REMOTE=<ssh host>: compile on that host with `compact compile +0.36.1`
-// (used while throne's WSL cannot start). All tracked .compact sources are sent
+// (used while the dev workstation's WSL cannot start). All tracked .compact sources are sent
 // so imports resolve; the output directory is streamed back.
 function remoteCompile(host, src, outDir, zk) {
   const files = spawnSync('git', ['ls-files', '*.compact'], { cwd: ROOT, encoding: 'utf8' }).stdout.trim().split('\n');

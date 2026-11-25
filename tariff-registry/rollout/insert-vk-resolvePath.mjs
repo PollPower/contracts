@@ -18,7 +18,7 @@ const CIRCUIT_ID = process.env.INSERT_CIRCUIT_ID || 'resolvePath';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const TARIFF_ROOT = process.env.TARIFF_ROOT ?? path.resolve(__dirname, '..'); // WI-16: was kenya's absolute path
+const TARIFF_ROOT = process.env.TARIFF_ROOT ?? path.resolve(__dirname, '..'); // WI-16: was the node host's absolute path
 const FULL_BUILD_DIR = path.join(TARIFF_ROOT, 'build');           // all 18 circuits
 const CEREMONY_BUILD_DIR = path.join(TARIFF_ROOT, 'build-ceremony'); // 7 KEEP
 const DEPLOYMENT_JSON_PATH = path.join(TARIFF_ROOT, 'deployment.json');

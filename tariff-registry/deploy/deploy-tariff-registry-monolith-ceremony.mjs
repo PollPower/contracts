@@ -29,7 +29,7 @@ import * as Rx from 'rxjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// WI-16: was hardcoded to kenya's checkout; now this script's own package
+// WI-16: was hardcoded to the node host's checkout; now this script's own package
 // directory, overridable with TARIFF_ROOT.
 const TARIFF_ROOT = process.env.TARIFF_ROOT ?? path.resolve(__dirname, '..');
 const BUILD_DIR = path.join(TARIFF_ROOT, 'build-ceremony');
