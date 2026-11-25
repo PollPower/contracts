@@ -90,6 +90,27 @@ Preview Ed25519 contract.
 
 #### Council rotation: sealed for the Nov 30 demo, **required before Preprod**
 
+**Implemented 2026-11-26 on branch `wi16-rotation`** (Multisig v8:
+`scheduleRotation`, `executeRotation`, `cancelRotation`, pure `rotationHash`,
+`cancelRotationHash`, `rotationDelaySeconds`; tests R-1..R-10 and C1b-TR-8;
+devnet stage `rotation`). Changes made while implementing:
+1. **Proposal number.** `rotationHash` also binds `seq` (`_rotationSeq`, +1 per
+   schedule), so the approvals of a cancelled or executed proposal can never
+   schedule it again, even in the same generation.
+2. **Filler canonicalised.** Slots at or beyond the new count hash as zero, so
+   the filler keys never change the hash; the count and threshold are bound.
+3. **Schedule timestamp window.** `currentTime` must be in the past AND at
+   most 1 h old (`blockTimeGte` + `blockTimeLt`), so back-dating cannot
+   shorten the 72 h. `executeRotation` takes no timestamp: it checks
+   `blockTimeGte(readyAt)` directly.
+4. **One pending rotation at a time** (`ROTATION_PENDING`); cancel first.
+5. **Cancel** needs a council approval of `cancelRotationHash(self, epoch,
+   pendingRotationHash)`; it takes no arguments.
+6. **The new council's rules are checked at schedule** (H-3 bounds, majority,
+   distinct keys), before the delay, and again by the install at execute.
+7. The council fields lose `sealed` (rotation writes them); the contract
+   address, and so every consumer's sealed `_council`, never changes.
+
 Decision (Garrett, 2026-11-24): the council is sealed (no rotation circuits)
 for the Nov 30 devnet demo. **Preprod gate: no Preprod deploy until the
 council is rotatable as below.**

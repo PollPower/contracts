@@ -24,7 +24,7 @@
 //              actionHash, epoch as Field as Bytes<32> ])
 // `approvalDigest` is an exported pure circuit, so the admin app computes the
 // same bytes with the compiled contract. The address keeps M-2's domain
-// separation; `epoch` is the council generation (0 until rotation exists).
+// separation; `epoch` is the council generation (0 at deploy, +1 per rotation).
 //
 // Consumers (EBT, TariffRegistry, Living Dividend) build `actionHash` with
 // their own domain tag and address, ask `isApproved(actionHash)` through a
@@ -32,11 +32,28 @@
 // `execute` here: an approval is consumed where it is used.
 //
 // =============================================================================
-// COUNCIL: SEALED FOR THE NOV 30 DEVNET DEMO
+// COUNCIL ROTATION (Preprod gate; design: WI16-auth-fix-design.md)
 // =============================================================================
-// The council is fixed by the constructor (H-1: no first-caller initialize).
-// Rotation (72 h delay, approval per (actionHash, adminIndex), epoch bump) is
-// designed and is a PREPROD GATE: this version must not go to Preprod.
+// The council is set by the constructor (H-1: no first-caller initialize) and
+// rotates IN PLACE (same address), so EBT, TariffRegistry and Living Dividend
+// keep their sealed `_council` reference:
+//   1. propose: rotationHash(self, epoch, seq, newPks, adminCount, threshold)
+//      over the complete new council (`seq` numbers proposals, so a cancelled
+//      or executed proposal's approvals never count again);
+//   2. approve: the CURRENT council approves rotationHash with approve()
+//      (current threshold, e.g. 2-of-3);
+//   3. schedule: anyone calls scheduleRotation with the same council and a
+//      current timestamp (not in the future, at most 1 h old: L-3); readyAt =
+//      timestamp + 72 h. One pending rotation at a time;
+//   4. execute: anyone calls executeRotation with the same council once the
+//      block time reaches readyAt: keys, count and threshold are replaced and
+//      `epoch` increments. Approvals and digests are keyed by epoch, so every
+//      approval of the old generation (and every signature over an old
+//      digest) stops counting; consumers' replay records stay as they are;
+//   5. cancel: cancelRotation() with a council approval of
+//      cancelRotationHash(self, epoch, pendingRotationHash), before execution.
+// The new council is held to the constructor's rules (H-3 bounds, majority
+// threshold, distinct keys).
 
 pragma language_version 0.28;
 
@@ -51,15 +68,22 @@ export pure circuit maxAdmins(): Uint<8> {
 // Ledger state
 // =============================================================================
 
-// Council keys by slot index 0..adminCount-1.
-export sealed ledger _adminPks: Map<Uint<8>, Secp256k1Point>;
-// persistentHash of each council key; rejects duplicates in the constructor.
-export sealed ledger _keyIds: Set<Bytes<32>>;
-export sealed ledger _adminCount: Uint<8>;
-export sealed ledger _threshold: Uint<8>;
-// Council generation. Stays 0 while the council is sealed; part of every
-// digest and approval key so rotation can invalidate old approvals.
+// Council keys by slot index 0..adminCount-1. Replaced only by executeRotation.
+export ledger _adminPks: Map<Uint<8>, Secp256k1Point>;
+// persistentHash of each council key; rejects duplicates.
+export ledger _keyIds: Set<Bytes<32>>;
+export ledger _adminCount: Uint<8>;
+export ledger _threshold: Uint<8>;
+// Council generation: 0 at deploy, +1 per executed rotation. Part of every
+// digest and approval key, so a rotation invalidates the old approvals.
 export ledger _epoch: Counter;
+// Rotation: the one pending proposal (hash, its number, when it may execute),
+// and the next proposal number.
+export ledger _rotationPending: Boolean;
+export ledger _pendingRotationHash: Bytes<32>;
+export ledger _pendingRotationSeq: Uint<64>;
+export ledger _rotationReadyAt: Uint<64>;
+export ledger _rotationSeq: Uint<64>;
 // approvalKey(actionHash, epoch) -> council slots that approved.
 // Recorded per (actionHash, adminIndex), never per signature: the circuit
 // accepts both (r, s) and (r, n - s).
@@ -72,6 +96,48 @@ export ledger _approvals: Map<Bytes<32>, Set<Uint<8>>>;
 export pure circuit approvalDigest(self: Bytes<32>, actionHash: Bytes<32>, epoch: Uint<64>): Bytes<32> {
   return persistentHash<Vector<4, Bytes<32>>>([
     pad(32, "pp:ms:v8:approve"), self, actionHash, (epoch as Field) as Bytes<32>,
+  ]);
+}
+
+// Rotation delay (72 h, Garrett 2026-11-24) and the schedule timestamp window.
+export pure circuit rotationDelaySeconds(): Uint<64> {
+  return 259200;
+}
+
+pure circuit rotationTimeWindowSeconds(): Uint<64> {
+  return 3600;
+}
+
+// Slot i's key id, or zero for a slot beyond the count (filler never matters).
+pure circuit slotId(i: Uint<8>, pk: Secp256k1Point, n: Uint<8>): Bytes<32> {
+  return i < n ? persistentHash<Secp256k1Point>(pk) : pad(32, "");
+}
+
+pure circuit councilIds(pks: Vector<7, Secp256k1Point>, n: Uint<8>): Vector<7, Bytes<32>> {
+  return [slotId(0, pks[0], n), slotId(1, pks[1], n), slotId(2, pks[2], n), slotId(3, pks[3], n),
+          slotId(4, pks[4], n), slotId(5, pks[5], n), slotId(6, pks[6], n)];
+}
+
+pure circuit rotationHashOfIds(self: Bytes<32>, epoch: Uint<64>, seq: Uint<64>, ids: Vector<7, Bytes<32>>,
+                               adminCount: Uint<8>, threshold: Uint<8>): Bytes<32> {
+  return persistentHash<Vector<13, Bytes<32>>>([
+    pad(32, "pp:ms:v8:rotate"), self, (epoch as Field) as Bytes<32>, (seq as Field) as Bytes<32>,
+    ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6],
+    (adminCount as Field) as Bytes<32>, (threshold as Field) as Bytes<32>,
+  ]);
+}
+
+// What the council approves to rotate: the complete new council, bound to this
+// address, the current generation and the proposal number.
+export pure circuit rotationHash(self: Bytes<32>, epoch: Uint<64>, seq: Uint<64>, newPks: Vector<7, Secp256k1Point>,
+                                 adminCount: Uint<8>, threshold: Uint<8>): Bytes<32> {
+  return rotationHashOfIds(self, epoch, seq, councilIds(newPks, adminCount), adminCount, threshold);
+}
+
+// What the council approves to cancel the pending rotation.
+export pure circuit cancelRotationHash(self: Bytes<32>, epoch: Uint<64>, pendingRotationHash: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<4, Bytes<32>>>([
+    pad(32, "pp:ms:v8:cancelRotation"), self, (epoch as Field) as Bytes<32>, pendingRotationHash,
   ]);
 }
 
@@ -95,24 +161,31 @@ circuit installSlot(i: Uint<8>, pk: Secp256k1Point, n: Uint<8>): [] {
   }
 }
 
-constructor(adminPks: Vector<7, Secp256k1Point>, adminCount: Uint<8>, threshold: Uint<8>) {
-  const n = disclose(adminCount);
-  const t = disclose(threshold);
+// H-3 bounds, for the constructor and every rotation.
+pure circuit councilBoundsOk(n: Uint<8>, t: Uint<8>): [] {
   assert(n >= 1 && n <= maxAdmins(), "admin count must be between 1 and 7");
   assert(t > 0, "Threshold must be > 0");
   assert(t <= n, "Threshold must be <= admin count");
   assert((t as Uint<16>) * 2 > (n as Uint<16>), "Threshold must be a majority of the council");
+}
 
-  installSlot(0, adminPks[0], n);
-  installSlot(1, adminPks[1], n);
-  installSlot(2, adminPks[2], n);
-  installSlot(3, adminPks[3], n);
-  installSlot(4, adminPks[4], n);
-  installSlot(5, adminPks[5], n);
-  installSlot(6, adminPks[6], n);
-
+circuit installCouncil(pks: Vector<7, Secp256k1Point>, n: Uint<8>, t: Uint<8>): [] {
+  installSlot(0, pks[0], n);
+  installSlot(1, pks[1], n);
+  installSlot(2, pks[2], n);
+  installSlot(3, pks[3], n);
+  installSlot(4, pks[4], n);
+  installSlot(5, pks[5], n);
+  installSlot(6, pks[6], n);
   _adminCount = n;
   _threshold = t;
+}
+
+constructor(adminPks: Vector<7, Secp256k1Point>, adminCount: Uint<8>, threshold: Uint<8>) {
+  const n = disclose(adminCount);
+  const t = disclose(threshold);
+  councilBoundsOk(n, t);
+  installCouncil(disclose(adminPks), n, t);
 }
 
 // =============================================================================
@@ -157,4 +230,62 @@ export circuit getThreshold(): Uint<8> {
 
 export circuit getAdminCount(): Uint<8> {
   return _adminCount;
+}
+
+// =============================================================================
+// Council rotation (see the header): schedule -> 72 h -> execute; or cancel.
+// =============================================================================
+
+// Distinct keys among slots 0..n-1 (checked at schedule, before the delay).
+pure circuit idsDistinct(ids: Vector<7, Bytes<32>>, n: Uint<8>): [] {
+  for (const i of 0..7) {
+    for (const j of 0..7) {
+      if ((i as Uint<8>) < (j as Uint<8>) && (j as Uint<8>) < n) {
+        assert(ids[i] != ids[j], "duplicate council key");
+      }
+    }
+  }
+}
+
+export circuit scheduleRotation(newPks: Vector<7, Secp256k1Point>, adminCount: Uint<8>, threshold: Uint<8>,
+                                currentTime: Uint<64>): [] {
+  assert(!_rotationPending, "ROTATION_PENDING");
+  const n = disclose(adminCount);
+  const t = disclose(threshold);
+  const now = disclose(currentTime);
+  councilBoundsOk(n, t);
+  const ids = councilIds(disclose(newPks), n);
+  idsDistinct(ids, n);
+  const seq = _rotationSeq;
+  const h = rotationHashOfIds(kernel.self().bytes, _epoch.read(), seq, ids, n, t);
+  assert(isApproved(h), "ROTATION_NOT_APPROVED");
+  // L-3: a current timestamp, so the 72 h cannot be shortened by back-dating.
+  assert(blockTimeGte(now), "timestamp cannot be in the future");
+  assert(blockTimeLt((now + rotationTimeWindowSeconds() + 1) as Uint<64>), "ROTATION_TIME_STALE");
+  _rotationPending = true;
+  _pendingRotationHash = h;
+  _pendingRotationSeq = seq;
+  _rotationReadyAt = (now + rotationDelaySeconds()) as Uint<64>;
+  _rotationSeq = (seq + 1) as Uint<64>;
+}
+
+export circuit executeRotation(newPks: Vector<7, Secp256k1Point>, adminCount: Uint<8>, threshold: Uint<8>): [] {
+  assert(_rotationPending, "NO_PENDING_ROTATION");
+  const n = disclose(adminCount);
+  const t = disclose(threshold);
+  const pks = disclose(newPks);
+  const h = rotationHashOfIds(kernel.self().bytes, _epoch.read(), _pendingRotationSeq, councilIds(pks, n), n, t);
+  assert(h == _pendingRotationHash, "ROTATION_MISMATCH");
+  assert(blockTimeGte(_rotationReadyAt), "ROTATION_NOT_READY");
+  _adminPks.resetToDefault();
+  _keyIds.resetToDefault();
+  installCouncil(pks, n, t);
+  _epoch.increment(1);
+  _rotationPending = false;
+}
+
+export circuit cancelRotation(): [] {
+  assert(_rotationPending, "NO_PENDING_ROTATION");
+  assert(isApproved(cancelRotationHash(kernel.self().bytes, _epoch.read(), _pendingRotationHash)), "CANCEL_NOT_APPROVED");
+  _rotationPending = false;
 }

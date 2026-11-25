@@ -133,8 +133,10 @@ outsider inserting or removing keys, or taking the authority, is rejected
 (SD-4..SD-8); after finalize-and-lock even the deployer key and an unsigned
 update are rejected (SD-9..SD-12).
 
-**Still open, and gating Preprod:** council rotation in Multisig v8 (designed,
-72 h delay, not implemented; the council is sealed for now); SD-2 confirmed at
+**Still open, and gating Preprod:** council rotation in Multisig v8
+(implemented on branch `wi16-rotation`: 2-of-3, 72 h delay, generation bump,
+council-approved cancel; tests R-1..R-10 and C1b-TR-8; fresh devnet pass
+pending); SD-2 confirmed at
 the node with a raw transaction, not only client-side; HAT firmware with
 `SIGN_HASH` disabled for settles; real ring keys in the Multisig v8
 constructor. The registry-root anchor (trust assumption #5 below) is done:

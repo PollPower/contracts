@@ -229,7 +229,10 @@ after KYC; everything above undeployed.
 - **The ring key behind the July fragment is retired: never in any new council.**
 - **Pre-mainnet: decide stale-lane tolerance (CAL-vNext-M1); not a Preprod blocker.**
 - Every step passes on the local devnet, and Joi confirms the node host is fully synced.
-- Council rotation (72 h delay) implemented (design doc, "Council rotation").
+- **Council rotation (72 h delay)**: implemented 2026-11-26 on branch
+  `wi16-rotation` (2-of-3 approve -> schedule -> 72 h -> execute, generation
+  bump; council-approved cancel; tests R-1..R-10, C1b-TR-8; devnet stage
+  `rotation`). Fresh pass pending; merge into `wi16-ledger9` after it passes.
 - **HAT firmware with `SIGN_HASH` disabled for settle use** (hard gate,
   Garrett 2026-11-24): the contract cannot tell `SIGN_HASH` signatures from
   native attestations.
