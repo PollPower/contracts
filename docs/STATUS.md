@@ -211,6 +211,15 @@ differ from a passing record.
   scripted (ring approval, settle 12,345 EBT incl. lane 370, claim 617 EBT,
   3 attacks refused with supply unchanged, forged settle alerted to all 3).
   Scene times 3:01 / 1:53 / 1:12 / 0:05 / 1:55 before the edit speeds up proving.
+  **Recorded 2026-11-25** (Preprod node + indexer paused for it): separate
+  demo deployment (prep 40 min, `0a9376c`), council slot 0 = a real council
+  Tangem ring, slots 1-2 devnet stand-ins. All five scenes ran: the ring's
+  approval verified in-circuit and landed on chain, member registered via
+  LD -> Council; metered settle incl. the statutory lane; Living Dividend
+  claim via LD -> EBT; three attacks refused; forged settle alerted through
+  the council alert bridge to the council Telegram group and all three
+  inboxes, labelled DEMO (`932aa94`), no undelivered alerts. Next: Preprod
+  resumes on Garrett's go.
 Open: consumer app must call `/api/ld/v3/enroll` with the shim's member key
 after KYC; everything above undeployed.
 
