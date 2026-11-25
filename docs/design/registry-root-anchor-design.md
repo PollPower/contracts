@@ -1,7 +1,7 @@
 # EBT reads the TariffRegistry root on chain (registry-root anchor)
 
-Status: **implemented on branch `wi16-fix5`** (2026-11-25; not merged, no
-fresh devnet pass yet: one pass covers the ops move and this fix). Preprod
+Status: **implemented** on branch `wi16-fix5` (2026-11-25); fresh devnet
+pass PASSED at `19aadeb`; merged into `wi16-ledger9` on 2026-11-26, before Preprod, at Garrett's request; the reviewed state is tag `review-base` (`f72ff34`). Preprod
 gate (Garrett 2026-11-25). Closes REVIEW.md trust assumption #5. See
 "Changes made while implementing" at the end.
 

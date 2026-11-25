@@ -137,8 +137,8 @@ update are rejected (SD-9..SD-12).
 72 h delay, not implemented; the council is sealed for now); SD-2 confirmed at
 the node with a raw transaction, not only client-side; HAT firmware with
 `SIGN_HASH` disabled for settles; real ring keys in the Multisig v8
-constructor; a fresh devnet pass over the registry-root anchor (trust
-assumption #5 below, implemented on branch `wi16-fix5`). The full gate list is in [docs/STATUS.md](docs/STATUS.md),
+constructor. The registry-root anchor (trust assumption #5 below) is done:
+fresh devnet pass passed, merged on 2026-11-26. The full gate list is in [docs/STATUS.md](docs/STATUS.md),
 "Preprod gates".
 
 ## Trust assumptions we chose
@@ -174,8 +174,9 @@ These are deliberate. We would rather state them than have them found.
    contracts accept: every authorization is checked in-circuit, and the
    watcher reads events from the indexer independently.
 5. **The EBT owner key vouched for the TariffRegistry root it mirrors.**
-   **Fixed on branch `wi16-fix5`** (2026-11-25; fresh devnet pass PASSED at `19aadeb`, record
-   `docs/devnet-passes/2026-11-25T13-46-10-951Z-pass.json`; merge after Nov 29):
+   **Fixed** (2026-11-25, branch `wi16-fix5`; fresh devnet pass PASSED at
+   `19aadeb`, record `docs/devnet-passes/2026-11-25T13-46-10-951Z-pass.json`;
+   merged into `wi16-ledger9` on 2026-11-26, before Preprod, at Garrett's request; the reviewed state is tag `review-base` (`f72ff34`)):
    EBT reads the root from the TariffRegistry through a ledger 9
    cross-contract call (`syncRegistryRoot` -> the witness-free
    `actionLogAnchor`), the same pattern as LD v3 reading EBT's

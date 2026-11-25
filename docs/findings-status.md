@@ -100,7 +100,7 @@ public ledger state, so anyone can pass the check.
 
 Owner-gated circuits: `attestProducerOwnership`, `revokeProducerOwnership`,
 `claimSplit`, `execOwnerOp`, `manualReissue`, `mirrorActionLogRoot` (the
-last removed by fix #5, registry-root anchor, branch `wi16-fix5`).
+last removed by fix #5, registry-root anchor, branch `wi16-fix5`, merged 2026-11-26).
 
 Combined with C-1 this is an **unprivileged mint**: self-attest a producer
 via `attestProducerOwnership`, then `settle` with a lying HAT witness to any

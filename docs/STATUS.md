@@ -225,8 +225,7 @@ after KYC; everything above undeployed.
   `wi16-fix5` at `19aadeb` (clean tree; ops move + fix #5 + settle registry
   gate): 11 stages, 13/13 attacks incl. `RA-chain`, adapter synced EBT 3 -> 4
   of 4 and settled; proof-server peak 10.17 GiB of 15; record
-  `docs/devnet-passes/2026-11-25T13-46-10-951Z-pass.json`. Merge into
-  `wi16-ledger9` after the Wave 3 submission (Nov 29).
+  `docs/devnet-passes/2026-11-25T13-46-10-951Z-pass.json`. Merged into `wi16-ledger9` on 2026-11-26, before Preprod, at Garrett's request; the reviewed state is tag `review-base` (`f72ff34`).
 - **The ring key behind the July fragment is retired: never in any new council.**
 - **Pre-mainnet: decide stale-lane tolerance (CAL-vNext-M1); not a Preprod blocker.**
 - Every step passes on the local devnet, and Joi confirms the node host is fully synced.
@@ -285,8 +284,8 @@ after KYC; everything above undeployed.
   Preprod/mainnet (Garrett 2026-11-24); upgrades are a new version + council-
   approved migration.
 - **EBT reads the TariffRegistry root on chain** (fix #5; Garrett
-  2026-11-25): **implemented on branch `wi16-fix5`**, not merged (after Nov 29), fresh
-  pass PASSED (`19aadeb`). TariffRegistry `actionLogAnchor` (witness-free, refused before the
+  2026-11-25): **done**: built on branch `wi16-fix5`, fresh pass PASSED (`19aadeb`),
+  merged into `wi16-ledger9` on 2026-11-26, before Preprod, at Garrett's request; the reviewed state is tag `review-base` (`f72ff34`). TariffRegistry `actionLogAnchor` (witness-free, refused before the
   bootstrap completes) read by a permissionless EBT `syncRegistryRoot`
   through a cross-contract call; `mirrorActionLogRoot`, its owner digest and
   `mirrorActionLogHead` removed; the constructor takes the registry address
