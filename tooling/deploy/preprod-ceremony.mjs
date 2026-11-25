@@ -176,7 +176,8 @@ async function main() {
   const wallet = dry
     ? await (await import('../devnet/devnet-wallet.mjs')).devnetMasterWallet(net)
     : await createWallet(deployWalletSeed(), net);
-  const dn = await openNetwork({ net, ctx: wallet, storeName: dry ? 'pp-ceremony-dryrun' : 'pp-preprod-deploy', password: process.env.MIDNIGHT_PRIVATE_STATE_PASSWORD ?? '' });
+  const dn = await openNetwork({ net, ctx: wallet, storeName: dry ? 'pp-ceremony-dryrun' : 'pp-preprod-deploy',
+    password: process.env.MIDNIGHT_PRIVATE_STATE_PASSWORD ?? (dry ? 'Local-Devnet-Only-1' : '') });   // dry run: the devnet stack's local-only default
   if (rec.council) dn.bind(rec.council, 'multisig-v8');
   if (rec.tr) dn.bind(rec.tr, 'tariff-registry-v1');
   if (rec.ebt) dn.bind(rec.ebt, 'ebt-v8');
