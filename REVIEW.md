@@ -174,7 +174,8 @@ These are deliberate. We would rather state them than have them found.
    contracts accept: every authorization is checked in-circuit, and the
    watcher reads events from the indexer independently.
 5. **The EBT owner key vouched for the TariffRegistry root it mirrors.**
-   **Fixed on branch `wi16-fix5`** (2026-11-25; fresh devnet pass pending):
+   **Fixed on branch `wi16-fix5`** (2026-11-25; fresh devnet pass PASSED at `19aadeb`, record
+   `docs/devnet-passes/2026-11-25T13-46-10-951Z-pass.json`; merge after Nov 29):
    EBT reads the root from the TariffRegistry through a ledger 9
    cross-contract call (`syncRegistryRoot` -> the witness-free
    `actionLogAnchor`), the same pattern as LD v3 reading EBT's
