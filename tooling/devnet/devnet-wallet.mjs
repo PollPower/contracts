@@ -27,7 +27,7 @@ export async function devnetMasterWallet(net) {
 }
 
 /** Register unregistered NIGHT UTXOs for DUST generation, then wait for a spendable DUST coin. */
-async function ensureSpendableDust(/** @type {Awaited<ReturnType<typeof createWallet>>} */ ctx) {
+export async function ensureSpendableDust(/** @type {Awaited<ReturnType<typeof createWallet>>} */ ctx) {
   const state = await Rx.firstValueFrom(ctx.wallet.state().pipe(Rx.filter((s) => s.isSynced), Rx.timeout(300_000)));
   console.log(`[devnet] master wallet synced; NIGHT UTXOs: ${state.unshielded.availableCoins.length}, DUST coins: ${state.dust.availableCoins.length}`);
   if (state.dust.availableCoins.length >= 1) return;

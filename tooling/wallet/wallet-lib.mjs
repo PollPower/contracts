@@ -49,7 +49,7 @@ export function gitWorkTreeOf(/** @type {string} */ p) {
 }
 
 /** Restrict a file to its owner (POSIX mode 600; on Windows, an ACL for the current user only). */
-function ownerOnly(/** @type {string} */ file) {
+export function ownerOnly(/** @type {string} */ file) {
   if (process.platform === 'win32') {
     const user = process.env.USERNAME;
     if (!user) throw new Error('USERNAME not set: cannot restrict the seed file ACL');

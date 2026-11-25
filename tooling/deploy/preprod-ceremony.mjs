@@ -11,7 +11,9 @@
 // Inputs: a JSON file of PUBLIC keys and parameters (--inputs). The deploy
 // wallet seed comes from PREPROD_DEPLOY_WALLET_SEED_FILE (an owner-only file
 // outside every repo, as tooling/wallet/new-deploy-wallet.mjs writes it) or
-// PREPROD_DEPLOY_WALLET_SEED, and is never logged.
+// PREPROD_DEPLOY_WALLET_SEED, and is never logged. The wallet's synced state is
+// kept encrypted in PREPROD_DEPLOY_WALLET_STATE_FILE (default: next to the seed
+// file) and every step resumes from it (G3b): one long sync, before the ceremony.
 // Each step deploys + finalizes (authority locked) one contract; the council
 // setup between steps (TR bootstrap, schedule, class) is done with the rings.
 //
@@ -34,6 +36,7 @@ import { suiteManifest, manifestDiff } from './deploy-suite.mjs';
 import { isDevnetCouncilPoint } from '../council/council-keys-guard.mjs';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { readSeedFile } from '../wallet/wallet-lib.mjs';
+import { defaultStateFile } from '../wallet/wallet-state.mjs';
 
 const PASSES = path.join(ROOT, 'docs', 'devnet-passes');
 export const STEPS = ['council', 'tariff', 'ebt', 'ld'];
@@ -118,6 +121,17 @@ export function deployWalletSeed(/** @type {Record<string, string | undefined>} 
 }
 
 /**
+ * The deploy wallet's persistent state file (G3b): PREPROD_DEPLOY_WALLET_STATE_FILE,
+ * else next to the seed file (<seed name>.wallet-state). Encrypted with a key
+ * derived from the seed, owner-only, outside every repo (tooling/wallet/wallet-state.mjs).
+ */
+export function walletStateFile(/** @type {Record<string, string | undefined>} */ env = process.env) {
+  if (env.PREPROD_DEPLOY_WALLET_STATE_FILE) return path.resolve(env.PREPROD_DEPLOY_WALLET_STATE_FILE);
+  if (env.PREPROD_DEPLOY_WALLET_SEED_FILE) return defaultStateFile(env.PREPROD_DEPLOY_WALLET_SEED_FILE);
+  throw new Error('PREPROD_DEPLOY_WALLET_STATE_FILE is required when the seed does not come from a file');
+}
+
+/**
  * Dry-run inputs: fresh random keys in the Preprod input shape (never the
  * devnet's marked or label-derived keys, so the same guards apply). The
  * throwaway secrets are returned for the between-step rehearsal; devnet only.
@@ -168,7 +182,6 @@ async function main() {
   const q = qualifyingPass(suiteManifest());
   if (!q.ok) throw new Error(`refusing: no passing fresh devnet record matches these builds and this deploy code:\n  ${q.reasons.join('\n  ')}`);
   const inputs = parseInputs(JSON.parse(fs.readFileSync(String(arg('--inputs')), 'utf8')));
-  const { createWallet } = await import('../midnight-providers.mjs');
   const { openNetwork } = await import('./network.mjs');
   const suite = await import('./deploy-suite.mjs');
   const tag = dry ? '[dry-run]' : '[preprod]';
@@ -178,9 +191,24 @@ async function main() {
     : path.join(ROOT, 'build', 'preprod', 'ceremony-record.json');
   const rec = fs.existsSync(recFile) ? JSON.parse(fs.readFileSync(recFile, 'utf8')) : { devnetPass: q.file };
   const save = () => { fs.mkdirSync(path.dirname(recFile), { recursive: true }); fs.writeFileSync(recFile, JSON.stringify(rec, null, 2)); };
-  const wallet = dry
-    ? await (await import('../devnet/devnet-wallet.mjs')).devnetMasterWallet(net)
-    : await createWallet(deployWalletSeed(), net);
+  // G3b: the deploy wallet resumes from its encrypted state file, so only the
+  // first start ever syncs from genesis. The dry run does the same with the
+  // devnet genesis wallet when given --wallet-state <file> (outside the repo).
+  const { openPersistentWallet } = await import('../wallet/wallet-state.mjs');
+  let wallet;
+  if (dry) {
+    const dw = await import('../devnet/devnet-wallet.mjs');
+    if (arg('--wallet-state')) {
+      wallet = await openPersistentWallet({ seedHex: dw.DEV_GENESIS_SEED, net, stateFile: String(arg('--wallet-state')) });
+      await dw.ensureSpendableDust(wallet);
+    } else {
+      wallet = await dw.devnetMasterWallet(net);
+    }
+  } else {
+    wallet = await openPersistentWallet({ seedHex: deployWalletSeed(), net, stateFile: walletStateFile() });
+  }
+  // Keep the wallet state however the step ends (a failed step resumes from it).
+  const keepState = async () => { if ('close' in wallet) { await wallet.close(); console.log(`${tag} wallet state saved`); } };
   const dn = await openNetwork({ net, ctx: wallet, storeName: dry ? 'pp-ceremony-dryrun' : 'pp-preprod-deploy',
     password: process.env.MIDNIGHT_PRIVATE_STATE_PASSWORD ?? (dry ? 'Local-Devnet-Only-1' : '') });   // dry run: the devnet stack's local-only default
   if (rec.council) dn.bind(rec.council, 'multisig-v8');
@@ -189,17 +217,21 @@ async function main() {
   const ctx = { dn, rec, save };
   // Witnesses are never executed by deploy/finalize; the compiled contract only needs their shape.
   const noop = (/** @type {any} */ c) => [c.privateState, undefined];
-  if (step === 'council') await suite.deployCouncil(ctx, inputs.council);
-  if (step === 'tariff') await suite.deployTariffRegistry(ctx, { ...inputs.tariff, witnesses: { charter_membership_proof: noop, witness_divmod: noop, action_log_path_bits: noop } });
-  if (step === 'ebt') await suite.deployEbt(ctx, inputs.ebt);
-  if (step === 'ld') await suite.deployLd(ctx, { witnesses: { witness_divmod: noop } });
-  if (step === 'sd2-node') {
-    const { sd2AtNode } = await import('./sd2-node-check.mjs');
-    await sd2AtNode({ dn, rec, save, ebtInputs: inputs.ebt });
-    console.log(`${tag} sd2-node: the node rejected the raw call; state unchanged; record ${recFile}`);
-    process.exit(0);
+  try {
+    if (step === 'council') await suite.deployCouncil(ctx, inputs.council);
+    if (step === 'tariff') await suite.deployTariffRegistry(ctx, { ...inputs.tariff, witnesses: { charter_membership_proof: noop, witness_divmod: noop, action_log_path_bits: noop } });
+    if (step === 'ebt') await suite.deployEbt(ctx, inputs.ebt);
+    if (step === 'ld') await suite.deployLd(ctx, { witnesses: { witness_divmod: noop } });
+    if (step === 'sd2-node') {
+      const { sd2AtNode } = await import('./sd2-node-check.mjs');
+      await sd2AtNode({ dn, rec, save, ebtInputs: inputs.ebt });
+      console.log(`${tag} sd2-node: the node rejected the raw call; state unchanged; record ${recFile}`);
+    } else {
+      console.log(`${tag} ${step} deployed and finalized; record ${recFile}`);
+    }
+  } finally {
+    await keepState();
   }
-  console.log(`${tag} ${step} deployed and finalized; record ${recFile}`);
   process.exit(0);
 }
 
