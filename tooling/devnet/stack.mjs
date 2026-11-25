@@ -645,7 +645,34 @@ const STAGES = {
     const journalDir = path.join(ROOT, 'build', 'devnet', `journal-${S.ebt.slice(0, 8)}`);
     const providers = /** @type {any} */ (dn.providersFor('ebt-v8'));
     let submits = 0;
-    const chain = await createEbtSettleChain({ providers, ebtBuildDir: buildDir('ebt-v8'), ebtAddress: S.ebt });
+    const chain = await createEbtSettleChain({
+      providers, ebtBuildDir: buildDir('ebt-v8'), ebtAddress: S.ebt,
+      registryAddress: S.tr, registryBuildDir: buildDir('tariff-registry-v1'),
+    });
+    // Registry gate on the real path (fix #5): a registry entry EBT has not
+    // synced (a retune to the same split, nonce 2), so the adapter's first
+    // settle must sync EBT itself, re-check, then plan.
+    if (!S.gateRetuned) {
+      const trMod = await loadModule('tariff-registry-v1');
+      const P = trMod.pureCircuits;
+      const tr = await join(dn, 'tariff-registry-v1', S.tr, TR_WITNESSES);
+      const trSelf = hexToBytes(S.tr);
+      const sid = hexToBytes(S.scheduleId);
+      const t = nowSec();
+      const L = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
+      const auth = P.retuneAuthHash(trSelf, sid, CLASS, SPLIT, 100n, L._currentEpoch, 2n, t);
+      await tr.callTx.retuneClass(sid, CLASS, SPLIT, 100n, OPERATOR.pk, signMessage(P.signerMessage(auth), OPERATOR.sk), 2n, t,
+        { quotient: 20n, remainder: 0n }, { quotient: 20n, remainder: 0n });
+      S.gateRetuned = true;
+      save();
+    }
+    {
+      const trN = (await ledgerOf(dn, 'tariff-registry-v1', S.tr))._actionSeq;
+      const ebtN = (await ledgerOf(dn, 'ebt-v8', S.ebt))._registryActionLogCountMirror;
+      console.log(`[service] gate setup: registry ${trN} entries, EBT synced ${ebtN}`);
+      S.gateBefore = { registry: String(trN), ebt: String(ebtN) };
+      save();
+    }
     const counting = { ...chain, settle: async (/** @type {any} */ p) => { const r = await chain.settle(p); if (r.status === 'submitted') submits++; return r; } };
     const svc = createSettleV9({
       ebtBuildDir: buildDir('ebt-v8'), ebtAddressHex: S.ebt,
@@ -681,6 +708,14 @@ const STAGES = {
     const r1 = await svc.submit(b1);
     console.log(`[service] submit: ${r1.status} in ${((Date.now() - t0) / 1000).toFixed(0)}s, amount ${r1.amount}, split ${JSON.stringify(r1.split)}; supply ${s0} -> ${await supply()}`);
     if (await supply() - s0 !== 12_345n) throw new Error('service settle minted the wrong amount');
+    {
+      const trN = (await ledgerOf(dn, 'tariff-registry-v1', S.tr))._actionSeq;
+      const ebtN = (await ledgerOf(dn, 'ebt-v8', S.ebt))._registryActionLogCountMirror;
+      if (trN !== ebtN) throw new Error(`registry gate did not sync EBT (registry ${trN}, EBT ${ebtN})`);
+      console.log(`[service] gate: EBT synced by the adapter (${S.gateBefore?.ebt} -> ${ebtN} of ${trN}), re-checked, settled`);
+      S.gateSynced = { registry: String(trN), ebt: String(ebtN) };
+      save();
+    }
 
     // 2. Crash after countersign, before submit: journaled only; startup replay settles it.
     const b2 = await bundleFor(2, 3_000_999n);
@@ -812,8 +847,8 @@ const STAGES = {
     const s = signSettle(ebtMod, { addressBytes: self }, f, { chip: CHIP, hatSk: METER_AUTHORITY.sk });
     // Split planned from EBT's live mirrors (class + statutory lane), as pp-settle-service does.
     const args = planSettleArgs({
-      ebtModule: ebtMod, ledger: await ledgerOf(dn, 'ebt-v8', S.ebt), fields: f, chip: s,
-      scheduleId: hexToBytes(S.scheduleId), classPath: CLASS, epoch: 1n, fiatValueAtMint: 2n, currentTime: nowSec(),
+      ebtModule: ebtMod, ledger: await ledgerOf(dn, 'ebt-v8', S.ebt), registryLedger: await ledgerOf(dn, 'tariff-registry-v1', S.tr),
+      fields: f, chip: s, scheduleId: hexToBytes(S.scheduleId), classPath: CLASS, epoch: 1n, fiatValueAtMint: 2n, currentTime: nowSec(),
     });
     console.log(`[stack] planned split: producer ${args[24]}, ops ${args[25]}, dividend ${args[26]}, dao ${args[27]}, lanes ${args[19].join('/')}`);
     if (args[19][0] !== (amount * LANE.bpsShare) / 10000n) throw new Error('settle plan does not pay the statutory lane');

@@ -225,6 +225,7 @@ after KYC; everything above undeployed.
   after the 2026-11-25 pass (`council-keys-guard.mjs` comment, the ops move);
   one fresh pass runs after fix #5 (registry-root anchor), not before.
 - **The ring key behind the July fragment is retired: never in any new council.**
+- **Pre-mainnet: decide stale-lane tolerance (CAL-vNext-M1); not a Preprod blocker.**
 - Every step passes on the local devnet, and Joi confirms the node host is fully synced.
 - Council rotation (72 h delay) implemented (design doc, "Council rotation").
 - **HAT firmware with `SIGN_HASH` disabled for settle use** (hard gate,
@@ -288,7 +289,10 @@ after KYC; everything above undeployed.
   `mirrorActionLogHead` removed; the constructor takes the registry address
   (sealed). Attack tests RA-1..RA-8 written first (on the pre-fix build the
   owner key installed a forged root and a settle paid the forged lane);
-  settle planner refuses while EBT is behind the registry; devnet run now
+  the settle adapter (the Preprod settle path) gates every settle by default:
+  sync EBT if behind, re-check, refuse on `REGISTRY_AHEAD_OF_MIRROR` /
+  `CLASS_MIRROR_BEHIND` / `LANE_MIRROR_BEHIND` (it will not open without
+  `TARIFF_REGISTRY_ADDRESS` / `TARIFF_REGISTRY_BUILD_DIR`); devnet run now
   registers the lane after EBT's deploy (sync -> re-mirror -> settle) and
   checks `RA-chain`. Full ZK builds: staged EBT 34.4 % and staged TR 36.1 %
   of a block (each one tx). Design and the changes made while implementing:

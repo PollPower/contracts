@@ -131,3 +131,27 @@ export function planSettleArgs(p) {
     p.currentTime,
   ];
 }
+
+/**
+ * The settle path's registry gate (fix #5; the default on the chain adapter,
+ * so the Preprod settle path always runs it). Reads the TariffRegistry and
+ * EBT; if EBT has synced fewer registry entries, calls `sync`
+ * (syncRegistryRoot) and re-reads BOTH; then plans with the registry's ledger,
+ * so the plan is refused on REGISTRY_AHEAD_OF_MIRROR (the sync did not catch
+ * up, or the registry moved again), CLASS_MIRROR_BEHIND or LANE_MIRROR_BEHIND
+ * (synced, not yet re-mirrored: re-mirroring stays an explicit step).
+ * @param {{ readEbt: () => Promise<any>, readRegistry: () => Promise<any>, sync: () => Promise<unknown>,
+ *           log?: { log: Function }, plan: any }} o  `plan`: planSettleArgs' input without the ledgers
+ * @returns {Promise<any[]>} settle's arguments
+ */
+export async function syncCheckAndPlan({ readEbt, readRegistry, sync, log = console, plan }) {
+  let R = await readRegistry();
+  let L = await readEbt();
+  if (toBig(R._actionSeq) > toBig(L._registryActionLogCountMirror)) {
+    log.log(`[settle] EBT has synced ${L._registryActionLogCountMirror} of ${R._actionSeq} registry entries: syncRegistryRoot`);
+    await sync();
+    R = await readRegistry();
+    L = await readEbt();
+  }
+  return planSettleArgs({ ...plan, ledger: L, registryLedger: R });
+}
