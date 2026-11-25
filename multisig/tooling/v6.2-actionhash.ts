@@ -19,7 +19,7 @@
 // execute time.
 //
 // This mirrors the proven `computeActionHash` helper from the v6 ceremony
-// (swap-garrett-ring.ts / test-ceremony.ts) — same persistentHash (Poseidon),
+// (swap-ring.ts / test-ceremony.ts) — same persistentHash (Poseidon),
 // same CompactTypeVector, same padToBytes32 / convertFieldToBytes — extended
 // to the 4-field add/remove shape.
 //

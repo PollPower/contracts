@@ -14,7 +14,7 @@ const skip = buildExists(NAME) ? false : 'build/l9/tangem-verify missing (compil
 
 const hex = (b) => Buffer.from(b).toString('hex');
 const sha = (s) => createHash('sha256').update(s).digest();
-// The hash Garrett signs with the ring.
+// The hash signed with the ring.
 const TEST_HASH = sha('PollPower WI-16 Tangem secp256k1 test 2026-11-24');
 const sk = sha('wi16 software stand-in for the Tangem ring (test key, not a secret)');
 const pkCompressed = secp256k1.getPublicKey(sk, true);

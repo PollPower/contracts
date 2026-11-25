@@ -29,7 +29,7 @@ runner never submits an action the contract's guards would reject.
   majority/cap helpers (`minMajorityThreshold`, `isValidThreshold`,
   `assertValidAdd`, `assertValidRemove`, `MAX_ADMINS`).
 - **`v6.2-ceremony-template.ts`** — the v6.2 successor to the v6 ceremony
-  runner (`swap-garrett-ring.ts`). Documents the exact diff in the ADD/REMOVE
+  runner (`swap-ring.ts`). Documents the exact diff in the ADD/REMOVE
   steps. Boilerplate (wallet/providers/witness/approval-casting) is copied from
   the proven v6 runner and elided here; only the v6.2-specific parts are shown.
 

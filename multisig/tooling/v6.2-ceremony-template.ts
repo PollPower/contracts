@@ -2,7 +2,7 @@
 // v6.2-ceremony-template.ts — admin-set ceremony runner for PollPowerMultiSig
 // v6.2 (H-3 hardened). TEMPLATE — staged for the pre-mainnet hardening ceremony.
 //
-// This is the v6.2 successor to swap-garrett-ring.ts / test-ceremony.ts. The
+// This is the v6.2 successor to swap-ring.ts / test-ceremony.ts. The
 // ONLY substantive change from the v6 runners is the actionHash construction
 // and the executeAddAdmin/executeRemoveAdmin calls, which now carry an atomic
 // `newThreshold`. Everything else (wallet, providers, witness, approval
@@ -71,7 +71,7 @@ const witnesses = {
 // ---------------------------------------------------------------------------
 // Sketch of the v6.2 ADD step (the part that differs from v6).
 // `deployed`, `castApprovals`, `nonce`, `logger`, `hex`, `unwrap` come from the
-// same boilerplate as swap-garrett-ring.ts — omitted here for the template.
+// same boilerplate as swap-ring.ts — omitted here for the template.
 // ---------------------------------------------------------------------------
 //
 //   const newRingPk = new Uint8Array(Buffer.from(NEW_RING_PK_HEX, 'hex'));
