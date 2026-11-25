@@ -252,6 +252,17 @@ after KYC; everything above undeployed.
 - **Locked maintenance authority on EBT, TariffRegistry and LD v3** on
   Preprod/mainnet (Garrett 2026-11-24); upgrades are a new version + council-
   approved migration.
+- **EBT reads the TariffRegistry root on chain** (Garrett 2026-11-25; after
+  the Nov 30 submission, before any Preprod deploy): today the EBT owner key
+  installs the registry action-log root (`mirrorActionLogRoot`), so a stolen
+  owner key could mirror a forged lane or split (REVIEW.md trust assumption
+  #5). Fix: a witness-free TariffRegistry view circuit (`actionLogAnchor`)
+  read by a permissionless EBT `syncRegistryRoot` through a cross-contract
+  call; `mirrorActionLogRoot` removed; constructor takes the registry
+  address, not a root. Possible only because the TariffRegistry is not
+  deployed yet. Attack tests RA-1..RA-8 first, tooling, full builds, sizes,
+  docs and a fresh devnet pass; ~3 dev-days + pass. Design:
+  [`design/registry-root-anchor-design.md`](design/registry-root-anchor-design.md).
 - Done already: Gap C council gate on `manualReissue`, native attestation in
   meter-authority-service, epoch-0 retire fix, chip registry + nonce set.
 
