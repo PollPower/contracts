@@ -43,10 +43,8 @@ async function registerAndMirror(w, lane) {
   await w.tr.call('registerLane', ...laneArgs(lane), charterProof, T0);
   w.syncTree();
   const seq = w.entries.length - 1;
-  // EBT here predates the lane: advance its mirrored action-log root first (owner-signed).
-  const rootArgs = [w.tree.root(), w.entries[seq]];
-  await w.ebt.call('mirrorActionLogRoot', ...rootArgs, w.tree.proof(seq),
-    signOwnerAction(w.ebtMod, w.ebt, 'mirrorActionLogRoot', rootArgs, { sk: w.keys.owner.sk }));
+  // EBT here predates the lane: sync its root mirror with the registry (fix #5; anyone can).
+  await w.sync();
   const rec = findLane(w.tr.ledger(), lane.scheduleId, lane.leviedBy, lane.laneKindByte);
   await w.ebt.call('mirrorRegisterLane', w.entries[seq], rec, w.tree.proof(seq));
   return rec;

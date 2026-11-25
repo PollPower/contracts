@@ -23,7 +23,7 @@ async function setup() {
   // WI16-H-1: authorities are constructor arguments; C-2/C-1c: Jubjub keys.
   const c = await deploy(mod, {}, [
     OWNER.pk, HAT.pk, { bytes: b32(0xa2) },
-    { bytes: b32(0x21) }, { bytes: b32(0x23) }, newMachineKey().pk, b32(0xa4),
+    { bytes: b32(0x21) }, { bytes: b32(0x23) }, newMachineKey().pk, { bytes: b32(0xa4) },
   ]);
   return Object.assign(c, { mod });
 }

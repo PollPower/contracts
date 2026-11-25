@@ -19,7 +19,7 @@ test('OWN-1: keygen -> sign from the encrypted file -> the compiled EBT accepts 
   const pk = generateOwnerKey(file, 'pass-123');
   assert.deepEqual(ownerPublicKey(file, 'pass-123', { checkMode }), pk);
   const mod = await loadContract('ebt-v8');
-  const e = await deploy(mod, {}, [pk, newMachineKey().pk, { bytes: b32(0xa2) }, { bytes: b32(0x21) }, { bytes: b32(0x23) }, newMachineKey().pk, b32(0xa4)]);
+  const e = await deploy(mod, {}, [pk, newMachineKey().pk, { bytes: b32(0xa2) }, { bytes: b32(0x21) }, { bytes: b32(0x23) }, newMachineKey().pk, { bytes: b32(0xa4) }]);
   const producer = b32(0x51), meter = b32(0x52);
   const json = [{ $bytes: Buffer.from(runtimePersistentHash([producer, meter])).toString('hex') }, { $bytes: '51'.repeat(32) }, { $bytes: '52'.repeat(32) }, { $int: '1' }, { $bytes: '53'.repeat(32) }, { $int: '0' }];
   const args = decodeArg(json);

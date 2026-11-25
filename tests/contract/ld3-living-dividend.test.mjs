@@ -92,9 +92,10 @@ test('LD3-0: no member or council witness; constructor binds EBT and the council
   const s = await setup();
   assert.equal(hex(s.ld.ledger()._ebt.bytes), hex(s.ebt.addressBytes));
   assert.equal(hex(s.ld.ledger()._council.bytes), hex(s.council.addressBytes));
-  // EBT never references LD (no re-entry path): its only contract type is the council.
+  // EBT never references LD (no re-entry path): its contract types are the council and
+  // the TariffRegistry anchor (fix #5).
   const ebtSrc = fs.readFileSync(path.join(BUILD, '..', '..', 'ebt', 'ebt-v8.compact'), 'utf8');
-  assert.deepEqual([...ebtSrc.matchAll(/^contract (\w+)/gm)].map((m) => m[1]), ['Council']);
+  assert.deepEqual([...ebtSrc.matchAll(/^contract (\w+)/gm)].map((m) => m[1]), ['Council', 'TariffRegistryAnchor']);   // fix #5: EBT reads TR's root
 });
 
 // ----------------------------------------------------------- accounting ---

@@ -62,7 +62,7 @@ export const SPLIT = { producerShareBps: 6000n, ldShareBps: 1000n, opsShareBps: 
 export const T0 = 1000n;
 
 /**
- * @param opts.ebtCtor (keys) => EBT constructor args, for the pre-change ABI in PoC runs.
+ * @param opts.ebtCtor (keys, council, tr) => EBT constructor args, for other ABIs in PoC runs.
  * @param opts.ebtName build name (default ebt-v8).
  */
 export async function settleWorld(opts = {}) {
@@ -86,6 +86,8 @@ export async function settleWorld(opts = {}) {
     witness_divmod: (ctx, n, d) => [ctx.privateState, divmod(ctx, n, d)],
     action_log_path_bits: (ctx, seq) => [ctx.privateState, pathBits(seq)],
   }, [{ bytes: council.addressBytes }, charterRoot, 100n, validator.pk], {}, { world });
+  // Fix #5: EBT reads TR's action-log root through a cross-contract call.
+  world.register(tr, trMod, 'tariff-registry-v1');
   await tr.call('bootstrapActionLog', BigInt(DEPTH));
   const P = trMod.pureCircuits;
   const opId = P.operatorKeyId(operator.pk);
@@ -117,10 +119,13 @@ export async function settleWorld(opts = {}) {
   // --- EBT -------------------------------------------------------------------
   const keys = { owner: newOwnerKey(), hat: newMachineKey(), escrow: newMachineKey(), chip: newChipKey() };
   const ctor = opts.ebtCtor
-    ? opts.ebtCtor(keys, council, tree.root())
+    ? opts.ebtCtor(keys, council, tr)
     : [keys.owner.pk, keys.hat.pk, { bytes: council.addressBytes },
-       { bytes: b32(0x21) }, { bytes: b32(0x23) }, keys.escrow.pk, tree.root()];
+       { bytes: b32(0x21) }, { bytes: b32(0x23) }, keys.escrow.pk, { bytes: tr.addressBytes }];
   const ebt = Object.assign(await deploy(ebtMod, {}, ctor, {}, { world }), { mod: ebtMod });
+  // Anyone can sync EBT's root mirror with the registry (fix #5).
+  const sync = () => ebt.call('syncRegistryRoot');
+  await sync();
   const ownerCall = (circuit, args) =>
     ebt.call(circuit, ...args, signOwnerAction(ebtMod, ebt, circuit, args, { sk: keys.owner.sk }));
 
@@ -189,7 +194,7 @@ export async function settleWorld(opts = {}) {
 
   return {
     world, ms, council, councilKeys, approve, tr, trMod, ebt, ebtMod, keys, ownerCall,
-    scheduleId, record, tree, entries, syncTree, retune, mirrorSchedule, mirrorClass, settle,
+    scheduleId, record, tree, entries, syncTree, sync, retune, mirrorSchedule, mirrorClass, settle,
     registerChip, revokeChip,
   };
 }

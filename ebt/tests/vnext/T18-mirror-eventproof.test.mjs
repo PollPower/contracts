@@ -23,13 +23,7 @@ function seedRegistry() {
     scheduleId, laneKindByte: 0, leviedBy: nonZero32(0x41), bpsShare: 300,
     effectiveEpoch: 2n, currentTime: 1_500_100n, remittanceMode: 1, remitAddress: nonZero32(0x51),
   });
-  // Witness-gated trust anchor: cite the lane event as the sample witness.
-  const sampleProof = buildProof(fx.registry, lane.seq);
-  const sampleEntry = fx.registry.getActionEntry(BigInt(lane.seq));
-  ebt.mirrorActionLogRoot({
-    newRoot: fx.registry.registryActionLogRoot,
-    sampleEntry, proof: sampleProof,
-  });
+  ebt.syncRegistryRoot();   // fix #5: the root comes from the registry
   return { fx, ebt, scheduleId, classPath, lane };
 }
 

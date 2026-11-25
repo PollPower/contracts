@@ -28,7 +28,7 @@ const ESCROW = newMachineKey();
 const ONLY_OWNER = /Only owner/;
 
 const ctorArgs = (ownerPk) => [
-  ownerPk, AUTH.pk, { bytes: b32(0xa2) }, { bytes: b32(0x21) }, { bytes: b32(0x23) }, ESCROW.pk, b32(0xa4),
+  ownerPk, AUTH.pk, { bytes: b32(0xa2) }, { bytes: b32(0x21) }, { bytes: b32(0x23) }, ESCROW.pk, { bytes: b32(0xa4) },
 ];
 async function setup() {
   const mod = await loadContract(NAME);
@@ -39,15 +39,12 @@ async function setup() {
 
 // A valid argument list (without ownerSig) for each owner-gated circuit.
 const ZERO_TARIFF_PATH = { scheduleId: b32(0), classPath: b32(0), epoch: 0n, fiatValueAtMint: 0n };
-const ZERO_ENTRY = { kind: 0n, scheduleId: b32(0), nodeId: b32(0), epoch: 0n, actionHash: b32(0), emittedAt: 0n, payloadHash: b32(0) };
-const ZERO_PROOF = { actionSeq: 0n, payloadHash: b32(0), merkleProof: Array.from({ length: 24 }, () => b32(0)), merkleSiblings: Array(24).fill(false) };
 const ARGS = {
   attestProducerOwnership: { digest: [b32(0x31), b32(0x32), b32(0x33), 1n, b32(0x34), 0n], extra: [] },
   revokeProducerOwnership: { digest: [b32(0x31), 1n, b32(0x34), 0n], extra: [] },
   claimSplit: { digest: [0n, 0n], extra: [] },
   execOwnerOp: { digest: [1n, { x: 0n, y: 1n }, AUTH.pk], extra: [] },
   manualReissue: { digest: [b32(0x36), { bytes: b32(0x37) }, 1n, 1n, b32(0x38), ZERO_TARIFF_PATH, 0n], extra: [garbageSignature()] },
-  mirrorActionLogRoot: { digest: [b32(0x39), ZERO_ENTRY], extra: [ZERO_PROOF] },
 };
 const callArgs = (circuit, sig) => [...ARGS[circuit].digest, ...ARGS[circuit].extra, sig];
 

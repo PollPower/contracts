@@ -69,7 +69,7 @@ async function setup() {
   const deployEbt = async (c = council) => {
     const e = await deploy(mod, witnesses, [
       OWNER.pk, HAT.pk, { bytes: c.addressBytes },
-      { bytes: b32(0x21) }, { bytes: b32(0x23) }, ESCROW.pk, b32(0xa4),
+      { bytes: b32(0x21) }, { bytes: b32(0x23) }, ESCROW.pk, { bytes: b32(0xa4) },
     ], {}, { world });
     return Object.assign(e, { mod, council: c, approveCouncil: (h, slots) => approve(h, slots, c) });
   };
