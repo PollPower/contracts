@@ -5,9 +5,15 @@
 // (callers and cross-contract callees of one transaction, several contracts),
 // goes through one FIFO queue, so a single proof is in flight at any moment.
 // Peak proof-server memory is then the largest single proof, not a sum.
-import { httpClientProvingProvider, DEFAULT_TIMEOUT } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
+import { httpClientProvingProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
 import { createProofProviderFromHandlers } from '@midnight-ntwrk/midnight-js-types';
 import { Transaction, CostModel } from '@midnight-ntwrk/midnight-js-protocol/v9';
+
+// One worker proved registerSchedule in 315 s on a quiet host and >15 min with
+// kenya's CPUs contended (2026-11-25), past the client library's 300 s
+// default. Match the proof server's --job-timeout 3600 (Joi, 2026-11-25);
+// MIDNIGHT_PROOF_TIMEOUT_MS overrides.
+export const PROOF_TIMEOUT_MS = Number(process.env.MIDNIGHT_PROOF_TIMEOUT_MS ?? 3_600_000);
 
 /** @type {Promise<unknown>} */
 let tail = Promise.resolve();
@@ -33,7 +39,7 @@ export function serialProvingProvider(/** @type {any} */ base) {
  * leaves the queue.
  * @param {{ url: string, zkConfigProvider: any, timeout?: number }} o
  */
-export function serialProofProvider({ url, zkConfigProvider, timeout = DEFAULT_TIMEOUT }) {
+export function serialProofProvider({ url, zkConfigProvider, timeout = PROOF_TIMEOUT_MS }) {
   const proving = serialProvingProvider(httpClientProvingProvider(url, zkConfigProvider, { timeout }));
   return createProofProviderFromHandlers({
     v8: async () => { throw new Error('serialProofProvider proves ledger 9 transactions only'); },

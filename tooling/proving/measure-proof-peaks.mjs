@@ -21,11 +21,16 @@ if (!process.env.DEVNET_STATE_FILE) { console.error('DEVNET_STATE_FILE is requir
 const ssh = (/** @type {string} */ cmd) => execFileSync('ssh', ['-o', 'ConnectTimeout=15', HOST, cmd], { encoding: 'utf8' }).trim();
 const GB = (/** @type {number} */ b) => `${(b / 2 ** 30).toFixed(2)} GiB`;
 
-const env = ssh(`docker inspect -f '{{json .Config.Env}} {{.HostConfig.Memory}} {{.Id}}' ${CT}`);
-const [envJson, cap, id] = env.split(' ');
+const env = ssh(`docker inspect -f '{{json .Config.Env}} {{.HostConfig.Memory}} {{.Id}} {{json .Config.Cmd}}' ${CT}`);
+const [envJson, cap, id, cmdJson] = env.split(' ');
 const vars = Object.fromEntries(JSON.parse(envJson).map((/** @type {string} */ kv) => kv.split('=')));
-if (vars.MIDNIGHT_PROOF_SERVER_JOB_CAPACITY !== '1' || vars.MIDNIGHT_PROOF_SERVER_NUM_WORKERS !== '1') {
-  console.error(`refusing: ${CT} must run with MIDNIGHT_PROOF_SERVER_JOB_CAPACITY=1 and MIDNIGHT_PROOF_SERVER_NUM_WORKERS=1 (has ${vars.MIDNIGHT_PROOF_SERVER_JOB_CAPACITY ?? 'default 10'} / ${vars.MIDNIGHT_PROOF_SERVER_NUM_WORKERS ?? 'default 2'})`);
+const argv = /** @type {string[]} */ (JSON.parse(cmdJson ?? 'null') ?? []);
+// Either the env vars or the CLI flags (a flag on the command line wins).
+const flag = (/** @type {string} */ f) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : undefined; };
+const jobs = flag('--job-capacity') ?? vars.MIDNIGHT_PROOF_SERVER_JOB_CAPACITY;
+const workers = flag('--num-workers') ?? vars.MIDNIGHT_PROOF_SERVER_NUM_WORKERS;
+if (jobs !== '1' || workers !== '1') {
+  console.error(`refusing: ${CT} must run with job capacity 1 and 1 worker (env MIDNIGHT_PROOF_SERVER_JOB_CAPACITY/NUM_WORKERS or --job-capacity/--num-workers); has ${jobs ?? 'default 10'} / ${workers ?? 'default 2'}`);
   process.exit(3);
 }
 const cg = `/sys/fs/cgroup/system.slice/docker-${id}.scope`;
@@ -52,7 +57,7 @@ let cbuf = '';
 const onOut = (/** @type {Buffer} */ d) => {
   process.stdout.write(d);
   cbuf += d; const lines = cbuf.split('\n'); cbuf = lines.pop() ?? '';
-  for (const l of lines) if (/^\[stack\]\s+(council slot|schedule registered|class retuned|statutory lane registered|TR action log)/.test(l) || /approved|registered|retuned/.test(l)) marks.push({ t: Date.now(), line: l.trim() });
+  for (const l of lines) if (/^\[stack\]\s+(council at|council slot|schedule registered|class retuned|statutory lane registered|TR action log)/.test(l) || /approved|registered|retuned/.test(l)) marks.push({ t: Date.now(), line: l.trim() });
 };
 child.stdout.on('data', onOut);
 child.stderr.on('data', (d) => process.stderr.write(d));
