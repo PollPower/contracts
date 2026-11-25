@@ -3,18 +3,25 @@
 // Midnight dependencies: it is handed this adapter, which runs where the
 // contracts checkout (and its node_modules) lives.
 //
-//   const chain = await createEbtSettleChain({ providers, ebtBuildDir, ebtAddress });
-//   await chain.settle({ fields, chip, tariff })   // plan from live mirrors, submit with retry
+//   const chain = await createEbtSettleChain({ providers, ebtBuildDir, ebtAddress, registryAddress, registryBuildDir });
+//   await chain.settle({ fields, chip, tariff })   // registry gate, plan from live mirrors, submit with retry
 //   await chain.alreadySettled(sessionId32)
 //
 // fields / chip / tariff use the wire forms pp-settle-service holds (hex
 // strings, decimal strings, hatSig as meter-authority-service returns it).
+//
+// Registry gate (fix #5), on by default and not optional: before every plan the
+// adapter reads the TariffRegistry, syncs EBT (syncRegistryRoot) if EBT is
+// behind, re-reads both, and refuses on REGISTRY_AHEAD_OF_MIRROR /
+// CLASS_MIRROR_BEHIND / LANE_MIRROR_BEHIND (settle-plan.mjs syncCheckAndPlan).
+// `providers` must resolve the registry for the cross-contract sync (its
+// module and ZK keys); openEbtSettleChain wires that.
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
 import { ContractState } from '@midnight-ntwrk/compact-runtime';
 import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
-import { planSettleArgs } from './settle-plan.mjs';
+import { syncCheckAndPlan } from './settle-plan.mjs';
 import { submitSettleWithRetry } from './submit-settle.mjs';
 
 const HEX32 = /^[0-9a-fA-F]{64}$/;
@@ -41,10 +48,15 @@ export function typedChip(/** @type {string} */ chipPubkeyHex, /** @type {string
 }
 
 /**
- * @param {{ providers: any, ebtBuildDir: string, ebtAddress: string, log?: { log: Function }, retry?: { attempts?: number, baseDelayMs?: number } }} o
+ * @param {{ providers: any, ebtBuildDir: string, ebtAddress: string, registryAddress: string, registryBuildDir: string,
+ *           log?: { log: Function }, retry?: { attempts?: number, baseDelayMs?: number } }} o
  */
-export async function createEbtSettleChain({ providers, ebtBuildDir, ebtAddress, log = console, retry = {} }) {
+export async function createEbtSettleChain({ providers, ebtBuildDir, ebtAddress, registryAddress, registryBuildDir, log = console, retry = {} }) {
+  if (!registryAddress || !registryBuildDir) {
+    throw new Error('REGISTRY_GATE_REQUIRED: the settle adapter needs the TariffRegistry address and build (registryAddress, registryBuildDir)');
+  }
   const mod = await import(pathToFileURL(path.join(ebtBuildDir, 'contract', 'index.js')).href);
+  const trMod = await import(pathToFileURL(path.join(registryBuildDir, 'contract', 'index.js')).href);
   const compiled = CompiledContract.make('ebt-v8', mod.Contract).pipe(CompiledContract.withVacantWitnesses, CompiledContract.withCompiledFileAssets(ebtBuildDir));
   /** @type {any} */
   let joined;
@@ -54,14 +66,21 @@ export async function createEbtSettleChain({ providers, ebtBuildDir, ebtAddress,
     if (!read) throw new Error(`EBT ${ebtAddress}: no state from the indexer`);
     return mod.ledger(read.contractState.deserialize({ v9: ContractState }).data);
   };
+  const registryLedger = async () => {
+    const read = await providers.publicDataProvider.queryContractState(registryAddress);
+    if (!read) throw new Error(`TariffRegistry ${registryAddress}: no state from the indexer`);
+    return trMod.ledger(read.contractState.deserialize({ v9: ContractState }).data);
+  };
   const alreadySettled = async (/** @type {Uint8Array} */ sessionId32) => (await ledger())._settledSessions.member(sessionId32);
 
   return {
     ledger,
+    registryLedger,
     alreadySettled,
     /**
-     * Plans settle from EBT's live mirrors and submits it with retry. Never
-     * resubmits a session already on chain.
+     * Registry gate (sync if behind, re-check, refuse), then plans settle
+     * from EBT's live mirrors and submits it with retry. Never resubmits a
+     * session already on chain.
      * @param {{ fields: any, chipPubkeyHex: string, chipSigHex: string, hatSig: any,
      *           tariff: { scheduleIdHex: string, classPathHex: string, epoch: bigint|string, fiatValueAtMint: bigint|string },
      *           currentTime?: bigint }} p
@@ -69,13 +88,16 @@ export async function createEbtSettleChain({ providers, ebtBuildDir, ebtAddress,
     async settle(p) {
       const fields = typedFields(p.fields);
       if (await alreadySettled(fields.sessionID)) return { status: 'already-settled', attempts: 0, amount: fields.amount };
-      const args = planSettleArgs({
-        ebtModule: mod, ledger: await ledger(), fields, chip: typedChip(p.chipPubkeyHex, p.chipSigHex, p.hatSig),
-        scheduleId: b(p.tariff.scheduleIdHex, 'scheduleId'), classPath: b(p.tariff.classPathHex, 'classPath'),
-        epoch: BigInt(p.tariff.epoch), fiatValueAtMint: BigInt(p.tariff.fiatValueAtMint),
-        currentTime: p.currentTime ?? BigInt(Math.floor(Date.now() / 1000) - 120),
-      });
       const contract = await ebt();
+      const args = await syncCheckAndPlan({
+        readEbt: ledger, readRegistry: registryLedger, sync: () => contract.callTx.syncRegistryRoot(), log,
+        plan: {
+          ebtModule: mod, fields, chip: typedChip(p.chipPubkeyHex, p.chipSigHex, p.hatSig),
+          scheduleId: b(p.tariff.scheduleIdHex, 'scheduleId'), classPath: b(p.tariff.classPathHex, 'classPath'),
+          epoch: BigInt(p.tariff.epoch), fiatValueAtMint: BigInt(p.tariff.fiatValueAtMint),
+          currentTime: p.currentTime ?? BigInt(Math.floor(Date.now() / 1000) - 120),
+        },
+      });
       const r = await submitSettleWithRetry({
         args, log, ...retry,
         submit: (a) => contract.callTx.settle(...a),

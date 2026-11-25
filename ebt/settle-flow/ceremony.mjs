@@ -1,3 +1,9 @@
+// SUPERSEDED by fix #5 (registry-root anchor, 2026-11-25): EBT no longer has
+// mirrorActionLogRoot or mirrorActionLogHead and its constructor takes the
+// TariffRegistry's address, not a root; the root is read on chain with
+// syncRegistryRoot. The suite deploys through tooling/deploy/deploy-suite.mjs.
+// Kept as a record of the Preview-era path; do not run against current builds.
+//
 // EBT v8 settle-flow ceremony orchestrator. Run as plain .mjs under node from
 // this workspace (repo-root node_modules, ledger 9 package set).
 // Steps (subcommand argv[2]): head | attest | settle | revoke | inspect

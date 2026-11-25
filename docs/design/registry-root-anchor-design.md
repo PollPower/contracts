@@ -1,8 +1,9 @@
 # EBT reads the TariffRegistry root on chain (registry-root anchor)
 
-Status: **designed, not implemented.** Scheduled after the Nov 30 submission
-and before any Preprod deploy (Preprod gate, Garrett 2026-11-25). Closes
-REVIEW.md trust assumption #5.
+Status: **implemented on branch `wi16-fix5`** (2026-11-25; not merged, no
+fresh devnet pass yet: one pass covers the ops move and this fix). Preprod
+gate (Garrett 2026-11-25). Closes REVIEW.md trust assumption #5. See
+"Changes made while implementing" at the end.
 
 ## Problem
 
@@ -172,3 +173,40 @@ About **3 dev-days** plus a fresh pass:
 | Tooling (deploy suite, ceremony, finalize manifests, devnet stage, settle plan) | 1 d |
 | Full ZK builds, sizes, docs | 0.5 d |
 | Fresh devnet pass | ~0.5 d elapsed |
+
+## Changes made while implementing (2026-11-25)
+
+1. **Bootstrap check:** `actionLogAnchor` asserts `_bootstrapComplete` (set
+   when the last shard commits the empty-tree root), not
+   `_actionLogBootstrapCursor == ACTION_LOG_DEPTH`. Same moment, one flag,
+   and it is what every other TR circuit checks.
+2. **`count`** is `_actionSeq.read()` (`Uint<64>`).
+3. **Stricter regression check:** besides `count >= mirror`, a sync at the
+   SAME count must bring the SAME root (`REGISTRY_ROOT_REGRESSED` otherwise),
+   since an append-only log cannot change its root without growing. The very
+   first sync is exempt (the mirror starts as 32 zero bytes, and an empty
+   registry has count 0 with the empty-tree root).
+4. **`mirrorActionLogHead` removed** (the design left it open): the head for
+   the `LANE_MIRROR_STALE` window is set by `syncRegistryRoot` to the latest
+   entry, `count - 1`. Nothing needs a head that lags the root.
+   `getRegistryActionLogHeadSeq` stays.
+5. **New ledger field** `_registryActionLogCountMirror` (EBT), next to the
+   sealed `_registry`; both builds (full and ceremony) keep identical ledgers.
+6. **Devnet run order:** the statutory lane is now registered AFTER EBT's
+   deploy and first mirrors, so every pass exercises registry change -> sync
+   -> re-mirror -> settle; `attacks` gains `RA-chain` (no root/head setter
+   among the finalized EBT's operations; EBT's root equals TR's).
+7. **Settle planner** (`tooling/settle/settle-plan.mjs`): given the
+   TariffRegistry's ledger (`registryLedger`), it refuses while the registry
+   has entries EBT has not synced (`REGISTRY_AHEAD_OF_MIRROR`), and, after a
+   sync, while the class split or this schedule's lanes in EBT differ from the
+   registry's records (`CLASS_MIRROR_BEHIND` / `LANE_MIRROR_BEHIND`). Whether
+   pp-settle-service syncs and re-mirrors by itself, or alerts and waits, is
+   still the service owner's call; it is opt-in until then.
+8. **Test fixture:** `tests/fixtures/registry-anchor-fake.compact`
+   (`fixture-registry-anchor`), a look-alike registry anyone can set, for
+   RA-3 and RA-5.
+9. **JS mirror model** (`ebt/tests/lib.mjs`): `syncRegistryRoot` replaces the
+   root and head setters; T16 and T18 now sync; T19 (owner root trust model)
+   and T21 (caller-cited head) are rewritten for the anchor.
+

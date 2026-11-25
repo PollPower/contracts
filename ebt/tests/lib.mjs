@@ -140,7 +140,7 @@ export class EBT {
   constructor({
     meterAuthorityPubkey, multisigAuthority,
     operationsRecipient, dividendRecipient, daoRecipient,
-    escrowAttestorPubkey, registryActionLogRoot, self,
+    escrowAttestorPubkey, registry, self,
   }) {
     this.self = Buffer.isBuffer(self) ? self : randomBytes(32);
     this._initialized = true;
@@ -177,7 +177,10 @@ export class EBT {
     this._registeredLanesMirror = new Map();        // keyHex -> {record, writeActionSeq}
     this._classStatutoryTotalBpsMirror = new Map(); // keyHex -> number
     this._scheduleLiveMirror = new Map();           // sidHex -> bool
-    this._registryActionLogRootMirror = Buffer.from(registryActionLogRoot);
+    // Fix #5: the root is read from the registry (syncRegistryRoot); empty until the first sync.
+    this._registry = registry;
+    this._registryActionLogRootMirror = Buffer.alloc(32);
+    this._registryActionLogCountMirror = 0n;
     this._registryActionLogHeadSeqMirror = 0n;
 
     this._settleLog = new Map();
@@ -232,26 +235,20 @@ export class EBT {
   setLivingDividendAddress(addr) { this._livingDividendAddress = Buffer.from(addr); }
 
   // ---------------------------- mirror trust anchors -----------------------
-  // Round-2 fix: owner gate is the trust anchor; witness is sanity-only.
-  mirrorActionLogRoot({ newRoot, sampleEntry, proof, caller }) {
-    const who = caller ? Buffer.from(caller) : this._owner;
-    if (!bufEq(who, this._owner)) revert('Only owner');
-    if (!bufEq(sampleEntry.payloadHash, proof.payloadHash)) revert('EVENT_PROOF_INVALID');
-    const recon = reconstructActionLogRoot(proof.payloadHash, proof.siblings, proof.pathBits);
-    if (!bufEq(recon, newRoot)) revert('EVENT_PROOF_INVALID');
-    this._registryActionLogRootMirror = Buffer.from(newRoot);
-  }
-  // Review-pass-1 fix: witness-gated. The caller cites the latest event they
-  // can prove is included under the CURRENTLY-mirrored root; the proof's
-  // actionSeq must exactly equal the new head.
-  mirrorActionLogHead({ newHeadSeq, latestEntry, proof }) {
-    verifyEventProof(latestEntry, proof, this._registryActionLogRootMirror);
-    if (!(BigInt(proof.actionSeq) === BigInt(newHeadSeq))) {
-      revert('HEAD_ADVANCE_BEYOND_WITNESS');
-    }
-    asUintChecked(BigInt(newHeadSeq) - this._registryActionLogHeadSeqMirror, 64,
-                  'mirrorActionLogHead: not monotone');
-    this._registryActionLogHeadSeqMirror = BigInt(newHeadSeq);
+  // Fix #5 (registry-root anchor): copies the registry's root and entry count
+  // (mirror of ebt-v8 syncRegistryRoot / TR actionLogAnchor). Nobody chooses
+  // the root; the head for LANE_MIRROR_STALE is the latest entry.
+  syncRegistryRoot() {
+    const reg = this._registry;
+    if (!reg._bootstrapComplete) revert('ACTION_LOG_NOT_BOOTSTRAPPED');
+    const root = Buffer.from(reg.registryActionLogRoot);
+    const count = BigInt(reg._actionSeq);
+    if (count < this._registryActionLogCountMirror) revert('REGISTRY_ROOT_REGRESSED');
+    if (count === this._registryActionLogCountMirror && !bufEq(this._registryActionLogRootMirror, Buffer.alloc(32))
+        && !bufEq(root, this._registryActionLogRootMirror)) revert('REGISTRY_ROOT_REGRESSED');
+    this._registryActionLogRootMirror = root;
+    this._registryActionLogCountMirror = count;
+    this._registryActionLogHeadSeqMirror = count === 0n ? 0n : count - 1n;
   }
 
   // ---------------------------- execMultisigOp (mirror) --------------------
@@ -750,41 +747,12 @@ export function buildProof(registry, seq) {
   return { actionSeq: BigInt(seq), payloadHash: Buffer.from(entry.payloadHash), siblings, pathBits };
 }
 
-// Pick any event with a payloadHash in fx.events (registry action seq order)
-// and build a { entry, proof } bundle suitable for the witness-gated
-// trust-anchor setters. Returns null if the registry has no mirrorable events
-// yet (which would be a test-setup bug for witness-gated warmMirror).
-function pickSampleWitness(fx) {
-  for (const ev of fx.events) {
-    if (ev.kind === 4 || ev.kind === 5 || ev.kind === 6) continue;
-    const proof = buildProof(fx.registry, ev.seq);
-    const entry = fx.registry.getActionEntry(BigInt(ev.seq));
-    return { entry, proof };
-  }
-  return null;
-}
-
 // Warm the EBT mirror from every mirrorable event in fx.events, verifying each
-// EventProof against the registry's committed root. Sets the head tracker to
-// the highest mirrored seq (keeper "caught up to latest"). Pass { headSeq } to
-// force a specific head (e.g. staleness tests).
-//
-// Review-pass-1 fix: the two trust-anchor setters are witness-gated, so this
-// helper installs the root using any real event's inclusion proof (the head
-// advance then reuses the exact new-head event's proof).
-export function warmMirror(ebt, fx, opts = {}) {
+// EventProof against the registry's committed root. Fix #5: the root and the
+// head tracker come from the registry via syncRegistryRoot (head = latest entry).
+export function warmMirror(ebt, fx) {
   const registry = fx.registry;
-  const sample = pickSampleWitness(fx);
-  if (!sample) {
-    throw new Error('warmMirror: no mirrorable events in fixture; witness-gated setters need at least one real event');
-  }
-  ebt.mirrorActionLogRoot({
-    newRoot: registry.registryActionLogRoot,
-    sampleEntry: sample.entry,
-    proof: sample.proof,
-  });
-  let maxSeq = 0n;
-  let latestBundle = sample;   // fallback if no mirrorable events beyond sample
+  ebt.syncRegistryRoot();
   for (const ev of fx.events) {
     if (ev.kind === 4 || ev.kind === 5 || ev.kind === 6) continue; // non-mirrored
     const proof = buildProof(registry, ev.seq);
@@ -801,24 +769,7 @@ export function warmMirror(ebt, fx, opts = {}) {
         split: ev.split, rateFiatPerKwh: ev.rate, lastUpdatedAt: ev.lastUpdatedAt, proof,
       });
     }
-    if (BigInt(ev.seq) > maxSeq) maxSeq = BigInt(ev.seq);
-    latestBundle = { entry, proof };
   }
-  const finalHead = opts.headSeq ?? maxSeq;
-  // Head advance requires an exact witness for newHeadSeq.
-  const headWitness = opts.headWitness ?? (
-    opts.headSeq !== undefined
-      ? {
-          entry: registry.getActionEntry(BigInt(finalHead)),
-          proof: buildProof(registry, BigInt(finalHead)),
-        }
-      : latestBundle
-  );
-  ebt.mirrorActionLogHead({
-    newHeadSeq: finalHead,
-    latestEntry: headWitness.entry,
-    proof: headWitness.proof,
-  });
 }
 
 // =============================================================================
@@ -839,7 +790,7 @@ export function makeEbtFixture() {
     dividendRecipient: nonZero32(0x22),
     daoRecipient: nonZero32(0x23),
     escrowAttestorPubkey: escrowKey.pubkeyBytes,
-    registryActionLogRoot: fx.registry.registryActionLogRoot,
+    registry: fx.registry,
     self: randomBytes(32),
   });
   const producerKey = randomBytes(32);
@@ -922,7 +873,7 @@ export function buildScenario(opts = {}) {
     t += 100n;
   }
 
-  warmMirror(ebt, fx, opts.warm);
+  warmMirror(ebt, fx);
 
   if (opts.attest !== false) {
     ebt.attest({ producerKey, meterKeyHash, currentTime: 900_000n });

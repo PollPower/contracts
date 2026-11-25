@@ -189,6 +189,12 @@ struct ScheduleRecord {
 // exact WI-13/13.1 meaning (federation/operator AUTHORIZATION commitment,
 // non-invertible). `payloadHash` is a NEW, DISTINCT canonical commitment over
 // the mirror-relevant event body (§SCOPE B) — the two are never conflated.
+// Fix #5 (registry-root anchor): what EBT reads through `actionLogAnchor`.
+struct ActionLogAnchor {
+  root:  Bytes<32>,   // registryActionLogRoot
+  count: Uint<64>,    // entries appended (_actionSeq); the latest is count - 1
+}
+
 struct RegistryActionEntry {
   kind:        Uint<8>,     // 0..7 per V1-DESIGN.md §3.1 (+ WI-13.1 lane kinds)
   scheduleId:  Bytes<32>,   // 0 if not schedule-scoped
@@ -1225,6 +1231,18 @@ export circuit isScheduleActive(scheduleId: Bytes<32>): Boolean { return false; 
 // =============================================================================
 // WI-13.2 action-log read circuits (§SCOPE D — pure reads, I-F preserved)
 // =============================================================================
+
+// Fix #5 (registry-root anchor, docs/design/registry-root-anchor-design.md):
+// EBT reads the action-log root from here through a ledger 9 cross-contract
+// call (EBT `syncRegistryRoot`), so no key or constructor argument chooses the
+// root it verifies mirrored entries against. Witness-free (a cross-contract
+// callee may not call witnesses). Refused until the sharded bootstrap has
+// committed the empty-tree root, so EBT never anchors to a half-built tree.
+// In the ceremony set: EBT's staged deploy syncs before its mirrors run.
+export circuit actionLogAnchor(): ActionLogAnchor {
+  assert(_bootstrapComplete, "ACTION_LOG_NOT_BOOTSTRAPPED");
+  return ActionLogAnchor { root: registryActionLogRoot, count: _actionSeq.read() };
+}
 
 // Full authoritative event body at `seq` (incl. payloadHash). Keepers fetch
 // this to reconstruct-and-verify the mirror against registryActionLogRoot.

@@ -1,3 +1,9 @@
+// SUPERSEDED by fix #5 (registry-root anchor, 2026-11-25): EBT no longer has
+// mirrorActionLogRoot or mirrorActionLogHead and its constructor takes the
+// TariffRegistry's address, not a root; the root is read on chain with
+// syncRegistryRoot. The suite deploys through tooling/deploy/deploy-suite.mjs.
+// Kept as a record of the Preview-era path; do not run against current builds.
+//
 // verify-ceremony-state.mjs — generic on-chain state verifier for the
 // ceremony contract. Reads the "rolled out so far" list from deployment.json
 // (field: circuitsRolledIn, array of circuit ids that have been vk-inserted

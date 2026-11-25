@@ -252,20 +252,30 @@ async function settleEventFor(/** @type {any} */ dn, /** @type {Uint8Array} */ s
 }
 
 /**
- * Mirrors the TR schedule + class into an EBT (action-log proofs) and attests
- * the producer (owner signature). `flags` records progress (S or S.atk).
+ * Syncs an EBT's root mirror with the TariffRegistry (syncRegistryRoot, a
+ * cross-contract read; fix #5), then mirrors the TR schedule + class (and the
+ * statutory lane once it exists) through action-log proofs, and attests the
+ * producer (owner signature). `flags` records progress (S or S.atk).
  * `joinAs`: the build to call through (the ceremony build mid-deploy).
  */
-async function mirrorAndAttest(dn, ebtAddress, flags, rootHex, joinAs) {
+async function mirrorAndAttest(dn, ebtAddress, flags, joinAs, { lane = true } = {}) {
   const trL = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
   const P = (await loadModule('ebt-v8')).pureCircuits;
   const ebt = await join(dn, joinAs, ebtAddress);
   const self = hexToBytes(ebtAddress);
-  // Rebuild the action log exactly as the TR holds it (checked against the mirrored root).
+  let eL = await ledgerOf(dn, 'ebt-v8', ebtAddress);
+  if (eL._registryActionLogCountMirror !== trL._actionSeq) {
+    await ebt.callTx.syncRegistryRoot();
+    eL = await ledgerOf(dn, 'ebt-v8', ebtAddress);
+    console.log(`[stack] EBT synced with the registry: ${eL._registryActionLogCountMirror} entries, root ${Buffer.from(eL._registryActionLogRootMirror).toString('hex').slice(0, 16)}...`);
+  }
+  // Rebuild the action log exactly as the TR holds it (checked against the root EBT read from TR).
   const tree = new ActionLogTree();
   const entries = [];
   for (let i = 0n; i < trL._actionSeq; i++) { const e = trL._actionLog.lookup(i); entries.push(e); tree.append(e.payloadHash); }
-  if (Buffer.from(tree.root()).toString('hex') !== rootHex) throw new Error('JS action-log tree != the root EBT mirrors');
+  if (Buffer.from(tree.root()).toString('hex') !== Buffer.from(eL._registryActionLogRootMirror).toString('hex')) {
+    throw new Error('JS action-log tree != the root EBT read from the TariffRegistry');
+  }
   const sid = hexToBytes(S.scheduleId);
   if (!flags.mirrored) {
     await ebt.callTx.mirrorScheduleLifecycle(entries[0], trL._registeredSchedules.lookup(sid), tree.proof(0));
@@ -274,7 +284,7 @@ async function mirrorAndAttest(dn, ebtAddress, flags, rootHex, joinAs) {
     save();
     console.log('[stack] schedule + class mirrored into EBT');
   }
-  if (!flags.laneMirrored) {
+  if (lane && !flags.laneMirrored) {
     const seq = entries.findIndex((e) => Number(e.kind) === 1);
     if (seq < 0) throw new Error('no LANE_REGISTERED entry in the TariffRegistry action log');
     const rec = findLane(trL, sid, LANE.leviedBy, LANE.laneKindByte);
@@ -293,6 +303,28 @@ async function mirrorAndAttest(dn, ebtAddress, flags, rootHex, joinAs) {
     save();
     console.log('[stack] producer attested');
   }
+}
+
+/**
+ * The statutory lane: council-approved registerLane on the TariffRegistry.
+ * Runs AFTER EBT is deployed and mirrored (fix #5), so every run exercises a
+ * registry change that EBT must catch up with: sync, re-mirror, then settle.
+ */
+async function registerStatutoryLane(dn) {
+  if (S.laneRegistered) return;
+  const tr = await join(dn, 'tariff-registry-v1', S.tr, TR_WITNESSES);
+  const self = hexToBytes(S.tr);
+  const lane = { ...LANE, scheduleId: hexToBytes(S.scheduleId) };
+  assertPollPowerRemit(lane, [LANE.remitAddress]);   // devnet: the one PollPower statutory account
+  const t = nowSec();
+  let L = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
+  await approve(dn, registerLaneActionHash(self, lane, L._currentEpoch, t));
+  await tr.callTx.registerLane(...registerLaneArgs(lane), charterProof, t);
+  L = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
+  const rec = findLane(L, lane.scheduleId, lane.leviedBy, lane.laneKindByte);
+  S.laneRegistered = true;
+  save();
+  console.log(`[stack] registry change after EBT's deploy: statutory lane registered: kind ${rec.laneKindByte}, ${rec.bpsShare} bps, remit mode ${rec.remittanceMode}, effective epoch ${rec.effectiveEpoch}`);
 }
 
 /** Approve `actionHash` on the council with slots 0 and 1 (2-of-3). */
@@ -374,21 +406,6 @@ const STAGES = {
       save();
       console.log(`[stack] class retuned (statutory ${SPLIT.statutoryTotalBps} bps)`);
     }
-    // The statutory lane: council-approved registerLane, before EBT deploys
-    // (EBT's constructor mirrors the action-log root that includes it).
-    if (!S.laneRegistered) {
-      const lane = { ...LANE, scheduleId: hexToBytes(S.scheduleId) };
-      assertPollPowerRemit(lane, [LANE.remitAddress]);   // devnet: the one PollPower statutory account
-      const t = nowSec();
-      L = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
-      await approve(dn, registerLaneActionHash(self, lane, L._currentEpoch, t));
-      await tr.callTx.registerLane(...registerLaneArgs(lane), charterProof, t);
-      L = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
-      const rec = findLane(L, lane.scheduleId, lane.leviedBy, lane.laneKindByte);
-      S.laneRegistered = true;
-      save();
-      console.log(`[stack] statutory lane registered: kind ${rec.laneKindByte}, ${rec.bpsShare} bps, remit mode ${rec.remittanceMode}, effective epoch ${rec.effectiveEpoch}`);
-    }
   },
 
   // EBT: staged deploy, registry mirrors through action-log proofs, producer
@@ -400,7 +417,10 @@ const STAGES = {
     const P = ebtMod.pureCircuits;
     const ebt = await join(dn, 'ebt-v8', S.ebt);
     const self = hexToBytes(S.ebt);
-    await mirrorAndAttest(dn, S.ebt, S, S.ebtRoot, 'ebt-v8');
+    await mirrorAndAttest(dn, S.ebt, S, 'ebt-v8', { lane: false });
+    // A registry change after EBT's deploy (the lane), then sync + re-mirror (fix #5).
+    await registerStatutoryLane(dn);
+    await mirrorAndAttest(dn, S.ebt, S, 'ebt-v8');
     if (!S.chipRegistered) {
       const t = nowSec();
       const h = P.councilChipHash(self, 1n, CHIP.pk, chipHwId(CHIP), PRODUCER.meter, PRODUCER.key, { bytes: PRODUCER.payout }, t);
@@ -493,17 +513,16 @@ const STAGES = {
     const providers = /** @type {any} */ (dn.providersFor('ebt-v8'));
     const trL = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
     if (!A.ebt) {
-      const root = trL.registryActionLogRoot;
       const { address } = await deploy(dn, 'ebt-v8-ceremony', [
         OWNER.pk, METER_AUTHORITY.pk, { bytes: hexToBytes(S.council) },
-        { bytes: new Uint8Array(32).fill(0x21) }, { bytes: new Uint8Array(32).fill(0x23) }, ESCROW.pk, root,
+        { bytes: new Uint8Array(32).fill(0x21) }, { bytes: new Uint8Array(32).fill(0x23) }, ESCROW.pk,
+        { bytes: hexToBytes(S.tr) },
       ]);
       A.ebt = address;
-      A.root = Buffer.from(root).toString('hex');
       save();
     }
     dn.bind(A.ebt, 'ebt-v8');
-    await mirrorAndAttest(dn, A.ebt, A, A.root, 'ebt-v8-ceremony');
+    await mirrorAndAttest(dn, A.ebt, A, 'ebt-v8-ceremony');
     const full = buildDir('ebt-v8');
     const keys = buildVerifierKeys(full);
     const state0 = await liveState(dn, 'ebt-v8', A.ebt);
@@ -592,6 +611,19 @@ const STAGES = {
       [replaceAuthority(new L9.ContractMaintenanceAuthority([L9.signatureVerifyingKey(deployerKey)], 1, (await liveState(dn, 'ebt-v8', A.ebt)).maintenanceAuthority.counter + 1n))], [deployerKey]);
     await after('SD-12 unsigned update after the lock', [vkRemove('settle')], []);
 
+    // RA-chain (fix #5): no key can install a root. The finalized EBT has no
+    // root or head setter, and its root is the one it read from the registry.
+    {
+      const st = await liveState(dn, 'ebt-v8', A.ebt);
+      const noSetter = ['mirrorActionLogRoot', 'mirrorActionLogHead'].every((id) => st.operation(id) === undefined)
+        && st.operation('syncRegistryRoot') !== undefined;
+      const eL = await ledgerOf(dn, 'ebt-v8', A.ebt);
+      const tL = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
+      const same = Buffer.from(eL._registryActionLogRootMirror).equals(Buffer.from(tL.registryActionLogRoot));
+      check('RA-chain no circuit takes a root; EBT root = registry root', noSetter && same,
+        `setters absent: ${noSetter}; root ${Buffer.from(eL._registryActionLogRootMirror).toString('hex').slice(0, 16)}... = TR's: ${same}`);
+    }
+
     const failed = results.filter((r) => !r.ok);
     console.log(`[attack] ${results.length - failed.length}/${results.length} passed`);
     S.attackResults = results;
@@ -613,7 +645,34 @@ const STAGES = {
     const journalDir = path.join(ROOT, 'build', 'devnet', `journal-${S.ebt.slice(0, 8)}`);
     const providers = /** @type {any} */ (dn.providersFor('ebt-v8'));
     let submits = 0;
-    const chain = await createEbtSettleChain({ providers, ebtBuildDir: buildDir('ebt-v8'), ebtAddress: S.ebt });
+    const chain = await createEbtSettleChain({
+      providers, ebtBuildDir: buildDir('ebt-v8'), ebtAddress: S.ebt,
+      registryAddress: S.tr, registryBuildDir: buildDir('tariff-registry-v1'),
+    });
+    // Registry gate on the real path (fix #5): a registry entry EBT has not
+    // synced (a retune to the same split, nonce 2), so the adapter's first
+    // settle must sync EBT itself, re-check, then plan.
+    if (!S.gateRetuned) {
+      const trMod = await loadModule('tariff-registry-v1');
+      const P = trMod.pureCircuits;
+      const tr = await join(dn, 'tariff-registry-v1', S.tr, TR_WITNESSES);
+      const trSelf = hexToBytes(S.tr);
+      const sid = hexToBytes(S.scheduleId);
+      const t = nowSec();
+      const L = await ledgerOf(dn, 'tariff-registry-v1', S.tr);
+      const auth = P.retuneAuthHash(trSelf, sid, CLASS, SPLIT, 100n, L._currentEpoch, 2n, t);
+      await tr.callTx.retuneClass(sid, CLASS, SPLIT, 100n, OPERATOR.pk, signMessage(P.signerMessage(auth), OPERATOR.sk), 2n, t,
+        { quotient: 20n, remainder: 0n }, { quotient: 20n, remainder: 0n });
+      S.gateRetuned = true;
+      save();
+    }
+    {
+      const trN = (await ledgerOf(dn, 'tariff-registry-v1', S.tr))._actionSeq;
+      const ebtN = (await ledgerOf(dn, 'ebt-v8', S.ebt))._registryActionLogCountMirror;
+      console.log(`[service] gate setup: registry ${trN} entries, EBT synced ${ebtN}`);
+      S.gateBefore = { registry: String(trN), ebt: String(ebtN) };
+      save();
+    }
     const counting = { ...chain, settle: async (/** @type {any} */ p) => { const r = await chain.settle(p); if (r.status === 'submitted') submits++; return r; } };
     const svc = createSettleV9({
       ebtBuildDir: buildDir('ebt-v8'), ebtAddressHex: S.ebt,
@@ -649,6 +708,14 @@ const STAGES = {
     const r1 = await svc.submit(b1);
     console.log(`[service] submit: ${r1.status} in ${((Date.now() - t0) / 1000).toFixed(0)}s, amount ${r1.amount}, split ${JSON.stringify(r1.split)}; supply ${s0} -> ${await supply()}`);
     if (await supply() - s0 !== 12_345n) throw new Error('service settle minted the wrong amount');
+    {
+      const trN = (await ledgerOf(dn, 'tariff-registry-v1', S.tr))._actionSeq;
+      const ebtN = (await ledgerOf(dn, 'ebt-v8', S.ebt))._registryActionLogCountMirror;
+      if (trN !== ebtN) throw new Error(`registry gate did not sync EBT (registry ${trN}, EBT ${ebtN})`);
+      console.log(`[service] gate: EBT synced by the adapter (${S.gateBefore?.ebt} -> ${ebtN} of ${trN}), re-checked, settled`);
+      S.gateSynced = { registry: String(trN), ebt: String(ebtN) };
+      save();
+    }
 
     // 2. Crash after countersign, before submit: journaled only; startup replay settles it.
     const b2 = await bundleFor(2, 3_000_999n);
@@ -780,8 +847,8 @@ const STAGES = {
     const s = signSettle(ebtMod, { addressBytes: self }, f, { chip: CHIP, hatSk: METER_AUTHORITY.sk });
     // Split planned from EBT's live mirrors (class + statutory lane), as pp-settle-service does.
     const args = planSettleArgs({
-      ebtModule: ebtMod, ledger: await ledgerOf(dn, 'ebt-v8', S.ebt), fields: f, chip: s,
-      scheduleId: hexToBytes(S.scheduleId), classPath: CLASS, epoch: 1n, fiatValueAtMint: 2n, currentTime: nowSec(),
+      ebtModule: ebtMod, ledger: await ledgerOf(dn, 'ebt-v8', S.ebt), registryLedger: await ledgerOf(dn, 'tariff-registry-v1', S.tr),
+      fields: f, chip: s, scheduleId: hexToBytes(S.scheduleId), classPath: CLASS, epoch: 1n, fiatValueAtMint: 2n, currentTime: nowSec(),
     });
     console.log(`[stack] planned split: producer ${args[24]}, ops ${args[25]}, dividend ${args[26]}, dao ${args[27]}, lanes ${args[19].join('/')}`);
     if (args[19][0] !== (amount * LANE.bpsShare) / 10000n) throw new Error('settle plan does not pay the statutory lane');

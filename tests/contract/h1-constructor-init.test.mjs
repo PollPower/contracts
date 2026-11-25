@@ -32,7 +32,7 @@ const ebtArgs = () => [
   { bytes: b32(0x21) },     // operationsRecipient
   { bytes: b32(0x23) },     // daoRecipient
   ESCROW.pk,                // escrowAttestorPubkey
-  b32(0xa4),                // registryActionLogRoot
+  { bytes: b32(0xa4) },     // registry (TariffRegistry address; fix #5)
 ];
 const ebtWitnesses = { signature_valid: unused('signature_valid'), multisig_signature_valid: unused('multisig_signature_valid') };
 
@@ -54,7 +54,9 @@ for (const name of EBT) {
     assert.equal(hex(L._operationsRecipient.bytes), hex(b32(0x21)));
     assert.equal(hex(L._daoRecipient.bytes), hex(b32(0x23)));
     assert.deepEqual(L._escrowAttestorPubkey, ESCROW.pk);
-    assert.equal(hex(L._registryActionLogRootMirror), hex(b32(0xa4)));
+    assert.equal(hex(L._registry.bytes), hex(b32(0xa4)));
+    assert.equal(hex(L._registryActionLogRootMirror), hex(b32(0)), 'root mirror empty until the first sync');
+    assert.equal(L._registryActionLogCountMirror, 0n);
     assert.equal(L._registryActionLogHeadSeqMirror, 0n);
     assert.equal(L._livingDividendAddress.is_some, false);
   });

@@ -137,8 +137,8 @@ update are rejected (SD-9..SD-12).
 72 h delay, not implemented; the council is sealed for now); SD-2 confirmed at
 the node with a raw transaction, not only client-side; HAT firmware with
 `SIGN_HASH` disabled for settles; real ring keys in the Multisig v8
-constructor; EBT reading the TariffRegistry root on chain (trust assumption
-#5 below). The full gate list is in [docs/STATUS.md](docs/STATUS.md),
+constructor; a fresh devnet pass over the registry-root anchor (trust
+assumption #5 below, implemented on branch `wi16-fix5`). The full gate list is in [docs/STATUS.md](docs/STATUS.md),
 "Preprod gates".
 
 ## Trust assumptions we chose
@@ -173,20 +173,19 @@ These are deliberate. We would rather state them than have them found.
    infrastructure. This affects availability and durability, not what the
    contracts accept: every authorization is checked in-circuit, and the
    watcher reads events from the indexer independently.
-5. **The EBT owner key vouches for the TariffRegistry root it mirrors.** EBT
-   does not call the registry; the owner signs each action-log root install,
-   and individual entries (class splits, lanes, schedules) are then proven
-   against that root by Merkle path, monotonically. Anchoring roots to
-   registry state on chain is deferred
-   (see the trust-model comment above `mirrorActionLogRoot` in
-   [`ebt/ebt-v8.compact`](ebt/ebt-v8.compact)).
-   **The fix is designed and scheduled** before any Preprod deploy
-   ([design](docs/design/registry-root-anchor-design.md)): EBT will read the
-   root from the TariffRegistry through a cross-contract call to a new
-   witness-free view circuit, the same pattern as LD v3 reading EBT's
-   `dividendAccrued()`, and no key will be able to install a root. This is
-   possible because the TariffRegistry is not deployed yet, so it can still
-   gain the view circuit.
+5. **The EBT owner key vouched for the TariffRegistry root it mirrors.**
+   **Fixed on branch `wi16-fix5`** (2026-11-25; fresh devnet pass PASSED at `19aadeb`, record
+   `docs/devnet-passes/2026-11-25T13-46-10-951Z-pass.json`; merge after Nov 29):
+   EBT reads the root from the TariffRegistry through a ledger 9
+   cross-contract call (`syncRegistryRoot` -> the witness-free
+   `actionLogAnchor`), the same pattern as LD v3 reading EBT's
+   `dividendAccrued()`. The registry is a sealed constructor argument; the
+   owner-signed `mirrorActionLogRoot` and the caller-cited
+   `mirrorActionLogHead` are gone, so no key chooses a root. Entries are still
+   proven against that root by Merkle path, monotonically. Attack tests
+   RA-1..RA-8 (`tests/contract/registry-anchor.test.mjs`); on the pre-fix
+   build RA-1 showed the owner key paying a forged lane
+   ([design](docs/design/registry-root-anchor-design.md)).
 6. **The proof server sees private inputs.** That is why owner, member and
    machine identities are Schnorr keys (the prover sees one single-use
    signature) rather than hash-preimage secrets.

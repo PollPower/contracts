@@ -221,10 +221,14 @@ Open: consumer app must call `/api/ld/v3/enroll` with the shim's member key
 after KYC; everything above undeployed.
 
 **Preprod gates (all must hold before any Preprod deploy):**
-- **Fresh pass pending: covers ops move + fix #5.** The deploy code changed
-  after the 2026-11-25 pass (`council-keys-guard.mjs` comment, the ops move);
-  one fresh pass runs after fix #5 (registry-root anchor), not before.
+- ~~Fresh pass pending: covers ops move + fix #5.~~ **PASSED** 2026-11-25 on
+  `wi16-fix5` at `19aadeb` (clean tree; ops move + fix #5 + settle registry
+  gate): 11 stages, 13/13 attacks incl. `RA-chain`, adapter synced EBT 3 -> 4
+  of 4 and settled; proof-server peak 10.17 GiB of 15; record
+  `docs/devnet-passes/2026-11-25T13-46-10-951Z-pass.json`. Merge into
+  `wi16-ledger9` after the Wave 3 submission (Nov 29).
 - **The ring key behind the July fragment is retired: never in any new council.**
+- **Pre-mainnet: decide stale-lane tolerance (CAL-vNext-M1); not a Preprod blocker.**
 - Every step passes on the local devnet, and Joi confirms the node host is fully synced.
 - Council rotation (72 h delay) implemented (design doc, "Council rotation").
 - **HAT firmware with `SIGN_HASH` disabled for settle use** (hard gate,
@@ -280,16 +284,21 @@ after KYC; everything above undeployed.
 - **Locked maintenance authority on EBT, TariffRegistry and LD v3** on
   Preprod/mainnet (Garrett 2026-11-24); upgrades are a new version + council-
   approved migration.
-- **EBT reads the TariffRegistry root on chain** (Garrett 2026-11-25; after
-  the Nov 30 submission, before any Preprod deploy): today the EBT owner key
-  installs the registry action-log root (`mirrorActionLogRoot`), so a stolen
-  owner key could mirror a forged lane or split (REVIEW.md trust assumption
-  #5). Fix: a witness-free TariffRegistry view circuit (`actionLogAnchor`)
-  read by a permissionless EBT `syncRegistryRoot` through a cross-contract
-  call; `mirrorActionLogRoot` removed; constructor takes the registry
-  address, not a root. Possible only because the TariffRegistry is not
-  deployed yet. Attack tests RA-1..RA-8 first, tooling, full builds, sizes,
-  docs and a fresh devnet pass; ~3 dev-days + pass. Design:
+- **EBT reads the TariffRegistry root on chain** (fix #5; Garrett
+  2026-11-25): **implemented on branch `wi16-fix5`**, not merged (after Nov 29), fresh
+  pass PASSED (`19aadeb`). TariffRegistry `actionLogAnchor` (witness-free, refused before the
+  bootstrap completes) read by a permissionless EBT `syncRegistryRoot`
+  through a cross-contract call; `mirrorActionLogRoot`, its owner digest and
+  `mirrorActionLogHead` removed; the constructor takes the registry address
+  (sealed). Attack tests RA-1..RA-8 written first (on the pre-fix build the
+  owner key installed a forged root and a settle paid the forged lane);
+  the settle adapter (the Preprod settle path) gates every settle by default:
+  sync EBT if behind, re-check, refuse on `REGISTRY_AHEAD_OF_MIRROR` /
+  `CLASS_MIRROR_BEHIND` / `LANE_MIRROR_BEHIND` (it will not open without
+  `TARIFF_REGISTRY_ADDRESS` / `TARIFF_REGISTRY_BUILD_DIR`); devnet run now
+  registers the lane after EBT's deploy (sync -> re-mirror -> settle) and
+  checks `RA-chain`. Full ZK builds: staged EBT 34.4 % and staged TR 36.1 %
+  of a block (each one tx). Design and the changes made while implementing:
   [`design/registry-root-anchor-design.md`](design/registry-root-anchor-design.md).
 - Done already: Gap C council gate on `manualReissue`, native attestation in
   meter-authority-service, epoch-0 retire fix, chip registry + nonce set.

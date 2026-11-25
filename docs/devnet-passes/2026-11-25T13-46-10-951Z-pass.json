@@ -1,0 +1,91 @@
+{
+  "startedAt": "2026-11-25T13:46:10.951Z",
+  "gitCommit": "19aadeb3149c3a4bb03a8de74a9f39e07f3c1560",
+  "gitClean": true,
+  "manifest": {
+    "builds": {
+      "multisig-v8": "cde0fdb3e70df14784718aa913e5f3451a7567a2e464912ea386000ba7729b84",
+      "tariff-registry-v1": "a35f51f978283bc82b8c1359345e477f0d352a2f9a6ae9725a7873935f764002",
+      "tariff-registry-v1-ceremony": "209459de2b30c6e43c0b8e3e2c14b18ffe5cf2384eb0339466742dc0ff9de6cf",
+      "ebt-v8": "78bfd3d5983917e12ff17154312989990fe5d6efc37dcd153478fb8a41aeb9cc",
+      "ebt-v8-ceremony": "018bc06684a161ac8810b2a02b943730d3f84089078d4e109335c84dc2302050",
+      "living-dividend-v3": "6115257c515b88664fb32245db56858ea824e70d37b2b6b5d69e49d3de279959"
+    },
+    "deployCode": {
+      "tooling/deploy/deploy-suite.mjs": "7360b9d2d0860d438378d9f154938e4fdbc988045093e3abb8501d949bff3d56",
+      "tooling/deploy/network.mjs": "cd47b382a82a513a2035c40385752a311aef765ac15b222387bfa9070d095fd4",
+      "tooling/deploy/finalize.mjs": "dce85202097ee40c50f40cdd383e0c87c92eef7d87e95bdba8fa36cd246738de",
+      "tooling/council/council-keys-guard.mjs": "b45e89d0ca9f4e0c9d384f22c28ebccf43910282af7499381210247f313af509",
+      "tooling/midnight-providers.mjs": "eac9fe7593db2120e8d8db28a7fe5b020d608cd6b423a5f7750ced2a13b3e7b6",
+      "tooling/proving/serial-proof-provider.mjs": "5d71d659446894884eecc09b606ddda7f18a15bc447990477b1552d7a5e0e229"
+    }
+  },
+  "proofServerResetPerProof": true,
+  "network": "undeployed",
+  "proofServerRestartedAt": "2026-11-25T13:46:09.544Z",
+  "stages": [
+    {
+      "stage": "council",
+      "ok": true,
+      "seconds": 86
+    },
+    {
+      "stage": "tariff",
+      "ok": true,
+      "seconds": 702
+    },
+    {
+      "stage": "ebt",
+      "ok": true,
+      "seconds": 1098
+    },
+    {
+      "stage": "settle",
+      "ok": true,
+      "seconds": 108
+    },
+    {
+      "stage": "ld",
+      "ok": true,
+      "seconds": 342
+    },
+    {
+      "stage": "settle",
+      "ok": true,
+      "seconds": 107
+    },
+    {
+      "stage": "claim",
+      "ok": true,
+      "seconds": 66
+    },
+    {
+      "stage": "service",
+      "ok": true,
+      "seconds": 365
+    },
+    {
+      "stage": "relay",
+      "ok": true,
+      "seconds": 193
+    },
+    {
+      "stage": "watcher",
+      "ok": true,
+      "seconds": 108
+    },
+    {
+      "stage": "attacks",
+      "ok": true,
+      "seconds": 639
+    }
+  ],
+  "result": "pass",
+  "finishedAt": "2026-11-25T14:49:47.150Z",
+  "addresses": {
+    "council": "3733a8f2e9c49597dc9b35bf39e931c32e28c3432a78a805d4f09918c6edfdbf",
+    "tariffRegistry": "ceab0b095c45454b158317cbd743a9a7bd899834040919af2f2e8bde8edd8cc0",
+    "ebt": "bdec1f0ff7bbb13feea94a47dd10636d0aca7491052f7d4bff99044ca12daced",
+    "livingDividend": "36dec590215ff140525c8d405a2aec87d9ddc590c3bfba3d44906342d27424fb"
+  }
+}

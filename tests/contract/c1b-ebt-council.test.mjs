@@ -9,7 +9,7 @@
 //
 // Interface under test:
 //   constructor(ownerPk, meterAuthorityPubkey, council: Council, opsRecipient,
-//               daoRecipient, escrowAttestorPubkey, registryActionLogRoot)
+//               daoRecipient, escrowAttestorPubkey, registry)
 //   pure councilActionHash(self, op, ldAddr, newEscrowAttestor, currentTime) -> Bytes<32>
 //   execMultisigOp(op, ldAddr, newEscrowAttestor, currentTime)
 //     op 0 bindLivingDividend (once), 4 setEscrowAttestor. Op 3 (authority rotation)
@@ -41,7 +41,7 @@ async function setup() {
   const council = await deployCouncil();
   const deployEbt = async (councilHandle) => deploy(ebt, { signature_valid: unused('signature_valid') }, [
     newOwnerKey().pk, newMachineKey().pk, { bytes: councilHandle.addressBytes },
-    { bytes: b32(0x21) }, { bytes: b32(0x23) }, newMachineKey().pk, b32(0xa4),
+    { bytes: b32(0x21) }, { bytes: b32(0x23) }, newMachineKey().pk, { bytes: b32(0xa4) },
   ], {}, { world });
   const e = await deployEbt(council);
 

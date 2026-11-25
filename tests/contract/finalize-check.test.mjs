@@ -32,15 +32,15 @@ const deployerKey = () => R.signatureVerifyingKey(R.sampleSigningKey());
 
 test('FZ-1: complete build + locked authority passes', { skip }, () => {
   const ids = [...buildVerifierKeys(path.join(BUILD, NAME)).keys()];
-  assert.equal(ids.length, 21);
+  assert.equal(ids.length, 20);   // fix #5: -mirrorActionLogRoot -mirrorActionLogHead +syncRegistryRoot
   assert.deepEqual(checkFinalized(stateWith(ids, LOCKED()), path.join(BUILD, NAME)), { ok: true, problems: [] });
 });
 
 test('FZ-2 (negative): mid-deploy (ceremony keys only) fails, naming every missing circuit', { skip }, () => {
-  const ceremony = ['attestProducerOwnership', 'mirrorActionLogHead', 'mirrorClassStatutoryTotal', 'mirrorRegisterLane', 'mirrorScheduleLifecycle', 'revokeProducerOwnership', 'settle'];
+  const ceremony = ['attestProducerOwnership', 'mirrorClassStatutoryTotal', 'mirrorRegisterLane', 'mirrorScheduleLifecycle', 'revokeProducerOwnership', 'settle', 'syncRegistryRoot'];
   const r = checkFinalized(stateWith(ceremony, LOCKED()), path.join(BUILD, NAME));
   assert.equal(r.ok, false);
-  assert.equal(r.problems.filter((p) => p.startsWith('missing:')).length, 14);
+  assert.equal(r.problems.filter((p) => p.startsWith('missing:')).length, 13);
   assert.ok(r.problems.includes('missing:registerChip'));
 });
 

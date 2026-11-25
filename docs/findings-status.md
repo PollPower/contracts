@@ -99,7 +99,8 @@ each user frontend is capable of producing a malicious return." `_owner` is
 public ledger state, so anyone can pass the check.
 
 Owner-gated circuits: `attestProducerOwnership`, `revokeProducerOwnership`,
-`claimSplit`, `execOwnerOp`, `manualReissue`, `mirrorActionLogRoot`.
+`claimSplit`, `execOwnerOp`, `manualReissue`, `mirrorActionLogRoot` (the
+last removed by fix #5, registry-root anchor, branch `wi16-fix5`).
 
 Combined with C-1 this is an **unprivileged mint**: self-attest a producer
 via `attestProducerOwnership`, then `settle` with a lying HAT witness to any

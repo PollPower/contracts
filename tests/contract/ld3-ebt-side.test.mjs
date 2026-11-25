@@ -141,9 +141,8 @@ test('WI16-E-1 (negative, PoC): settle must use the class split; ld/ops/dao cann
 async function advanceRoot(w) {
   w.syncTree();
   const seq = w.entries.length - 1;
-  const args = [w.tree.root(), w.entries[seq]];
-  await w.ebt.call('mirrorActionLogRoot', ...args, w.tree.proof(seq),
-    signOwnerAction(w.ebtMod, w.ebt, 'mirrorActionLogRoot', args, { sk: w.keys.owner.sk }));
+  void seq;
+  await w.sync();   // fix #5: the root comes from the registry, not the owner
 }
 
 test('WI16-E-2a (negative, PoC): an older class entry cannot be re-mirrored over a newer one', { skip }, async () => {

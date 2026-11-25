@@ -1,3 +1,9 @@
+// SUPERSEDED by fix #5 (registry-root anchor, 2026-11-25): EBT no longer has
+// mirrorActionLogRoot or mirrorActionLogHead and its constructor takes the
+// TariffRegistry's address, not a root; the root is read on chain with
+// syncRegistryRoot. The suite deploys through tooling/deploy/deploy-suite.mjs.
+// Kept as a record of the Preview-era path; do not run against current builds.
+//
 // deploy-ebt-v8-ceremony.mjs — deploy the ceremony-fenced EBT v8.
 //
 // WI16-H-1: `initialize` is gone; the authorities are constructor arguments of

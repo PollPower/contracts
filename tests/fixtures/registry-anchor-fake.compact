@@ -1,0 +1,24 @@
+// Test fixture (never deployed): a look-alike TariffRegistry for the fix #5
+// attack tests (tests/contract/registry-anchor.test.mjs). Same
+// `actionLogAnchor` interface, but anyone sets the anchor, so it can go
+// backwards or rewrite its root.
+pragma language_version >= 0.28;
+
+import CompactStandardLibrary;
+
+struct ActionLogAnchor {
+  root:  Bytes<32>,
+  count: Uint<64>,
+}
+
+export ledger _root: Bytes<32>;
+export ledger _count: Uint<64>;
+
+export circuit setAnchor(root: Bytes<32>, count: Uint<64>): [] {
+  _root = disclose(root);
+  _count = disclose(count);
+}
+
+export circuit actionLogAnchor(): ActionLogAnchor {
+  return ActionLogAnchor { root: _root, count: _count };
+}
