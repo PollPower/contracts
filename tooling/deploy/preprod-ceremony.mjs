@@ -22,7 +22,7 @@
 // go-ahead flag): the same pass check, input guards and deploy suite, paid by
 // the devnet genesis wallet, recorded under build/devnet/:
 //   node tooling/deploy/preprod-ceremony.mjs --devnet-dry-run --make-inputs <file>
-//   node tooling/deploy/preprod-ceremony.mjs --devnet-dry-run --step council|tariff|sd2-node|ebt|ld --inputs <file>
+//   node tooling/deploy/preprod-ceremony.mjs --devnet-dry-run --step council|tariff|ebt|sd2-node|ld --inputs <file>
 // (sd2-node: G9, the node itself rejects a raw call to a circuit whose key is
 // not inserted yet; dry run only, see sd2-node-check.mjs)
 import fs from 'node:fs';
@@ -37,8 +37,8 @@ import { readSeedFile } from '../wallet/wallet-lib.mjs';
 
 const PASSES = path.join(ROOT, 'docs', 'devnet-passes');
 export const STEPS = ['council', 'tariff', 'ebt', 'ld'];
-// Dry run only: SD-2 at the node (G9), after tariff, before ebt.
-export const DRY_STEPS = ['council', 'tariff', 'sd2-node', 'ebt', 'ld'];
+// Dry run only: SD-2 at the node (G9), after ebt (its control call needs the finalized EBT).
+export const DRY_STEPS = ['council', 'tariff', 'ebt', 'sd2-node', 'ld'];
 
 /** The newest passing devnet record whose manifest equals the current one, or the reasons none qualifies. */
 export function qualifyingPass(/** @type {any} */ current, dir = PASSES) {
