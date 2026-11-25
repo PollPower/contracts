@@ -100,7 +100,7 @@ Verified state (post-init):
 getAdminCount → 5
 getThreshold → 3
 getMeterCount → 1
-isMeterRegistered(timothy) → true
+isMeterRegistered(<pilot producer's meter>) → true
 getNonce → 0
 ```
 
@@ -115,9 +115,9 @@ getNonce → 0
    check: load registry contract → `isMeterRegistered(meterKeyHash)`
    → reject if false. v5 EBT contract still mints; the registry is just
    a gate.
-3. **Backfill** — Timothy is seeded with a placeholder keyHash. Before
-   pilot-actual we need to: (a) compute his real meter keyHash from
-   his hardware key, (b) ceremony-add the real keyHash, (c) the
+3. **Backfill** — The pilot producer's meter is seeded with a placeholder keyHash.
+   Before pilot-actual we need to: (a) compute the producer's real meter
+   keyHash from their hardware key, (b) ceremony-add the real keyHash, (c) the
    placeholder can stay (no harm) or be ceremony-removed.
 4. **Real Tangem rings** — when hardware arrives, swap pilot-mock admins
    for real rings via `executeAddAdmin` + `executeRemoveAdmin`

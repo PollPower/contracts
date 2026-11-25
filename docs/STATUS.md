@@ -15,7 +15,7 @@ locally again (EBT full ZK build: 7 min on throne). Tailscale healthy. SSH
 tunnel to kenya's devnet open (19944 / 18088 / 16300; node, indexer and proof
 server answer). Nothing else running.
 
-Off-chain, not in the repo: `C:\Users\Garrett\PollPower-council\` (council keys: Garrett's ring verified; standby ring verified 2026-11-24, off-chain + compiled circuit; Jonathan / Timothy pending).
+Off-chain, not in the repo: `C:\Users\Garrett\PollPower-council\` (council keys: Garrett's ring verified; standby ring verified 2026-11-24, off-chain + compiled circuit; council members 1 and 2 pending).
 
 **Decisions (Garrett, 2026-11-24, after LD v3):** 72 h payout-change delay
 approved. HAT signing: option 3, meter-authority-service countersigns the
@@ -212,7 +212,7 @@ after KYC; everything above undeployed.
 - Settle-event watcher running as a service and alerting all council members
   on Telegram (council group) AND email, each channel independent; every
   channel confirmed with `--test-alert` (`docs/runbooks/hat-settle-watcher.md`).
-- Real ring keys (Garrett, Jonathan, Timothy) in the Multisig v8 constructor.
+- Real ring keys (Garrett, council member 1, council member 2) in the Multisig v8 constructor.
   Built only through `tooling/council/council-keys-guard.mjs`, which
   hard-refuses the devnet council test keys (marked: x starts 0xDE7E) on any
   network but the local devnet.

@@ -17,8 +17,9 @@ const fromCompressed = (hex) => {
 
 test('CK-1: the devnet council keys are marked; a real ring key is not', () => {
   for (let i = 0; i < 3; i++) assert.equal(isDevnetCouncilPoint(devnetCouncilKey(i).point), true, `devnet key ${i}`);
-  // Garrett's Tangem ring (verified 2026-11-24).
-  const ring = fromCompressed('0253810184d14c2484110ab5521043fc008c58a65a0ee00413a7bf49fefe6b986a');
+  // A non-devnet key in the compressed SEC1 format the Tangem rings use
+  // (freshly generated test vector; not any council member's key).
+  const ring = fromCompressed('03758c3270cb67eb4f7efd88986ce5b3c6e87fa4d3fb9ba2ecad7a993e1a65ee86');
   assert.equal(isDevnetCouncilPoint(ring), false);
 });
 

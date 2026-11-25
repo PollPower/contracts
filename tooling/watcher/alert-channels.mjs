@@ -1,6 +1,6 @@
 // @ts-check
 // Council alert channels for the settle watcher (Garrett, 2026-11-24):
-//   - a Telegram bot posting to the council group (Garrett, Jonathan, Timothy);
+//   - a Telegram bot posting to the council group (Garrett, council member 1, council member 2);
 //   - email to each of the three council members, as the backup.
 // Every channel (the Telegram group, and each member's email) is its own sink
 // in the watcher loop, so each is delivered and retried independently: a
@@ -13,7 +13,7 @@
 //
 // Env (see docs/runbooks/hat-settle-watcher.md):
 //   WATCHER_TELEGRAM_TOKEN_FILE, WATCHER_TELEGRAM_CHAT_ID
-//   WATCHER_EMAIL_TO = "garrett:addr,jonathan:addr,timothy:addr", WATCHER_EMAIL_FROM
+//   WATCHER_EMAIL_TO = "garrett:addr,member1:addr,member2:addr", WATCHER_EMAIL_FROM
 //   WATCHER_SMTP_HOST, WATCHER_SMTP_PORT (465 = TLS), WATCHER_SMTP_USER, WATCHER_SMTP_PASSWORD_FILE
 import fs from 'node:fs';
 import path from 'node:path';

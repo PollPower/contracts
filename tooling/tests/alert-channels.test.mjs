@@ -19,7 +19,7 @@ const ALERT = {
 const CTX = { network: 'preprod', ebtAddress: '12'.repeat(32) };
 const okFetch = (calls) => async (url, init) => { calls.push({ url: String(url), body: JSON.parse(init.body) }); return { ok: true, status: 200, json: async () => ({ ok: true }) }; };
 const transport = (sent) => ({ sendMail: async (m) => { sent.push(m); } });
-const MEMBERS = [{ member: 'garrett', address: 'g@example.org' }, { member: 'jonathan', address: 'j@example.org' }, { member: 'timothy', address: 't@example.org' }];
+const MEMBERS = [{ member: 'garrett', address: 'g@example.org' }, { member: 'member1', address: 'm1@example.org' }, { member: 'member2', address: 'm2@example.org' }];
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ac-'));
 
 test('AC-1: Telegram posts the alert to the council group as plain text', async () => {
@@ -46,9 +46,9 @@ test('AC-2 (negative): a Telegram failure throws without ever showing the bot to
 test('AC-3: one email per council member, each its own sink', async () => {
   const sent = [];
   const sinks = emailSinks({ transport: transport(sent), from: 'watcher@example.org', to: MEMBERS, context: CTX });
-  assert.deepEqual(sinks.map((s) => s.member), ['email:garrett', 'email:jonathan', 'email:timothy']);
+  assert.deepEqual(sinks.map((s) => s.member), ['email:garrett', 'email:member1', 'email:member2']);
   for (const s of sinks) await s.send(ALERT);
-  assert.deepEqual(sent.map((m) => m.to), ['g@example.org', 'j@example.org', 't@example.org']);
+  assert.deepEqual(sent.map((m) => m.to), ['g@example.org', 'm1@example.org', 'm2@example.org']);
   assert.match(sent[0].subject, /ALERT.*bad_chip_signature/);
   assert.ok(sent[0].text.includes(ALERT.sessionId));
 });
@@ -69,7 +69,7 @@ test('AC-4: Telegram down -> all three emails still go out; Telegram alone is re
   assert.equal(r.alerts, 1);
   assert.equal(sent.length, 3, 'emails delivered while Telegram is down');
   assert.equal(w.state().pendingAlerts.length, 1);
-  assert.deepEqual(w.state().pendingAlerts[0].deliveredTo.sort(), ['email:garrett', 'email:jonathan', 'email:timothy']);
+  assert.deepEqual(w.state().pendingAlerts[0].deliveredTo.sort(), ['email:garrett', 'email:member1', 'email:member2']);
   tgUp = true;
   assert.equal(await w.retryPending(), 0);
   assert.equal(tgCalls.length, 1, 'Telegram delivered on retry');
@@ -119,20 +119,20 @@ test('AC-7 (negative): the service needs BOTH channels and all three members; no
   const pw = path.join(d, 'smtp'); fs.writeFileSync(pw, 'app-password', { mode: 0o600 });
   const env = {
     WATCHER_TELEGRAM_TOKEN_FILE: tok, WATCHER_TELEGRAM_CHAT_ID: '-1001234',
-    WATCHER_EMAIL_TO: 'garrett:g@example.org,jonathan:j@example.org,timothy:t@example.org', WATCHER_EMAIL_FROM: 'watcher@example.org',
+    WATCHER_EMAIL_TO: 'garrett:g@example.org,member1:m1@example.org,member2:m2@example.org', WATCHER_EMAIL_FROM: 'watcher@example.org',
     WATCHER_SMTP_HOST: 'smtp.example.org', WATCHER_SMTP_PORT: '465', WATCHER_SMTP_USER: 'watcher@example.org', WATCHER_SMTP_PASSWORD_FILE: pw,
   };
   const made = [];
   const deps = { fetchImpl: okFetch([]), createTransport: (o) => { made.push(o); return transport([]); }, context: CTX };
   const sinks = channelsFromEnv(env, deps);
-  assert.deepEqual(sinks.map((s) => s.member), ['telegram:-1001234', 'email:garrett', 'email:jonathan', 'email:timothy']);
+  assert.deepEqual(sinks.map((s) => s.member), ['telegram:-1001234', 'email:garrett', 'email:member1', 'email:member2']);
   assert.equal(made[0].auth.pass, 'app-password');
   assert.equal(made[0].secure, true);
   for (const k of ['WATCHER_TELEGRAM_TOKEN_FILE', 'WATCHER_TELEGRAM_CHAT_ID', 'WATCHER_EMAIL_TO', 'WATCHER_SMTP_HOST', 'WATCHER_SMTP_PASSWORD_FILE']) {
     const e = { ...env }; delete e[k];
     assert.throws(() => channelsFromEnv(e, deps), new RegExp(k));
   }
-  assert.throws(() => channelsFromEnv({ ...env, WATCHER_EMAIL_TO: 'garrett:g@example.org,jonathan:j@example.org' }, deps), /three council members/);
+  assert.throws(() => channelsFromEnv({ ...env, WATCHER_EMAIL_TO: 'garrett:g@example.org,member1:m1@example.org' }, deps), /three council members/);
   assert.throws(() => channelsFromEnv({ ...env, WATCHER_TELEGRAM_TOKEN: TOKEN }, deps), /WATCHER_TELEGRAM_TOKEN.*file/);
 });
 

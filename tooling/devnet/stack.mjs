@@ -744,7 +744,7 @@ const STAGES = {
       save();
       console.log(`[watcher] forged-chip-signature settle ACCEPTED on chain (tx ${S.badSettle.tx}): the watcher's case`);
     }
-    const got = { garrett: [], jonathan: [], timothy: [] };
+    const got = { garrett: [], member1: [], member2: [] };
     const sinks = Object.keys(got).map((m) => ({ member: m, send: async (/** @type {any} */ a) => { /** @type {any} */ (got)[m].push(a); } }));
     const stateFile = path.join(ROOT, 'build', 'devnet', `watcher-${S.ebt.slice(0, 8)}-${Date.now()}.json`);
     const svc = await createSettleWatcherService({ publicDataProvider: dn.providersFor('ebt-v8').publicDataProvider, ebtBuildDir: buildDir('ebt-v8'), ebtAddress: S.ebt, sinks, stateFile });
@@ -982,7 +982,7 @@ const STAGES = {
       const nodemailer = (await import('nodemailer')).default;
       sinks = channelsFromEnv(process.env, { createTransport: (o) => nodemailer.createTransport(o), context });
     } else {
-      sinks = ['garrett', 'jonathan', 'timothy'].map((m) => ({ member: `test:${m}`, send: async () => {} }));
+      sinks = ['garrett', 'member1', 'member2'].map((m) => ({ member: `test:${m}`, send: async () => {} }));
     }
     const stateFile = path.join(ROOT, 'build', 'devnet', `demo-watcher-${S.ebt.slice(0, 8)}.json`);
     const svc = await createSettleWatcherService({ publicDataProvider: dn.providersFor('ebt-v8').publicDataProvider, ebtBuildDir: buildDir('ebt-v8'), ebtAddress: S.ebt, sinks, stateFile });

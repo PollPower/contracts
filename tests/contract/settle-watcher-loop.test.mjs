@@ -15,7 +15,7 @@ import { createWatcher } from '../../tooling/watcher/settle-watcher-loop.mjs';
 
 const need = ['ebt-v8', 'tariff-registry-v1', 'multisig-v8'];
 const skip = need.every(buildExists) ? false : `builds missing: ${need.join(', ')}`;
-const MEMBERS = ['garrett', 'jonathan', 'timothy'];
+const MEMBERS = ['garrett', 'member1', 'member2'];
 
 /** Indexer-shaped Misc events from the in-memory EBT's last call. */
 function indexerEvents(w, firstId) {
@@ -72,17 +72,17 @@ test('WL-3 (negative): one member endpoint down does not block the others and is
   p[64] ^= 0x01;
   evs[0].payload = p.toString('hex');
   const stateFile = tmp();
-  const down = new Set(['timothy']);
+  const down = new Set(['member2']);
   const s = sinks(down);
   const wt = createWatcher({ chipLookup: chipLookup(w), sinks: s.list, stateFile, log: quiet });
   await wt.process(evs);
   assert.equal(s.got.garrett.length, 1);
-  assert.equal(s.got.jonathan.length, 1);
-  assert.equal(s.got.timothy.length, 0);
+  assert.equal(s.got.member1.length, 1);
+  assert.equal(s.got.member2.length, 0);
   assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).pendingAlerts.length, 1, 'undelivered alert persisted');
-  down.delete('timothy');
+  down.delete('member2');
   await wt.retryPending();
-  assert.equal(s.got.timothy.length, 1, 'delivered on retry');
+  assert.equal(s.got.member2.length, 1, 'delivered on retry');
   assert.equal(s.got.garrett.length, 1, 'not re-sent to members who already got it');
   assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).pendingAlerts.length, 0);
 });
@@ -99,7 +99,7 @@ test('WL-4 (negative): a settleChip event from a chip that is not registered ale
   const wt2 = createWatcher({ chipLookup: chipLookup(w), sinks: s2.list, stateFile: tmp(), log: quiet });
   const name = Buffer.alloc(32); name.write('pp:ebt:v9:settleChip');
   await wt2.process([{ id: 50, eventType: 'Misc', name: name.toString('hex'), payload: 'ab'.repeat(300) }]);
-  assert.match(s2.got.jonathan[0].problems[0], /undecodable/);
+  assert.match(s2.got.member1[0].problems[0], /undecodable/);
 });
 
 test('WL-5: other event types are skipped without alerts', { skip }, async () => {

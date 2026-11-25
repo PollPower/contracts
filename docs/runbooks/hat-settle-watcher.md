@@ -30,7 +30,7 @@ settles at Preprod: hard gate).
 
 ## On an alert
 
-1. **Alert all three council members at once** (Garrett, Jonathan, Timothy),
+1. **Alert all three council members at once** (Garrett, council member 1, council member 2),
    not only one: revocation needs **2-of-3**, so two approvals must be gathered
    quickly. There is deliberately **no single-member suspend**.
 2. Identify the chip (event chip key / hardware id) and the settle tx.
@@ -58,7 +58,7 @@ settles at Preprod: hard gate).
 
 Every alert goes to **both**:
 
-- a **Telegram bot** posting to the council group (Garrett, Jonathan, Timothy);
+- a **Telegram bot** posting to the council group (Garrett, council member 1, council member 2);
 - **email** to each of the three council members (backup).
 
 Each channel is a separate delivery: the Telegram group and each member's
@@ -80,8 +80,8 @@ Telegram (Garrett):
    "PollPower Council Alerts" and pick a username ending in `bot`. BotFather
    replies with the **bot token**. Do not paste it into any chat, Signal, ticket
    or repo; it goes only into the token file (step 5).
-2. Create a group "PollPower Council Alerts" with Garrett, Jonathan and
-   Timothy, and add the bot. In the group settings, only admins may add
+2. Create a group "PollPower Council Alerts" with Garrett, council member 1 and
+   council member 2, and add the bot. In the group settings, only admins may add
    members.
 3. Back in @BotFather: `/setjoingroups` -> the bot -> **Disable**, so nobody
    can add it to another group. Leave privacy mode on (the bot only posts).
@@ -123,7 +123,7 @@ On the watcher host (Joi):
    ```
 
    Expect `delivered` for `telegram:<chat id>`, `email:garrett`,
-   `email:jonathan`, `email:timothy`, and each member confirms receipt.
+   `email:member1`, `email:member2`, and each member confirms receipt.
 10. `sudo systemctl daemon-reload && sudo systemctl enable --now pp-settle-watcher`;
     `journalctl -u pp-settle-watcher -f` shows the channels and each pass.
 
