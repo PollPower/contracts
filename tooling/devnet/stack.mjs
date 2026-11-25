@@ -30,7 +30,7 @@ import fs from 'node:fs';
 import * as L9 from '@midnight-ntwrk/midnight-js-protocol/v9';
 import { checkFinalized, buildVerifierKeys, submitMaintenance, vkInsert, vkRemove, replaceAuthority } from '../deploy/finalize.mjs';
 import { devnetCouncilKey, buildCouncilConstructorArgs } from '../council/council-keys-guard.mjs';
-import { signDigest } from '../../tests/contract/council-signer.mjs';
+import { signDigest, newCouncilKey } from '../../tests/contract/council-signer.mjs';
 import { signMessage } from '../../tests/contract/machine-signer.mjs';
 import { runtimePersistentHash, padTag } from '../../tests/parity/harness.mjs';
 import { ed25519 } from '@noble/curves/ed25519.js';
@@ -631,6 +631,55 @@ const STAGES = {
     if (failed.length) throw new Error(`staged-deploy attacks: ${failed.map((r) => r.id).join('; ')}`);
   },
 
+  // Council rotation on chain (Preprod gate). The 72 h delay cannot elapse
+  // on the devnet, so: 2-of-3 approve a rotation (slot 2 -> a standby key),
+  // schedule it, check readyAt = schedule time + 72 h, check that an early
+  // execute is refused, then cancel it with a 2-of-3 approval; the council
+  // and its generation are unchanged afterwards. Execute itself is covered by
+  // R-1/R-4 and C1b-TR-8 (contract tests with a controlled clock).
+  async rotation(dn) {
+    const ms = await loadModule('multisig-v8');
+    const P = ms.pureCircuits;
+    const council = await join(dn, 'multisig-v8', S.council);
+    const self = hexToBytes(S.council);
+    let L = await ledgerOf(dn, 'multisig-v8', S.council);
+    const before = { epoch: L._epoch, slot2: L._adminPks.lookup(2n) };
+    if (!S.rotation) {
+      const standby = newCouncilKey().point;   // devnet only, never stored as a key
+      S.rotation = { standby: { x: String(standby.x), y: String(standby.y) } };
+      save();
+    }
+    const standby = { x: BigInt(S.rotation.standby.x), y: BigInt(S.rotation.standby.y), identity: false };
+    const [slots] = buildCouncilConstructorArgs([COUNCIL[0].point, COUNCIL[1].point, standby], 2n, 'undeployed');
+    if (!S.rotation.scheduled) {
+      const h = P.rotationHash(self, L._epoch, L._rotationSeq, slots, 3n, 2n);
+      await approve(dn, h, [0, 1]);
+      const t = nowSec();
+      await council.callTx.scheduleRotation(slots, 3n, 2n, t);
+      S.rotation.scheduled = { at: String(t), hash: Buffer.from(h).toString('hex') };
+      save();
+      console.log(`[rotation] scheduled ${S.rotation.scheduled.hash.slice(0, 16)}... at ${t}`);
+    }
+    L = await ledgerOf(dn, 'multisig-v8', S.council);
+    if (!S.rotation.cancelled) {
+      if (!L._rotationPending) throw new Error('rotation not pending after schedule');
+      if (L._rotationReadyAt !== BigInt(S.rotation.scheduled.at) + 259_200n) throw new Error(`readyAt ${L._rotationReadyAt} != schedule time + 72 h`);
+      let refused = '';
+      try { await council.callTx.executeRotation(slots, 3n, 2n); } catch (e) { refused = String(/** @type {any} */ (e)?.message ?? e); }
+      if (!/ROTATION_NOT_READY/.test(refused)) throw new Error(`early execute was not refused as ROTATION_NOT_READY: ${refused.slice(0, 200) || 'it went through'}`);
+      console.log('[rotation] early execute refused: ROTATION_NOT_READY');
+      const ch = P.cancelRotationHash(self, L._epoch, L._pendingRotationHash);
+      await approve(dn, ch, [0, 2]);
+      await council.callTx.cancelRotation();
+      S.rotation.cancelled = true;
+      save();
+    }
+    L = await ledgerOf(dn, 'multisig-v8', S.council);
+    if (L._rotationPending) throw new Error('rotation still pending after cancel');
+    if (L._epoch !== before.epoch || L._adminPks.lookup(2n).x !== before.slot2.x) throw new Error('council changed by a cancelled rotation');
+    console.log(`[rotation] PASS: 2-of-3 schedule (readyAt +72 h), early execute refused, 2-of-3 cancel; council and generation ${L._epoch} unchanged`);
+  },
+
   // pp-settle-service's REAL settle path on the devnet: prepare (the EBT's own
   // record digest), the Gap B journal, submit through the chain adapter (split
   // planned from EBT's live mirrors, retry, never resubmitting a landed
@@ -1074,7 +1123,7 @@ const wanted = process.argv.slice(2);
 if (!wanted.length) { console.error(`usage: stack.mjs <${Object.keys(STAGES).join('|')}|all> ...`); process.exit(2); }
 // 'all': a settle before LD (budget accrued with nobody registered stays in
 // EBT) and one after registration, so the claim has something to mint.
-const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'service', 'relay', 'watcher', 'attacks'];
+const ALL = ['council', 'tariff', 'ebt', 'settle', 'ld', 'settle', 'claim', 'service', 'relay', 'watcher', 'attacks', 'rotation'];
 const order = wanted.includes('all') ? ALL : wanted;
 // Every full pass starts on a freshly restarted proof server (Garrett,
 // 2026-11-25: its memory grows across proofs; the node host OOM-killed it mid-pass).

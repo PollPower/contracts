@@ -169,7 +169,7 @@ async function main() {
   const tag = dry ? '[dry-run]' : '[preprod]';
   console.log(`${tag} ${describeNetwork(net)}; step ${step}; builds match devnet pass ${q.file}`);
   const recFile = dry
-    ? path.join(ROOT, 'build', 'devnet', `ceremony-dryrun-${path.basename(String(arg('--inputs')), '.json')}.record.json`)
+    ? `${path.resolve(String(arg('--inputs'))).replace(/[.]json$/, '')}.record.json`   // next to the dry run's inputs
     : path.join(ROOT, 'build', 'preprod', 'ceremony-record.json');
   const rec = fs.existsSync(recFile) ? JSON.parse(fs.readFileSync(recFile, 'utf8')) : { devnetPass: q.file };
   const save = () => { fs.mkdirSync(path.dirname(recFile), { recursive: true }); fs.writeFileSync(recFile, JSON.stringify(rec, null, 2)); };
