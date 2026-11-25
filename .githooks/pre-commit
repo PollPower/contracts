@@ -1,0 +1,3 @@
+#!/bin/sh
+# Privacy check on staged files (public repo). Install once: npm run hooks:install
+exec node tooling/privacy/check-private-details.mjs --staged

@@ -22,7 +22,9 @@
     "test": "npm run test:mirror && npm run test:parity && npm run test:contract",
     "typecheck": "tsc -p tooling/tsconfig.json && npm run typecheck --workspace tariff-registry",
     "check:single-copies": "node tooling/check-single-copies.mjs",
-    "test:contract": "node --test --test-reporter=tap tests/contract/*.test.mjs"
+    "test:contract": "node --test --test-reporter=tap tests/contract/*.test.mjs",
+    "check:privacy": "node tooling/privacy/check-private-details.mjs",
+    "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {
     "@noble/curves": "2.4.0"

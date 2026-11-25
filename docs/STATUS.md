@@ -232,7 +232,14 @@ after KYC; everything above undeployed.
 - Settle-event watcher running as a service and alerting all council members
   on Telegram (council group) AND email, each channel independent; every
   channel confirmed with `--test-alert` (`docs/runbooks/hat-settle-watcher.md`).
-- Real ring keys (Garrett, council member 1, council member 2) in the Multisig v8 constructor.
+- **Council keys for Preprod** (ceremony rule, decided 2026-11-25):
+  - slot 0: a **fresh secp256k1 key created on the founder's ring for
+    Preprod**, never published anywhere before the deploy;
+  - slots 1 and 2: council member 1's and council member 2's ring keys;
+  - **none of these public keys is ever committed** to any repository: they
+    reach the Multisig v8 constructor only from the off-chain council-keys file;
+  - the council keys published so far only ever controlled the devnet demo
+    and are never reused on Preprod or mainnet.
   Built only through `tooling/council/council-keys-guard.mjs`, which
   hard-refuses the devnet council test keys (marked: x starts 0xDE7E) on any
   network but the local devnet.

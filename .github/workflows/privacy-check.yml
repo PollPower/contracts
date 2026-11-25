@@ -1,0 +1,19 @@
+name: privacy-check
+# This repo is public on purpose; council and ops details stay out of it
+# (tooling/privacy/check-private-details.mjs). Fails on new findings only.
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-save --ignore-scripts @noble/curves@2.4.0
+      - run: node tooling/privacy/check-private-details.mjs
+      - run: node --test tooling/tests/privacy-check.test.mjs

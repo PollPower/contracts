@@ -1,0 +1,194 @@
+{
+ ".env.example": {
+  "internal-host": 5
+ },
+ "dispatch-briefs/WI-13.1-TariffRegistry-Lanes.md": {
+  "internal-host": 1
+ },
+ "dispatch-briefs/WI-14-CEREMONY-SKELETON.md": {
+  "ring-holder": 1
+ },
+ "docs/demo/wi16-demo.md": {
+  "ring-holder": 1,
+  "internal-host": 2
+ },
+ "docs/design/hat-chip-signing-followup.md": {
+  "ring-holder": 1,
+  "internal-host": 1
+ },
+ "docs/design/living-dividend-v3-design.md": {
+  "internal-host": 1
+ },
+ "docs/design/WI16-auth-fix-design.md": {
+  "ring-holder": 1,
+  "internal-host": 1
+ },
+ "docs/devnet-passes/2026-11-25T05-42-47-913Z-pass.json": {
+  "internal-host": 1
+ },
+ "docs/findings-status.md": {
+  "internal-host": 2
+ },
+ "docs/STATUS.md": {
+  "internal-host": 24,
+  "ring-holder": 1
+ },
+ "ebt/ceremony-artifacts/T0-PREFLIGHT-MANIFEST-TEMPLATE.md": {
+  "internal-host": 4,
+  "ring-holder": 1
+ },
+ "ebt/deploy-ebt-v5.2.ts": {
+  "internal-host": 1
+ },
+ "ebt/settle-flow/env.mjs": {
+  "internal-host": 1
+ },
+ "ebt/V7-DESIGN.md": {
+  "ring-holder": 1
+ },
+ "ebt/V8-CEREMONY-FENCE.md": {
+  "internal-host": 2
+ },
+ "ebt/WI-14-CEREMONY-SKELETON.md": {
+  "ring-holder": 4
+ },
+ "FEDERATION-IMPLEMENTATION-PLAN.md": {
+  "ring-holder": 1
+ },
+ "multisig/multisig-federated-v1.compact": {
+  "internal-host": 2
+ },
+ "multisig/tooling/federated-v1-smoke-test.mjs": {
+  "internal-host": 1
+ },
+ "multisig/tooling/README.md": {
+  "ring-holder": 1
+ },
+ "multisig/tooling/v6.2-actionhash.ts": {
+  "ring-holder": 1
+ },
+ "multisig/tooling/v6.2-ceremony-template.ts": {
+  "ring-holder": 2
+ },
+ "README.md": {
+  "ring-holder": 1
+ },
+ "tariff-registry/deploy-preview.sh": {
+  "internal-host": 1
+ },
+ "tariff-registry/deploy-tariff-registry-preview.ts": {
+  "internal-host": 1
+ },
+ "tariff-registry/deploy/deploy-tariff-registry-monolith-ceremony.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/deploy/verify-monolith-ceremony-deploy.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/MONOLITH-CEREMONY.md": {
+  "internal-host": 1
+ },
+ "tariff-registry/populate-pilot-tariff-monolith.mjs": {
+  "internal-host": 2
+ },
+ "tariff-registry/PREVIEW-DEPLOY.md": {
+  "internal-host": 10
+ },
+ "tariff-registry/README.md": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-isLaneActive.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-isScheduleActive.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-resolveCurrent.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-resolveLane.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-resolveLanes.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-resolvePath.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-retireLane.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-retireSchedule.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-retuneClass.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-setFederationAuthority.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-setNationalContext.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/rollout/insert-vk-tariff-template.mjs": {
+  "internal-host": 1
+ },
+ "tariff-registry/V1.1-DEFERRED.md": {
+  "internal-host": 1
+ },
+ "tariff-registry/V1.1-DESIGN.md": {
+  "internal-host": 3
+ },
+ "tariff-registry/V1.3-DESIGN.md": {
+  "internal-host": 1
+ },
+ "tariff-registry/V2-SPLIT-DESIGN.md": {
+  "internal-host": 6
+ },
+ "tests/parity/tangem-secp256k1.test.mjs": {
+  "ring-holder": 1
+ },
+ "tooling/build-contracts.mjs": {
+  "internal-host": 1
+ },
+ "tooling/devnet/compose.yml": {
+  "internal-host": 3
+ },
+ "tooling/devnet/devnet-lib.mjs": {
+  "internal-host": 1
+ },
+ "tooling/devnet/stack.mjs": {
+  "ring-holder": 2,
+  "internal-host": 2
+ },
+ "tooling/midnight-network.mjs": {
+  "internal-host": 3
+ },
+ "tooling/privacy/check-private-details.mjs": {
+  "tailscale-ip": 1
+ },
+ "tooling/proving/measure-proof-peaks.mjs": {
+  "internal-host": 2
+ },
+ "tooling/proving/serial-proof-provider.mjs": {
+  "internal-host": 2
+ },
+ "tooling/settle/open-settle-chain.mjs": {
+  "internal-host": 1
+ },
+ "tooling/tangem/tangem-verify-devnet.mjs": {
+  "internal-host": 1
+ },
+ "tooling/tariff/remit.mjs": {
+  "internal-host": 1
+ },
+ "tooling/tests/midnight-network.test.mjs": {
+  "tailscale-ip": 4,
+  "internal-host": 2
+ },
+ "tooling/tests/privacy-check.test.mjs": {
+  "ring-holder": 1,
+  "card-id": 2,
+  "tailscale-ip": 2
+ }
+}
