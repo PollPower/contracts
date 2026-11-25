@@ -232,7 +232,10 @@ after KYC; everything above undeployed.
 - **Council rotation (72 h delay)**: implemented 2026-11-26 on branch
   `wi16-rotation` (2-of-3 approve -> schedule -> 72 h -> execute, generation
   bump; council-approved cancel; tests R-1..R-10, C1b-TR-8; devnet stage
-  `rotation`). Fresh pass pending; merge into `wi16-ledger9` after it passes.
+  `rotation`). **Fresh pass PASSED** 2026-11-25 at `29a8fbe` (clean tree;
+  12 stages incl. `rotation`: 2-of-3 schedule, readyAt +72 h, early execute
+  refused, 2-of-3 cancel; 13/13 attacks; proof-server peak 10.09 GiB of 15;
+  record `docs/devnet-passes/2026-11-25T16-12-36-214Z-pass.json`); merged into `wi16-ledger9` (Garrett's go, 2026-11-26).
 - **HAT firmware with `SIGN_HASH` disabled for settle use** (hard gate,
   Garrett 2026-11-24): the contract cannot tell `SIGN_HASH` signatures from
   native attestations.

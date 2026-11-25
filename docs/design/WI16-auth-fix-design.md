@@ -90,7 +90,8 @@ Preview Ed25519 contract.
 
 #### Council rotation: sealed for the Nov 30 demo, **required before Preprod**
 
-**Implemented 2026-11-26 on branch `wi16-rotation`** (Multisig v8:
+**Implemented 2026-11-26 on branch `wi16-rotation`, fresh devnet pass PASSED
+(`docs/devnet-passes/2026-11-25T16-12-36-214Z-pass.json`), merged into `wi16-ledger9`** (Multisig v8:
 `scheduleRotation`, `executeRotation`, `cancelRotation`, pure `rotationHash`,
 `cancelRotationHash`, `rotationDelaySeconds`; tests R-1..R-10 and C1b-TR-8;
 devnet stage `rotation`). Changes made while implementing:
