@@ -15,7 +15,7 @@ locally again (EBT full ZK build: 7 min on throne). Tailscale healthy. SSH
 tunnel to kenya's devnet open (19944 / 18088 / 16300; node, indexer and proof
 server answer). Nothing else running.
 
-Off-chain, not in the repo: `C:\Users\Garrett\PollPower-council\` (council keys: one council member's ring verified; standby ring verified 2026-11-24, off-chain + compiled circuit; council members 1 and 2 pending).
+Off-chain, not in the repo: the council-keys file (council keys: one council member's ring verified; standby ring verified 2026-11-24, off-chain + compiled circuit; council members 1 and 2 pending).
 
 **Decisions (Garrett, 2026-11-24, after LD v3):** 72 h payout-change delay
 approved. HAT signing: option 3, meter-authority-service countersigns the

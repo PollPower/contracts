@@ -138,8 +138,7 @@ already in the approval layout from the demo version.
   member and has no on-chain role** until rotated in.
 - **Records are off-chain.** Which ring belongs to whom, the card IDs and the
   collected public keys live in the council-keys file kept outside every
-  repository (on throne: `%UserProfile%\PollPower-council\council-keys.json`),
-  never in this repo or on chain beyond the public keys in the constructor.
+  repository, never in this repo or on chain beyond the public keys in the constructor.
 - **Devnet:** 2-of-3 test keys until the real rings are scanned; the real keys
   go into the constructor only at the Preprod deploy.
 - **Ring readiness** before the Preprod deploy: every member's and the
