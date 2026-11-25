@@ -35,9 +35,19 @@ MIDNIGHT_NETWORK_ID=undeployed MIDNIGHT_NODE_URL=... MIDNIGHT_INDEXER_URL=... MI
 ```
 
 Ring mode refuses the pass state file and `all`: a demo run is never a pass.
-For real alerts in scene 5, also set the watcher channel settings
+Real alerts in scene 5 go through the council alert bridge on kenya
+(`127.0.0.1:7140`, one webhook per member -> council Telegram group + that
+member's email): forward it (`ssh -N -L 17140:127.0.0.1:7140 kenya`) and set
+`DEMO_ALERT_BRIDGE=http://127.0.0.1:17140` and `DEMO_ALERT_MEMBERS=<the
+bridge's three member keys>`. Every alert is labelled DEMO (event id
+`DEMO-<n>`, first problem "DEMO: devnet recording, not a real incident",
+action "DEMO ONLY ... no action needed"). Alternatively the direct channels
 (`WATCHER_TELEGRAM_*`, `WATCHER_EMAIL_*`, `WATCHER_SMTP_*`; runbook
-`docs/runbooks/hat-settle-watcher.md`). Without them the alert goes to test sinks.
+`docs/runbooks/hat-settle-watcher.md`). With neither, test sinks.
+
+Prep and scenes set `MIDNIGHT_PROOF_SERVER_RESET` (fresh proof server per
+proof). Run while Preprod's node and indexer are paused: dry run 2026-11-25
+took 40 min of prep, scenes 3:01 / 1:53 / 1:12 / 0:05 / 1:55.
 
 ## On camera
 
