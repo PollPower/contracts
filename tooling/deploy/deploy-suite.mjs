@@ -7,8 +7,8 @@
 //
 // Order (each step needs the previous one's address):
 //   deployCouncil -> deployTariffRegistry -> [TR setup: bootstrap, schedule,
-//   class, via the council] -> deployEbt (mirrors TR's current action-log
-//   root) -> deployLd.
+//   class, via the council] -> deployEbt (bound to TR: it reads TR's
+//   action-log root on chain, syncRegistryRoot; fix #5) -> deployLd.
 // Post-deploy setup (schedule registration, mirrors, producer attestation,
 // chip registration, LD bind, member registration) is NOT part of this script:
 // on Preprod it is done by the council's rings and the owner key.
@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, buildDir, deploy, finalizeContract, liveState, loadModule } from './network.mjs';
+import { ROOT, buildDir, deploy, finalizeContract } from './network.mjs';
 import { buildCouncilConstructorArgs } from '../council/council-keys-guard.mjs';
 
 export const SUITE_BUILDS = ['multisig-v8', 'tariff-registry-v1', 'tariff-registry-v1-ceremony', 'ebt-v8', 'ebt-v8-ceremony', 'living-dividend-v3'];
@@ -98,22 +98,19 @@ export async function deployTariffRegistry(/** @type {Ctx} */ { dn, rec, save },
 
 /**
  * EBT v8 (staged). inputs: { ownerPk, meterAuthorityPk, operationsRecipient, daoRecipient, escrowAttestorPk }
- * (recipients: 32-byte hex). The registry action-log root is TR's CURRENT root
- * (read from the chain at deploy time), recorded in rec.ebtRoot.
+ * (recipients: 32-byte hex). EBT is bound to the TariffRegistry (sealed); it
+ * reads the action-log root from it with syncRegistryRoot (fix #5), which the
+ * post-deploy setup calls before the first mirrors. No root is passed in.
  */
 export async function deployEbt(/** @type {Ctx} */ { dn, rec, save }, /** @type {any} */ inputs) {
   if (!rec.council || !rec.tr) throw new Error('deployEbt: council and TariffRegistry first');
   if (!rec.ebt) {
-    const trMod = await loadModule('tariff-registry-v1');
-    const trState = await liveState(dn, 'tariff-registry-v1', rec.tr);
-    if (!trState) throw new Error(`TariffRegistry ${rec.tr}: no state`);
-    const root = trMod.ledger(trState.data).registryActionLogRoot;
     const { address } = await deploy(dn, 'ebt-v8-ceremony', [
       inputs.ownerPk, inputs.meterAuthorityPk, { bytes: hex(rec.council) },
-      { bytes: hex(inputs.operationsRecipient) }, { bytes: hex(inputs.daoRecipient) }, inputs.escrowAttestorPk, root,
+      { bytes: hex(inputs.operationsRecipient) }, { bytes: hex(inputs.daoRecipient) }, inputs.escrowAttestorPk,
+      { bytes: hex(rec.tr) },
     ]);
     rec.ebt = address;
-    rec.ebtRoot = Buffer.from(root).toString('hex');
     save();
   }
   dn.bind(rec.ebt, 'ebt-v8');

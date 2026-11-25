@@ -32,6 +32,36 @@ export function slicesFor(/** @type {bigint} */ amount, /** @type {bigint[]} */ 
   return floors;
 }
 
+const SPLIT_FIELDS = ['producerShareBps', 'ldShareBps', 'opsShareBps', 'daoShareBps', 'operatorMarginBps', 'statutoryTotalBps'];
+const LANE_FIELDS = ['bpsShare', 'remitAddress', 'retiredEpoch', 'effectiveEpoch', 'remittanceMode'];
+const same = (/** @type {any} */ a, /** @type {any} */ b) => (a instanceof Uint8Array ? eq(a, b) : toBig(a) === toBig(b));
+
+/** TariffRegistry's classSplitKey(scheduleId, classPath) (its own tag, not EBT's). */
+export const registryClassKeyOf = (/** @type {Uint8Array} */ scheduleId, /** @type {Uint8Array} */ classPath) =>
+  RT.persistentHash(V3, [pad32('pp:tariff:v1:classSplitKey'), scheduleId, classPath]);
+
+/**
+ * Fix #5: after a sync, the class and this schedule's lanes in EBT's mirrors
+ * must equal the TariffRegistry's own records, or a retune / lane change
+ * synced but not re-mirrored would settle at the old split. Lanes are matched
+ * by (scheduleId, leviedBy, kind), so the two contracts' key tags don't matter.
+ */
+export function assertMirrorsCurrent(/** @type {any} */ L, /** @type {any} */ R, /** @type {Uint8Array} */ scheduleId, /** @type {Uint8Array} */ classPath) {
+  const rk = registryClassKeyOf(scheduleId, classPath);
+  if (R._classEntries.member(rk)) {
+    const reg = R._classEntries.lookup(rk).bps;
+    const ck = classKeyOf(scheduleId, classPath);
+    const mir = L._classSplitMirror.member(ck) ? L._classSplitMirror.lookup(ck) : null;
+    if (!mir || SPLIT_FIELDS.some((k) => !same(reg[k], mir[k]))) throw new Error('CLASS_MIRROR_BEHIND: the class split in EBT differs from the TariffRegistry; re-mirror it (mirrorClassStatutoryTotal) before settling');
+  }
+  const mirrored = [...L._registeredLanesMirror].map(([, m]) => m.record);
+  for (const [, rec] of R._registeredLanes) {
+    if (!eq(rec.scheduleId, scheduleId)) continue;
+    const m = mirrored.find((x) => eq(x.scheduleId, rec.scheduleId) && eq(x.leviedBy, rec.leviedBy) && toBig(x.laneKindByte) === toBig(rec.laneKindByte));
+    if (!m || LANE_FIELDS.some((k) => !same(rec[k], m[k]))) throw new Error('LANE_MIRROR_BEHIND: a lane of this schedule in EBT differs from the TariffRegistry; re-mirror it before settling');
+  }
+}
+
 /** The live statutory lanes of `scheduleId` at `epoch` (as settleCheckSlot requires). */
 export function liveLanes(/** @type {any} */ ledger, /** @type {Uint8Array} */ scheduleId, /** @type {bigint} */ epoch) {
   const out = [];
@@ -55,6 +85,9 @@ export const hatSigOf = (/** @type {any} */ s) => ({ announcement: { x: toBig(s.
  * @param {object} p
  * @param {any} p.ebtModule   the EBT build (for its ledger types; unused pure circuits kept for parity)
  * @param {any} p.ledger      EBT's current ledger (module.ledger(state.data))
+ * @param {any} [p.registryLedger] the TariffRegistry's current ledger. Fix #5: when given, the
+ *   plan is refused while the registry has entries EBT has not synced (syncRegistryRoot) and
+ *   re-mirrored, so a retune or lane change never settles at the old split.
  * @param {any} p.fields      { sessionID, amount, producerKey, producerAddr:{bytes}, meterKeyHash, chipHwId, chipSessionUwh, chipUptimeMs, chipNonce }
  * @param {any} p.chip        { chipPubkey, chipSigR, chipSigS, hatSig }
  * @param {Uint8Array} p.scheduleId
@@ -66,6 +99,11 @@ export const hatSigOf = (/** @type {any} */ s) => ({ announcement: { x: toBig(s.
  */
 export function planSettleArgs(p) {
   const L = p.ledger;
+  if (p.registryLedger && toBig(p.registryLedger._actionSeq) > toBig(L._registryActionLogCountMirror)) {
+    throw new Error(`REGISTRY_AHEAD_OF_MIRROR: the TariffRegistry has ${p.registryLedger._actionSeq} entries, EBT synced ${L._registryActionLogCountMirror}; `
+      + 'call syncRegistryRoot and re-mirror the changed items before settling');
+  }
+  if (p.registryLedger) assertMirrorsCurrent(L, p.registryLedger, p.scheduleId, p.classPath);
   if (!L._scheduleLiveMirror.member(p.scheduleId) || L._scheduleLiveMirror.lookup(p.scheduleId) !== true) throw new Error('SCHEDULE_NOT_LIVE (mirror): refusing before submit');
   const ck = classKeyOf(p.scheduleId, p.classPath);
   if (!L._classSplitMirror.member(ck)) throw new Error('CLASS_NOT_LIVE (mirror): refusing before submit');
