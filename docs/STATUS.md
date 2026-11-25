@@ -184,8 +184,9 @@ differ from a passing record.
   (`tooling/watcher/deploy/`, runbook `docs/runbooks/hat-settle-watcher.md`).
 - Statutory lane: the Preprod class has one, so the devnet class now has a
   300-bps on-chain-remit lane (council-approved `registerLane`, mirrored into
-  EBT, every settle planned from the live mirrors; tests LN-1..4). New fresh
-  pass required (running).
+  EBT, every settle planned from the live mirrors; tests LN-1..4). Fresh pass
+  with the lane: **PASS** (2026-11-25, `08c94b8`, clean tree, 67 min; 11
+  stages, 12/12 attacks refused; record `docs/devnet-passes/2026-11-25T05-42-47-913Z-pass.json`).
 - Every full pass starts by restarting the proof server (Garrett,
   2026-11-25, after kenya OOM-killed it mid-pass at 21.7 GB); a failed
   restart stops the pass. Joi caps the proof server's memory.
@@ -194,12 +195,22 @@ differ from a passing record.
   `tooling/tariff/remit.mjs` (hash-chained log; each head anchored in the ops
   log `~/pollpower-ops/ops.log` on kenya, backed up nightly to md0, and in the
   council Telegram group). Later: an on-chain anchor.
-- Proof server: one job, one worker; our tooling sends one proof at a time
-  (`555d32b`). Per-proof peak to be measured (`tooling/proving/measure-proof-peaks.mjs`)
-  once Joi recreates it with a temporary cap; then the final cap = peak + 20 %.
-  Cloud proving host (64 GB) on hold until the measurement.
+- Proof server: one job, one worker, `--job-timeout 3600`, 15 GiB cap (Joi);
+  our tooling sends one proof at a time (`555d32b`) with a 3600 s client
+  timeout (`5394d02`). Measured 2026-11-25 (Preprod paused): largest single
+  proof ~10.3 GiB (registerSchedule; registerLane 9.49 GiB on a fresh server),
+  so peak + 20 % fits the 15 GiB cap and no cloud proving host is needed. The
+  server keeps memory across proofs (registerLane after the other tariff
+  proofs hit 15 GiB and was OOM-killed), so a pass restarts it before every
+  proof (`08c94b8`, `MIDNIGHT_PROOF_SERVER_RESET`; no OOM kills in the pass).
+  Under CPU contention (Preprod syncing) one proof took >15 min: passes run
+  while Preprod's node and indexer are paused, or take much longer.
 - Recorded demo on this pass: `docs/demo/wi16-demo.md` (ring in council slot 0
-  of a separate demo deployment of the same suite).
+  of a separate demo deployment of the same suite). Dry run 2026-11-25 with a
+  software key standing in for the ring: prep 40 min; scenes 1-5 all as
+  scripted (ring approval, settle 12,345 EBT incl. lane 370, claim 617 EBT,
+  3 attacks refused with supply unchanged, forged settle alerted to all 3).
+  Scene times 3:01 / 1:53 / 1:12 / 0:05 / 1:55 before the edit speeds up proving.
 Open: consumer app must call `/api/ld/v3/enroll` with the shim's member key
 after KYC; everything above undeployed.
 
