@@ -102,3 +102,13 @@ test('PC-8: the deploy wallet seed comes from a seed file (outside any repo) or 
   const inRepo = path.join(process.cwd(), 'build', 'x-seed');
   assert.throws(() => deployWalletSeed({ PREPROD_DEPLOY_WALLET_SEED_FILE: inRepo }), /inside a git checkout/);
 });
+
+test('PC-9: SD-2 at the node is a dry-run-only step; its verdict needs a NODE rejection, not a client-side one', async () => {
+  assert.match(runEntry(['--step', 'sd2-node', '--i-have-garretts-go-ahead'], NET('preprod')), /--step must be one of council, tariff, ebt, ld/);
+  const { isNodeRejection, SD2_CIRCUIT } = await import('../deploy/sd2-node-check.mjs');
+  assert.equal(SD2_CIRCUIT, 'getRegistryActionLogHeadSeq');
+  const node = Object.assign(new Error('submitTx rejected the transaction.'), { cause: new Error('1010: Invalid Transaction: Custom error: 135') });
+  assert.equal(isNodeRejection(node), true);
+  assert.equal(isNodeRejection(new Error("The contract at 'ab' is not the expected contract type.")), false);
+  assert.equal(isNodeRejection(new Error('failed assert: CHIP_NOT_REGISTERED')), false);
+});

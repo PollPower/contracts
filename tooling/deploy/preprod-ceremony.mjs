@@ -22,7 +22,9 @@
 // go-ahead flag): the same pass check, input guards and deploy suite, paid by
 // the devnet genesis wallet, recorded under build/devnet/:
 //   node tooling/deploy/preprod-ceremony.mjs --devnet-dry-run --make-inputs <file>
-//   node tooling/deploy/preprod-ceremony.mjs --devnet-dry-run --step council|tariff|ebt|ld --inputs <file>
+//   node tooling/deploy/preprod-ceremony.mjs --devnet-dry-run --step council|tariff|sd2-node|ebt|ld --inputs <file>
+// (sd2-node: G9, the node itself rejects a raw call to a circuit whose key is
+// not inserted yet; dry run only, see sd2-node-check.mjs)
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -35,6 +37,8 @@ import { readSeedFile } from '../wallet/wallet-lib.mjs';
 
 const PASSES = path.join(ROOT, 'docs', 'devnet-passes');
 export const STEPS = ['council', 'tariff', 'ebt', 'ld'];
+// Dry run only: SD-2 at the node (G9), after tariff, before ebt.
+export const DRY_STEPS = ['council', 'tariff', 'sd2-node', 'ebt', 'ld'];
 
 /** The newest passing devnet record whose manifest equals the current one, or the reasons none qualifies. */
 export function qualifyingPass(/** @type {any} */ current, dir = PASSES) {
@@ -155,7 +159,8 @@ async function main() {
   }
   if (!dry && !argv.includes('--i-have-garretts-go-ahead')) throw new Error('refusing: the Preprod deploy is a manual ceremony; pass --i-have-garretts-go-ahead');
   const step = arg('--step');
-  if (!step || !STEPS.includes(step)) throw new Error(`--step must be one of ${STEPS.join(', ')}`);
+  const allowed = dry ? DRY_STEPS : STEPS;
+  if (!step || !allowed.includes(step)) throw new Error(`--step must be one of ${allowed.join(', ')}`);
   const { loadNetworkConfig, describeNetwork } = await import('../midnight-network.mjs');
   const net = loadNetworkConfig();
   if (dry && net.networkId !== 'undeployed') throw new Error(`refusing: the dry run is local devnet only (undeployed), not ${net.networkId}`);
@@ -188,6 +193,12 @@ async function main() {
   if (step === 'tariff') await suite.deployTariffRegistry(ctx, { ...inputs.tariff, witnesses: { charter_membership_proof: noop, witness_divmod: noop, action_log_path_bits: noop } });
   if (step === 'ebt') await suite.deployEbt(ctx, inputs.ebt);
   if (step === 'ld') await suite.deployLd(ctx, { witnesses: { witness_divmod: noop } });
+  if (step === 'sd2-node') {
+    const { sd2AtNode } = await import('./sd2-node-check.mjs');
+    await sd2AtNode({ dn, rec, save, ebtInputs: inputs.ebt });
+    console.log(`${tag} sd2-node: the node rejected the raw call; state unchanged; record ${recFile}`);
+    process.exit(0);
+  }
   console.log(`${tag} ${step} deployed and finalized; record ${recFile}`);
   process.exit(0);
 }
