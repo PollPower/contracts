@@ -60,8 +60,8 @@ test('W-4: the printed instructions carry the addresses and faucet/DUST steps, n
 });
 
 test('W-5: wallet-status arguments and number formats', () => {
-  assert.deepEqual(parseArgs(['--seed-file', 'x']), { seedFile: 'x', registerDust: false });
-  assert.deepEqual(parseArgs(['--seed-file', 'x', '--register-dust']), { seedFile: 'x', registerDust: true });
+  assert.deepEqual(parseArgs(['--seed-file', 'x']), { seedFile: 'x', stateFile: path.resolve('x.wallet-state'), registerDust: false });
+  assert.equal(parseArgs(['--seed-file', 'x', '--register-dust']).registerDust, true);
   assert.throws(() => parseArgs([]), /usage/);
   assert.equal(fmtNight(5_000_000_000n), '5000.000000');
   assert.equal(fmtDust(1_500_000_000_000_000n), '1.500000000000000');

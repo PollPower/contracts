@@ -1,0 +1,5 @@
+# Reviewed gitleaks findings that are not secrets (fingerprints only).
+# Commit 0c3e217 (Aug 2026, files since removed): a public contract address
+# and a public multisig authority commitment, flagged as generic-api-key.
+0c3e2173352654bdc1dc09b03437f416ab3872e9:living-dividend/_ld_verify.mjs:generic-api-key:6
+0c3e2173352654bdc1dc09b03437f416ab3872e9:living-dividend/ld-register-members.mjs:generic-api-key:49

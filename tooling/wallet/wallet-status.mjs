@@ -1,7 +1,13 @@
 // @ts-check
 // Deploy-wallet status (Preprod ceremony). Garrett runs it.
 //
-//   node tooling/wallet/wallet-status.mjs --seed-file <file> [--register-dust]
+//   node tooling/wallet/wallet-status.mjs --seed-file <file> [--state-file <file>] [--register-dust]
+//
+// The wallet resumes from, and saves to, its encrypted state file (default:
+// next to the seed file, <name>.wallet-state; see wallet-state.mjs), the same
+// file the ceremony uses: the first run does the long sync once, later runs
+// and every ceremony step resume from it. A long first sync saves every minute
+// and resumes if interrupted.
 //
 // Endpoints come from the environment (MIDNIGHT_NETWORK_ID, MIDNIGHT_INDEXER_URL,
 // MIDNIGHT_NODE_URL, MIDNIGHT_PROOF_SERVER_URL). Prints the addresses, sync
@@ -15,7 +21,8 @@ import { pathToFileURL } from 'node:url';
 import { WebSocket } from 'ws';
 import { DustAddress, MidnightBech32m } from '@midnightntwrk/wallet-sdk';
 import { loadNetworkConfig, describeNetwork } from '../midnight-network.mjs';
-import { createWallet } from '../midnight-providers.mjs';
+import path from 'node:path';
+import { openPersistentWallet, defaultStateFile } from './wallet-state.mjs';
 import { readSeedFile, deriveAddresses } from './wallet-lib.mjs';
 
 /** @type {any} */ (globalThis).WebSocket ??= WebSocket;
@@ -28,18 +35,20 @@ export const fmtDust = (/** @type {bigint} */ v) => `${v / 10n ** 15n}.${(v % 10
 export function parseArgs(argv) {
   const i = argv.indexOf('--seed-file');
   const seedFile = i >= 0 ? argv[i + 1] : '';
-  if (!seedFile || seedFile.startsWith('--')) throw new Error('usage: node tooling/wallet/wallet-status.mjs --seed-file <file> [--register-dust]');
-  return { seedFile, registerDust: argv.includes('--register-dust') };
+  if (!seedFile || seedFile.startsWith('--')) throw new Error('usage: node tooling/wallet/wallet-status.mjs --seed-file <file> [--state-file <file>] [--register-dust]');
+  const j = argv.indexOf('--state-file');
+  const stateFile = j >= 0 && argv[j + 1] && !argv[j + 1].startsWith('--') ? path.resolve(argv[j + 1]) : defaultStateFile(seedFile);
+  return { seedFile, stateFile, registerDust: argv.includes('--register-dust') };
 }
 
 async function run(/** @type {string[]} */ argv) {
-  const { seedFile, registerDust } = parseArgs(argv);
+  const { seedFile, stateFile, registerDust } = parseArgs(argv);
   const net = loadNetworkConfig();
   const seedHex = readSeedFile(seedFile);
   const a = deriveAddresses(Uint8Array.from(Buffer.from(seedHex, 'hex')), net.networkId);
   console.log(`[wallet] ${describeNetwork(net)}`);
   console.log(`[wallet] unshielded ${a.unshielded}\n[wallet] shielded   ${a.shielded}\n[wallet] dust       ${a.dust}`);
-  const ctx = await createWallet(seedHex, net);
+  const ctx = await openPersistentWallet({ seedHex, net, stateFile, log: (l) => console.log(l) });
   const progress = ctx.wallet.state().pipe(Rx.throttleTime(30_000)).subscribe((s) => {
     if (!s.isSynced) console.log(`[wallet] syncing... (NIGHT so far ${fmtNight(s.unshielded.balances[NIGHT] ?? 0n)})`);
   });
@@ -65,7 +74,8 @@ async function run(/** @type {string[]} */ argv) {
       console.log('[wallet] re-run without --register-dust to watch the DUST balance grow');
     }
   }
-  await /** @type {any} */ (ctx.wallet).stop?.();
+  await ctx.close();
+  console.log(`[wallet] state saved: ${stateFile}`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

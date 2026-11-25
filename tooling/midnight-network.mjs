@@ -31,6 +31,7 @@
 //
 // This module only uses node builtins, so any script (plain node, tsx, tests) can use it.
 import fs from 'node:fs';
+import { installRateLimit, rateFromEnv } from './network/rate-limit.mjs';
 
 /** @typedef {{
  *   networkId: string,
@@ -135,7 +136,7 @@ const toWs = (httpUrl) => httpUrl.replace(/^http/, 'ws');
  * @param {Record<string, string | undefined>} [env]
  * @returns {MidnightNetwork}
  */
-export function loadNetworkConfig(env = process.env, { installRedaction: redact = true } = {}) {
+export function loadNetworkConfig(env = process.env, { installRedaction: redact = true, rateLimit = true } = {}) {
   /** @param {string} k */
   const get = (k) => { const v = env[k]?.trim(); return v ? v : undefined; };
   const profile = get('MIDNIGHT_PROFILE');
@@ -149,6 +150,8 @@ export function loadNetworkConfig(env = process.env, { installRedaction: redact 
     }
     const projectId = blockfrostProjectId(get('BLOCKFROST_ENV_FILE'));
     if (redact) installRedaction([projectId]);
+    // G2c: pay-as-you-go plan; the client stays at about 8 requests/s (MIDNIGHT_RATE_LIMIT_RPS).
+    if (rateLimit) installRateLimit({ hosts: [new URL(BLOCKFROST_PREPROD.indexer).hostname], rate: rateFromEnv(env) });
     const key = (/** @type {string} */ u) => `${u}?project_id=${encodeURIComponent(projectId)}`;
     const ttlSeconds = loadNetworkConfig({ MIDNIGHT_NETWORK_ID: 'preprod', MIDNIGHT_INDEXER_URL: 'http://x', MIDNIGHT_NODE_URL: 'http://x', MIDNIGHT_TX_TTL_SECONDS: get('MIDNIGHT_TX_TTL_SECONDS') }).ttlSeconds;
     return {

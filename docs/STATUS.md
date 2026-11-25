@@ -282,11 +282,23 @@ after KYC; everything above undeployed.
   contract state builds, proves and submits a call to a circuit whose
   verifier key is not inserted on a staged EBT; **the node rejected it, state
   byte-identical**; control: the same call on the finalized EBT was accepted.
-- **Secret scanning across all PollPower repos:** gitleaks pre-commit hook +
-  CI job (plain binary; the gitleaks Action needs a paid license for orgs),
-  custom rules for Midnight private-state stores and seed fields, and
-  `.gitignore` entries for local key stores and `.env` files. GitHub native
-  scanning + push protection on every public repo.
+- ~~Secret scanning~~ **done 2026-11-26 (contracts + ops)**: `.gitleaks.toml`
+  (default rules; here also an allowlist for the sha256 hash lines of the
+  devnet pass records), `.gitleaksignore` (two reviewed non-secret findings
+  in a removed August commit), the pre-commit hook runs gitleaks on staged
+  changes after the privacy check (fails closed without gitleaks), and CI
+  (`.github/workflows/gitleaks.yml`) scans the full history with a pinned,
+  checksum-verified gitleaks 8.30.1 binary. Full-history scans: 0 findings in
+  both repos. GitHub push protection on public repos: still to switch on.
+- ~~Deploy wallet resyncs on every ceremony step~~ **done 2026-11-26 (G3b)**:
+  `tooling/wallet/wallet-state.mjs` keeps the synced wallet state in one
+  encrypted, owner-only file outside the repo (AES-256-GCM, key derived from
+  the seed; bound to network and indexer; never contains the seed); the
+  ceremony and `wallet-status` resume from it. Devnet: second start 3 indexer
+  requests instead of ~150; ceremony dry run 2026-11-26 passed with it.
+- **Blockfrost bridge**: client limiter at about 8 requests/s
+  (`tooling/network/rate-limit.mjs`, `MIDNIGHT_RATE_LIMIT_RPS`); plan is
+  pay-as-you-go (Garrett, 2026-11-26).
 - **Locked maintenance authority on EBT, TariffRegistry and LD v3** on
   Preprod/mainnet (Garrett 2026-11-24); upgrades are a new version + council-
   approved migration.

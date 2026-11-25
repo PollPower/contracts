@@ -1,3 +1,11 @@
 #!/bin/sh
-# Privacy check on staged files (public repo). Install once: npm run hooks:install
-exec node tooling/privacy/check-private-details.mjs --staged
+# Pre-commit checks (public repo). Install once: npm run hooks:install
+#  1. privacy check on staged files (council and ops details stay out);
+#  2. gitleaks on the staged changes (G10; config .gitleaks.toml, reviewed
+#     non-secrets in .gitleaksignore). Fails closed if gitleaks is missing.
+node tooling/privacy/check-private-details.mjs --staged || exit 1
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks not found. Install gitleaks 8.30.1 (winget install Gitleaks.Gitleaks / brew install gitleaks) and commit again." >&2
+  exit 1
+fi
+exec gitleaks git --pre-commit --staged --redact --no-banner .
