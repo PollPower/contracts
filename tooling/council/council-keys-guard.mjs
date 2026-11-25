@@ -5,7 +5,7 @@
 // The devnet council keys are software stand-ins for the Tangem rings,
 // derived from public labels. They carry their own marker: their x coordinate
 // starts with 0xDE7E (found by grinding the label counter). A real ring key has
-// that prefix with probability 1/65536 (Garrett's ring: x starts 0x5381...).
+// that prefix with probability 1/65536.
 //
 // Every council constructor MUST be built with buildCouncilConstructorArgs,
 // which refuses marked keys unless the network is the local devnet
