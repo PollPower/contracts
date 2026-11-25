@@ -141,3 +141,19 @@ test('AC-8: formatAlert names the network, the contract, every problem and the c
   assert.match(subject, /\[PollPower ALERT\] preprod settle watcher: bad_chip_signature, chip_revoked/);
   for (const s of [CTX.ebtAddress, ALERT.chipPubkey, ALERT.sessionId, ALERT.txId, 'revokeChip', 'event 7']) assert.ok(text.includes(s), s);
 });
+
+// Recorded demo (2026-11-25): scene 5 alerts the real council channels through
+// the alert bridge, so every alert it sends must be unmistakably a DEMO.
+import { demoLabelledSink } from '../watcher/alert-channels.mjs';
+
+test('AC-9: a demo sink labels the event id, the problems and the action as DEMO before sending', async () => {
+  const sent = [];
+  const s = demoLabelledSink({ member: 'm1', send: async (a) => { sent.push(a); } });
+  assert.equal(s.member, 'm1');
+  await s.send({ kind: 'settle-watcher-alert', eventId: 146, problems: ['bad_chip_signature'], action: 'Council: revoke.', at: 'x' });
+  assert.equal(sent[0].eventId, 'DEMO-146');
+  assert.match(sent[0].problems[0], /^DEMO/);
+  assert.ok(sent[0].problems.includes('bad_chip_signature'));
+  assert.match(sent[0].action, /^DEMO ONLY.*no action needed.*Council: revoke\./);
+  assert.equal(sent[0].kind, 'settle-watcher-alert');
+});

@@ -121,3 +121,21 @@ export function channelsFromEnv(env, deps) {
   });
   return [tg, ...emailSinks({ transport, from: need('WATCHER_EMAIL_FROM'), to, context: deps.context })];
 }
+
+/**
+ * Wraps a sink for the recorded demo: every alert it sends is labelled DEMO in
+ * the event id (so in the email subject), the problem list and the action.
+ */
+export function demoLabelledSink(/** @type {{ member: string, send: (a: any) => Promise<void> }} */ sink) {
+  return {
+    member: sink.member,
+    async send(/** @type {any} */ a) {
+      await sink.send({
+        ...a,
+        eventId: `DEMO-${a.eventId}`,
+        problems: ['DEMO: devnet recording, not a real incident', ...(a.problems ?? [])],
+        action: `DEMO ONLY (devnet recording): no action needed. In production this would read: ${a.action}`,
+      });
+    },
+  };
+}

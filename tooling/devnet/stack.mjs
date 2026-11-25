@@ -40,7 +40,8 @@ import { submitSettleWithRetry } from '../settle/submit-settle.mjs';
 import { findSettleChipEvents, decodeSettleChipEvent, verifySettleChipEvent, SETTLE_CHIP_EVENT } from '../watcher/settle-watcher-lib.mjs';
 import { restoreIndexerMiscEvent, payloadWords } from '../events/event-codec.mjs';
 import { parsePublicKey, parseSignature, nobleVerify, normalizeS } from '../tangem/ring-signature.mjs';
-import { channelsFromEnv } from '../watcher/alert-channels.mjs';
+import { channelsFromEnv, demoLabelledSink } from '../watcher/alert-channels.mjs';
+import { webhookSink } from '../watcher/settle-watcher-loop.mjs';
 import readline from 'node:readline';
 
 const big = (/** @type {Uint8Array} */ b) => b.reduce((a, x) => (a << 8n) | BigInt(x), 0n);
@@ -978,7 +979,14 @@ const STAGES = {
     const realChannels = Boolean(process.env.WATCHER_TELEGRAM_TOKEN_FILE);
     const context = { network: 'devnet (demo)', ebtAddress: S.ebt };
     let sinks;
-    if (realChannels) {
+    if (process.env.DEMO_ALERT_BRIDGE) {
+      // Joi's alert bridge (one webhook per council member -> council Telegram
+      // group + that member's email); every alert labelled DEMO.
+      const members = String(process.env.DEMO_ALERT_MEMBERS ?? '').split(',').map((m) => m.trim()).filter(Boolean);
+      if (members.length !== 3) throw new Error('DEMO_ALERT_MEMBERS must list the three bridge member keys');
+      const base = process.env.DEMO_ALERT_BRIDGE.replace(/\/$/, '');
+      sinks = members.map((m) => demoLabelledSink(webhookSink(m, `${base}/alert/${m}`, undefined)));
+    } else if (realChannels) {
       const nodemailer = (await import('nodemailer')).default;
       sinks = channelsFromEnv(process.env, { createTransport: (o) => nodemailer.createTransport(o), context });
     } else {
