@@ -1,0 +1,91 @@
+{
+  "startedAt": "2026-11-25T05:42:47.913Z",
+  "gitCommit": "08c94b8333eb9e1aa30697c7351cb4148d4cd2e8",
+  "gitClean": true,
+  "manifest": {
+    "builds": {
+      "multisig-v8": "cde0fdb3e70df14784718aa913e5f3451a7567a2e464912ea386000ba7729b84",
+      "tariff-registry-v1": "aeefa611ae35509788a72cf1590eac0598a20ba94234187396d4d664a8e57e35",
+      "tariff-registry-v1-ceremony": "7d4b5029d1d516731fb92c95604b4f2cd4bdfdb14bc6fcc8a09d4008b891ab24",
+      "ebt-v8": "1cf3b7a136856ee987098ce360ee68bbe444b775f5588a165055ddf9ee714546",
+      "ebt-v8-ceremony": "bec0cebc1c25b903e9fd02e3ca9c539a6320df9b22bc07da322af070861d215d",
+      "living-dividend-v3": "6115257c515b88664fb32245db56858ea824e70d37b2b6b5d69e49d3de279959"
+    },
+    "deployCode": {
+      "tooling/deploy/deploy-suite.mjs": "2dde52d9b61e4c679b611689d0b6b4870d31f3d8d4fe572d23cb221e1cf73963",
+      "tooling/deploy/network.mjs": "cd47b382a82a513a2035c40385752a311aef765ac15b222387bfa9070d095fd4",
+      "tooling/deploy/finalize.mjs": "dce85202097ee40c50f40cdd383e0c87c92eef7d87e95bdba8fa36cd246738de",
+      "tooling/council/council-keys-guard.mjs": "93bb4e2cfcbe08437c2f5719c1660e1c0ba1b9688f2676c14ea6999131588193",
+      "tooling/midnight-providers.mjs": "eac9fe7593db2120e8d8db28a7fe5b020d608cd6b423a5f7750ced2a13b3e7b6",
+      "tooling/proving/serial-proof-provider.mjs": "9f6d1aa6fb9cddb895f74dced2b3da70d0aa263c7cf2b705bec5a7b09af388a8"
+    }
+  },
+  "proofServerResetPerProof": "ssh -o ConnectTimeout=15 kenya docker restart wi16-proof-server",
+  "network": "undeployed",
+  "proofServerRestartedAt": "2026-11-25T05:42:47.234Z",
+  "stages": [
+    {
+      "stage": "council",
+      "ok": true,
+      "seconds": 104
+    },
+    {
+      "stage": "tariff",
+      "ok": true,
+      "seconds": 1356
+    },
+    {
+      "stage": "ebt",
+      "ok": true,
+      "seconds": 756
+    },
+    {
+      "stage": "settle",
+      "ok": true,
+      "seconds": 114
+    },
+    {
+      "stage": "ld",
+      "ok": true,
+      "seconds": 337
+    },
+    {
+      "stage": "settle",
+      "ok": true,
+      "seconds": 114
+    },
+    {
+      "stage": "claim",
+      "ok": true,
+      "seconds": 71
+    },
+    {
+      "stage": "service",
+      "ok": true,
+      "seconds": 223
+    },
+    {
+      "stage": "relay",
+      "ok": true,
+      "seconds": 197
+    },
+    {
+      "stage": "watcher",
+      "ok": true,
+      "seconds": 109
+    },
+    {
+      "stage": "attacks",
+      "ok": true,
+      "seconds": 627
+    }
+  ],
+  "result": "pass",
+  "finishedAt": "2026-11-25T06:49:35.320Z",
+  "addresses": {
+    "council": "d8e83d51469e811cc2ff82f33aa83f09aee87added137bf8888ea3c4f1ff5a2b",
+    "tariffRegistry": "0ae958f00f655e3a938973d5cd89868679040969656871dea7b9005c3dc1c099",
+    "ebt": "ec634cbc10ec0d25f85fc8fcd4204c50b0c0de8b9994d79432cdf650bfde8354",
+    "livingDividend": "bf1ca5fdd9449d3f23920f12aac0dac291fe2186cf9d3f639ab3c5044b71500f"
+  }
+}
