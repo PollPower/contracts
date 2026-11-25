@@ -9,12 +9,20 @@
 //   - no input is a devnet test key (marked council keys; any Jubjub key derived
 //     from the devnet's public labels).
 // Inputs: a JSON file of PUBLIC keys and parameters (--inputs). The deploy
-// wallet seed comes from PREPROD_DEPLOY_WALLET_SEED and is never logged.
+// wallet seed comes from PREPROD_DEPLOY_WALLET_SEED_FILE (an owner-only file
+// outside every repo, as tooling/wallet/new-deploy-wallet.mjs writes it) or
+// PREPROD_DEPLOY_WALLET_SEED, and is never logged.
 // Each step deploys + finalizes (authority locked) one contract; the council
 // setup between steps (TR bootstrap, schedule, class) is done with the rings.
 //
 //   node tooling/deploy/preprod-ceremony.mjs --step council|tariff|ebt|ld \
 //        --inputs preprod-inputs.json --i-have-garretts-go-ahead
+//
+// Devnet dry run of this same entry (local devnet only; never with the
+// go-ahead flag): the same pass check, input guards and deploy suite, paid by
+// the devnet genesis wallet, recorded under build/devnet/:
+//   node tooling/deploy/preprod-ceremony.mjs --devnet-dry-run --make-inputs <file>
+//   node tooling/deploy/preprod-ceremony.mjs --devnet-dry-run --step council|tariff|ebt|ld --inputs <file>
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -22,6 +30,8 @@ import * as RT from '@midnight-ntwrk/compact-runtime';
 import { ROOT } from './network.mjs';
 import { suiteManifest, manifestDiff } from './deploy-suite.mjs';
 import { isDevnetCouncilPoint } from '../council/council-keys-guard.mjs';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { readSeedFile } from '../wallet/wallet-lib.mjs';
 
 const PASSES = path.join(ROOT, 'docs', 'devnet-passes');
 export const STEPS = ['council', 'tariff', 'ebt', 'ld'];
@@ -90,28 +100,83 @@ export function parseInputs(/** @type {any} */ raw) {
   return { council, tariff, ebt };
 }
 
+/**
+ * The deploy wallet seed: PREPROD_DEPLOY_WALLET_SEED_FILE (preferred; checked
+ * by readSeedFile: outside any repo, owner-only) or PREPROD_DEPLOY_WALLET_SEED.
+ * Never both; never echoed.
+ */
+export function deployWalletSeed(/** @type {Record<string, string | undefined>} */ env = process.env) {
+  const file = env.PREPROD_DEPLOY_WALLET_SEED_FILE, raw = env.PREPROD_DEPLOY_WALLET_SEED;
+  if (file && raw) throw new Error('set PREPROD_DEPLOY_WALLET_SEED_FILE or PREPROD_DEPLOY_WALLET_SEED, not both');
+  if (file) return readSeedFile(file);
+  if (raw) { if (!/^[0-9a-fA-F]{64}$/.test(raw.trim())) throw new Error('PREPROD_DEPLOY_WALLET_SEED must be 64 hex'); return raw.trim().toLowerCase(); }
+  throw new Error('PREPROD_DEPLOY_WALLET_SEED_FILE (or PREPROD_DEPLOY_WALLET_SEED) is required');
+}
+
+/**
+ * Dry-run inputs: fresh random keys in the Preprod input shape (never the
+ * devnet's marked or label-derived keys, so the same guards apply). The
+ * throwaway secrets are returned for the between-step rehearsal; devnet only.
+ */
+export function dryRunInputs() {
+  const big = (/** @type {Uint8Array} */ b) => b.reduce((a, x) => (a << 8n) | BigInt(x), 0n);
+  const council = [0, 1, 2].map(() => {
+    const sk = secp256k1.utils.randomSecretKey();
+    const raw = secp256k1.getPublicKey(sk, false);
+    return { sk: Buffer.from(sk).toString('hex'), point: { x: String(big(raw.slice(1, 33))), y: String(big(raw.slice(33, 65))) } };
+  });
+  const jub = () => { const sk = RT.jubjubSampleScalar(); const pk = RT.jubjubSchnorrVerifyingKey(sk); return { sk: String(sk), pk: { x: String(pk.x), y: String(pk.y) } }; };
+  const [validator, owner, meter, escrow] = [jub(), jub(), jub(), jub()];
+  const rnd = () => Buffer.from(secp256k1.utils.randomSecretKey()).toString('hex');
+  return {
+    inputs: {
+      council: { points: council.map((c) => c.point), threshold: '2' },
+      tariff: { governanceRootHex: rnd(), refRateFiatPerKwh: '100', validatorPk: validator.pk },
+      ebt: { ownerPk: owner.pk, meterAuthorityPk: meter.pk, escrowAttestorPk: escrow.pk, operationsRecipientHex: rnd(), daoRecipientHex: rnd() },
+    },
+    secrets: { note: 'DEVNET DRY RUN ONLY: throwaway keys, never used anywhere else', council: council.map((c) => c.sk), validator: validator.sk, owner: owner.sk, meterAuthority: meter.sk, escrowAttestor: escrow.sk },
+  };
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const arg = (/** @type {string} */ k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
-  if (!argv.includes('--i-have-garretts-go-ahead')) throw new Error('refusing: the Preprod deploy is a manual ceremony; pass --i-have-garretts-go-ahead');
+  const dry = argv.includes('--devnet-dry-run');
+  if (dry && argv.includes('--i-have-garretts-go-ahead')) throw new Error('refusing: --devnet-dry-run or --i-have-garretts-go-ahead, not both');
+  if (dry && arg('--make-inputs')) {
+    const out = path.resolve(String(arg('--make-inputs')));
+    if (fs.existsSync(out)) throw new Error(`refusing: ${out} exists`);
+    const d = dryRunInputs();
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(out, JSON.stringify(d.inputs, null, 2));
+    fs.writeFileSync(out.replace(/[.]json$/, '') + '.secrets.json', JSON.stringify(d.secrets, null, 2), { mode: 0o600 });
+    console.log(`[dry-run] inputs ${out} (+ throwaway secrets next to it)`);
+    process.exit(0);
+  }
+  if (!dry && !argv.includes('--i-have-garretts-go-ahead')) throw new Error('refusing: the Preprod deploy is a manual ceremony; pass --i-have-garretts-go-ahead');
   const step = arg('--step');
   if (!step || !STEPS.includes(step)) throw new Error(`--step must be one of ${STEPS.join(', ')}`);
   const { loadNetworkConfig, describeNetwork } = await import('../midnight-network.mjs');
   const net = loadNetworkConfig();
-  if (net.networkId !== 'preprod') throw new Error(`refusing: network is ${net.networkId}, not preprod`);
+  if (dry && net.networkId !== 'undeployed') throw new Error(`refusing: the dry run is local devnet only (undeployed), not ${net.networkId}`);
+  if (!dry && net.networkId !== 'preprod') throw new Error(`refusing: network is ${net.networkId}, not preprod`);
   const q = qualifyingPass(suiteManifest());
   if (!q.ok) throw new Error(`refusing: no passing fresh devnet record matches these builds and this deploy code:\n  ${q.reasons.join('\n  ')}`);
   const inputs = parseInputs(JSON.parse(fs.readFileSync(String(arg('--inputs')), 'utf8')));
-  const seed = process.env.PREPROD_DEPLOY_WALLET_SEED;
-  if (!seed) throw new Error('PREPROD_DEPLOY_WALLET_SEED is required');
   const { createWallet } = await import('../midnight-providers.mjs');
   const { openNetwork } = await import('./network.mjs');
   const suite = await import('./deploy-suite.mjs');
-  console.log(`[preprod] ${describeNetwork(net)}; step ${step}; builds match devnet pass ${q.file}`);
-  const recFile = path.join(ROOT, 'build', 'preprod', 'ceremony-record.json');
+  const tag = dry ? '[dry-run]' : '[preprod]';
+  console.log(`${tag} ${describeNetwork(net)}; step ${step}; builds match devnet pass ${q.file}`);
+  const recFile = dry
+    ? path.join(ROOT, 'build', 'devnet', `ceremony-dryrun-${path.basename(String(arg('--inputs')), '.json')}.record.json`)
+    : path.join(ROOT, 'build', 'preprod', 'ceremony-record.json');
   const rec = fs.existsSync(recFile) ? JSON.parse(fs.readFileSync(recFile, 'utf8')) : { devnetPass: q.file };
   const save = () => { fs.mkdirSync(path.dirname(recFile), { recursive: true }); fs.writeFileSync(recFile, JSON.stringify(rec, null, 2)); };
-  const dn = await openNetwork({ net, ctx: await createWallet(seed, net), storeName: 'pp-preprod-deploy', password: process.env.MIDNIGHT_PRIVATE_STATE_PASSWORD ?? '' });
+  const wallet = dry
+    ? await (await import('../devnet/devnet-wallet.mjs')).devnetMasterWallet(net)
+    : await createWallet(deployWalletSeed(), net);
+  const dn = await openNetwork({ net, ctx: wallet, storeName: dry ? 'pp-ceremony-dryrun' : 'pp-preprod-deploy', password: process.env.MIDNIGHT_PRIVATE_STATE_PASSWORD ?? '' });
   if (rec.council) dn.bind(rec.council, 'multisig-v8');
   if (rec.tr) dn.bind(rec.tr, 'tariff-registry-v1');
   if (rec.ebt) dn.bind(rec.ebt, 'ebt-v8');
@@ -122,7 +187,7 @@ async function main() {
   if (step === 'tariff') await suite.deployTariffRegistry(ctx, { ...inputs.tariff, witnesses: { charter_membership_proof: noop, witness_divmod: noop, action_log_path_bits: noop } });
   if (step === 'ebt') await suite.deployEbt(ctx, inputs.ebt);
   if (step === 'ld') await suite.deployLd(ctx, { witnesses: { witness_divmod: noop } });
-  console.log(`[preprod] ${step} deployed and finalized; record ${recFile}`);
+  console.log(`${tag} ${step} deployed and finalized; record ${recFile}`);
   process.exit(0);
 }
 

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import * as RT from '@midnight-ntwrk/compact-runtime';
-import { qualifyingPass, parseInputs, devnetJubjubKeys } from '../deploy/preprod-ceremony.mjs';
+import { qualifyingPass, parseInputs, devnetJubjubKeys, deployWalletSeed, dryRunInputs } from '../deploy/preprod-ceremony.mjs';
 import { devnetCouncilKey } from '../council/council-keys-guard.mjs';
 
 const MANIFEST = { builds: { 'ebt-v8': 'aa', 'multisig-v8': 'bb' }, deployCode: { 'tooling/deploy/deploy-suite.mjs': 'cc' } };
@@ -69,4 +69,36 @@ test('PC-5 (negative): the entry refuses without the go-ahead flag, on a non-Pre
   assert.match(run(['--step', 'council']), /manual ceremony/);
   assert.match(run(['--i-have-garretts-go-ahead']), /--step must be one of/);
   assert.match(run(['--step', 'council', '--i-have-garretts-go-ahead'], { MIDNIGHT_NETWORK_ID: 'undeployed', MIDNIGHT_NODE_URL: 'http://127.0.0.1:1', MIDNIGHT_INDEXER_URL: 'http://127.0.0.1:1/g' }), /not preprod/);
+});
+
+// Devnet dry run of the SAME entry (--devnet-dry-run): local devnet only,
+// never mixed with the Preprod go-ahead, same pass check and input guards.
+const runEntry = (args, env = {}) => {
+  try { execFileSync(process.execPath, ['tooling/deploy/preprod-ceremony.mjs', ...args], { env: { ...process.env, ...env }, stdio: 'pipe' }); return ''; } catch (e) { return String(e.stderr); }
+};
+const NET = (id) => ({ MIDNIGHT_NETWORK_ID: id, MIDNIGHT_NODE_URL: 'http://127.0.0.1:1', MIDNIGHT_INDEXER_URL: 'http://127.0.0.1:1/g' });
+
+test('PC-6 (negative): the dry run refuses any network but the local devnet, and never takes the Preprod go-ahead', () => {
+  assert.match(runEntry(['--step', 'council', '--devnet-dry-run'], NET('preprod')), /dry run is local devnet only/);
+  assert.match(runEntry(['--step', 'council', '--devnet-dry-run', '--i-have-garretts-go-ahead'], NET('undeployed')), /not both/);
+});
+
+test('PC-7: dry-run inputs are fresh non-devnet keys that pass the same input guards', () => {
+  const a = dryRunInputs();
+  const p = parseInputs(a.inputs);
+  assert.equal(p.council.points.length, 3);
+  assert.notDeepEqual(dryRunInputs().inputs.council.points[0], a.inputs.council.points[0], 'fresh each time');
+  assert.equal(a.secrets.council.length, 3, 'the dry run keeps its throwaway secrets for the between-step rehearsal');
+});
+
+test('PC-8: the deploy wallet seed comes from a seed file (outside any repo) or the env, never both, never missing', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ppseed-'));
+  const f = path.join(d, 'seed');
+  fs.writeFileSync(f, `${'ab'.repeat(32)}\n`, { mode: 0o600 });
+  assert.equal(deployWalletSeed({ PREPROD_DEPLOY_WALLET_SEED_FILE: f }), 'ab'.repeat(32));
+  assert.equal(deployWalletSeed({ PREPROD_DEPLOY_WALLET_SEED: 'cd'.repeat(32) }), 'cd'.repeat(32));
+  assert.throws(() => deployWalletSeed({ PREPROD_DEPLOY_WALLET_SEED_FILE: f, PREPROD_DEPLOY_WALLET_SEED: 'cd'.repeat(32) }), /not both/);
+  assert.throws(() => deployWalletSeed({}), /PREPROD_DEPLOY_WALLET_SEED_FILE/);
+  const inRepo = path.join(process.cwd(), 'build', 'x-seed');
+  assert.throws(() => deployWalletSeed({ PREPROD_DEPLOY_WALLET_SEED_FILE: inRepo }), /inside a git checkout/);
 });
