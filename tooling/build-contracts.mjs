@@ -23,6 +23,7 @@ export const CONTRACTS = {
   'living-dividend-v3': 'living-dividend/living-dividend-v3.compact',
   // Test fixture (never deployed): calls EBT's dividend callees directly.
   'fixture-dividend-caller': 'tests/fixtures/dividend-caller.compact',
+  'fixture-registry-anchor': 'tests/fixtures/registry-anchor-fake.compact',
 };
 export const BUILD_DIR = path.join(ROOT, 'build', 'l9');
 const EXPECTED = { compiler: '0.36.1', language: '0.28.0', runtime: '0.21.0' };
