@@ -45,3 +45,28 @@ test('SPV-3 (negative): a failed proof is reported and does not block the next o
   assert.equal(r[1].status, 'fulfilled');
   assert.equal(log.maxInFlight, 1);
 });
+
+// Fresh proof server before every proof (2026-11-25): the server keeps memory
+// between proofs (registerLane alone peaked 9.5 GiB, but after the other
+// tariff proofs it hit the 15 GiB cap and was OOM-killed), so a pass resets it
+// before each prove, inside the queue.
+test('SPV-4: beforeProve runs before every prove (not check), inside the queue', async () => {
+  const log = { order: [] };
+  const pp = serialProvingProvider(fakeBase(log), {
+    beforeProve: async () => { log.order.push('reset:start'); await new Promise((r) => setTimeout(r, 5)); log.order.push('reset:end'); },
+  });
+  await Promise.all([pp.prove(null, 'a'), pp.check(null, 'b'), pp.prove(null, 'c')]);
+  assert.deepEqual(log.order, ['reset:start', 'reset:end', 'prove:a:start', 'prove:a:end', 'check:b:start', 'check:b:end',
+    'reset:start', 'reset:end', 'prove:c:start', 'prove:c:end']);
+});
+
+test('SPV-5 (negative): a failed reset fails that proof (never proves on an unreset server) and the queue moves on', async () => {
+  const log = { order: [] };
+  let n = 0;
+  const pp = serialProvingProvider(fakeBase(log), { beforeProve: async () => { if (n++ === 0) throw new Error('restart failed'); } });
+  const r = await Promise.allSettled([pp.prove(null, 'a'), pp.prove(null, 'b')]);
+  assert.equal(r[0].status, 'rejected');
+  assert.match(String(r[0].reason), /restart failed/);
+  assert.equal(r[1].status, 'fulfilled');
+  assert.deepEqual(log.order, ['prove:b:start', 'prove:b:end']);
+});

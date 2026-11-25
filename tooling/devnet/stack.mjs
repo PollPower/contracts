@@ -1021,6 +1021,10 @@ if (RUN_ALL) {
   if (!up) { console.error(`[stack] REFUSING 'all': proof server not answering at ${url} after restart`); process.exit(3); }
   proofServerRestartedAt = new Date().toISOString();
   console.log('[stack] proof server restarted and answering');
+  // ...and on a fresh one for every proof (2026-11-25: memory retained across
+  // proofs pushed registerLane over the 15 GiB cap), via serialProofProvider.
+  process.env.MIDNIGHT_PROOF_SERVER_RESET ??= cmd;
+  console.log('[stack] proof server is restarted before every proof (MIDNIGHT_PROOF_SERVER_RESET)');
 }
 const dn = await openDevnet();
 const PASS = RUN_ALL ? {
@@ -1028,6 +1032,7 @@ const PASS = RUN_ALL ? {
   gitCommit: execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim(),
   gitClean: execSync('git status --porcelain -- tooling ebt multisig tariff-registry living-dividend', { cwd: ROOT }).toString().trim() === '',
   manifest: suiteManifest(),
+  proofServerResetPerProof: process.env.MIDNIGHT_PROOF_SERVER_RESET ?? null,
   network: dn.net.networkId,
   proofServerRestartedAt,
   stages: /** @type {any[]} */ ([]),
