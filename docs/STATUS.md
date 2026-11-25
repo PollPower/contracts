@@ -277,10 +277,11 @@ after KYC; everything above undeployed.
   that inserts the last key and locks the authority (`finalizeContract`), so
   the complete contract never exists with a live deployer key. Run the check
   against the indexer after the ceremony and record the result.
-- **SD-2 at the node:** a raw transaction (built without Midnight.js's
-  contract-type check) calling a circuit whose verifier key is not inserted
-  must be rejected by the node, with state unchanged. The devnet SD-2 so far
-  is refused client-side only.
+- ~~SD-2 at the node~~ **done 2026-11-26** (ceremony dry run, step
+  `sd2-node`, `tooling/deploy/sd2-node-check.mjs`): a client lying about the
+  contract state builds, proves and submits a call to a circuit whose
+  verifier key is not inserted on a staged EBT; **the node rejected it, state
+  byte-identical**; control: the same call on the finalized EBT was accepted.
 - **Secret scanning across all PollPower repos:** gitleaks pre-commit hook +
   CI job (plain binary; the gitleaks Action needs a paid license for orgs),
   custom rules for Midnight private-state stores and seed fields, and
