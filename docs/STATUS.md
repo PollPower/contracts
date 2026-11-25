@@ -280,16 +280,18 @@ after KYC; everything above undeployed.
 - **Locked maintenance authority on EBT, TariffRegistry and LD v3** on
   Preprod/mainnet (Garrett 2026-11-24); upgrades are a new version + council-
   approved migration.
-- **EBT reads the TariffRegistry root on chain** (Garrett 2026-11-25; after
-  the Nov 30 submission, before any Preprod deploy): today the EBT owner key
-  installs the registry action-log root (`mirrorActionLogRoot`), so a stolen
-  owner key could mirror a forged lane or split (REVIEW.md trust assumption
-  #5). Fix: a witness-free TariffRegistry view circuit (`actionLogAnchor`)
-  read by a permissionless EBT `syncRegistryRoot` through a cross-contract
-  call; `mirrorActionLogRoot` removed; constructor takes the registry
-  address, not a root. Possible only because the TariffRegistry is not
-  deployed yet. Attack tests RA-1..RA-8 first, tooling, full builds, sizes,
-  docs and a fresh devnet pass; ~3 dev-days + pass. Design:
+- **EBT reads the TariffRegistry root on chain** (fix #5; Garrett
+  2026-11-25): **implemented on branch `wi16-fix5`**, not merged, fresh pass
+  pending. TariffRegistry `actionLogAnchor` (witness-free, refused before the
+  bootstrap completes) read by a permissionless EBT `syncRegistryRoot`
+  through a cross-contract call; `mirrorActionLogRoot`, its owner digest and
+  `mirrorActionLogHead` removed; the constructor takes the registry address
+  (sealed). Attack tests RA-1..RA-8 written first (on the pre-fix build the
+  owner key installed a forged root and a settle paid the forged lane);
+  settle planner refuses while EBT is behind the registry; devnet run now
+  registers the lane after EBT's deploy (sync -> re-mirror -> settle) and
+  checks `RA-chain`. Full ZK builds: staged EBT 34.4 % and staged TR 36.1 %
+  of a block (each one tx). Design and the changes made while implementing:
   [`design/registry-root-anchor-design.md`](design/registry-root-anchor-design.md).
 - Done already: Gap C council gate on `manualReissue`, native attestation in
   meter-authority-service, epoch-0 retire fix, chip registry + nonce set.
