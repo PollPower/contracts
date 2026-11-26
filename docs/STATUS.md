@@ -228,6 +228,8 @@ after KYC; everything above undeployed.
   `docs/devnet-passes/2026-11-25T13-46-10-951Z-pass.json`. Merged into `wi16-ledger9` on 2026-11-26, before Preprod, at Garrett's request; the reviewed state is tag `review-base` (`f72ff34`).
 - **The ring key behind the July fragment is retired: never in any new council.**
 - **Pre-mainnet: decide stale-lane tolerance (CAL-vNext-M1); not a Preprod blocker.**
+- **Pre-mainnet (Garrett 2026-11-26): K7/K8 recipients are single wallets; mainnet needs treasury custody.** (EBT `operationsRecipient` / `daoRecipient` have no setter: fixed for the contract's life.)
+- **Pre-mainnet: the charter "empty root" (`4219f045...`) is not empty.** It is the depth-12 tree whose every leaf is the leaf hash of node ID `0x00..00`, so node ID 0 passes the charter check under it (schedule registration still needs the validator signature and council approval). A truly empty charter is a root with no known preimage (e.g. 32 zero bytes).
 - **Mainnet gate (Garrett 2026-11-26): the reference rate must be council-updatable (2-of-3, with a delay) or the band must follow the current rate; design it before mainnet.**
   Today (TariffRegistry v1): the retune band is +-`_SANITY_BAND_PCT` (20 %,
   symmetric, integer floor) around each **schedule's own** `refRateFiatPerKwh`,
