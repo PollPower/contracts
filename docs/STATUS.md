@@ -3,6 +3,21 @@
 Branch `wi16-ledger9`. Updated at the end of each task.
 Last update: 2026-11-24 (night JST), pre-devnet questions answered (design doc "Settle / reissue Q&A"): on-chain chip registry (council-gated) + chip-nonce replay set; reissue token hashed with expiry; devnet chip guard. Next: step 4 item 4, devnet scripts + LD v3 relayer.
 
+## Preprod deploy (2026-11-26)
+
+**Deployed and finalized on Midnight Preprod, 05:43-06:03 UTC** (ceremony run by
+Garrett; nothing else deployed): Multisig v8 `4a76f8a6...56d4`, TariffRegistry v1
+`0f6c4941...ab21`, EBT v8 `113bce4a...87af`, Living Dividend v3 `48b2c984...c7f1`
+(full addresses in DEPLOYMENTS.md). Builds and deploy code matched the devnet
+pass `2026-11-25T16-12-36-214Z`. Read-only checks after the ceremony: all four
+`checkFinalized` (every audited verifier key, authority locked); the council's
+3 slots equal the off-chain council file, threshold 2, epoch 0; TR, EBT and LD
+bound as designed; every constructor input equals the approved inputs file;
+EBT supply 0, Living Dividend not yet bound. Proof server peak 87 MiB (deploy
+and finalize transactions carry no contract proofs). Next: the first council
+approval (EBT op 0, bind Living Dividend; 21:00 JST, `tooling/council/council-approve.mjs`),
+then G16 (post-deploy setup, incl. the K5 swap) before any settle.
+
 ## Current state (2026-11-24, evening JST)
 
 **Done on `wi16-ledger9`:** H-1, C-2, C-1 council (Multisig v8, EBT, TR),

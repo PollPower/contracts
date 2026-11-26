@@ -1,10 +1,21 @@
 # Deployment Register
 
-Canonical register of PollPower smart contracts deployed on-chain. **All addresses below are on the Midnight Preview testnet; no PollPower contracts are deployed on mainnet.**
+Canonical register of PollPower smart contracts deployed on-chain. **Addresses are on the Midnight Preview testnet, except the Midnight Preprod section directly below; no PollPower contracts are deployed on mainnet.**
 
 For architectural context on each contract, see the top-level [README.md](./README.md) and the per-contract subdirectory READMEs. For settlement-service wiring that pins the active EBT contract, see [`ebt/settle-flow/ceremony.mjs`](./ebt/settle-flow/ceremony.mjs).
 
 Addresses marked **unverified** cannot be cross-checked against this repo's own records (the deploy manifest lives in a non-public service repo). Everything else is sourced from the repository files cited in the "Source" column.
+
+## Midnight Preprod (WI-16, ledger 9), 2026-11-26
+
+| Contract | Address (full) | Deployed | Status |
+|---|---|---|---|
+| **Multisig v8 (council, secp256k1, 2-of-3)** | `4a76f8a64fa2b87e707e2bc8686e3b8073ccadc8aa34f4540ba17b32432956d4` | 2026-11-26 | Finalized (8 audited verifier keys, maintenance authority locked) |
+| **TariffRegistry v1** | `0f6c4941d976e990e46ae6e924014bc3e1051182831d44fdfc23e5ff065dab21` | 2026-11-26 | Finalized (19 keys, locked); bound to the council; empty charter until G16 |
+| **EBT v8 (ledger 9)** | `113bce4ac1f366a571318be39738a3138d514d2323ee3238a25cb904a11287af` | 2026-11-26 | Finalized (20 keys, locked); bound to the council and the TariffRegistry; Living Dividend not yet bound (first council action) |
+| **Living Dividend v3** | `48b2c984fe4c3ced8ff3fe073501ba574462ad4977c8115be68a12723f3ac7f1` | 2026-11-26 | Finalized (10 keys, locked); bound to the EBT and the council |
+
+Deployed by the Preprod ceremony (`tooling/deploy/preprod-ceremony.mjs`, branch `wi16-ledger9` at `a77ed9c`; builds and deploy code matched the fresh devnet pass `docs/devnet-passes/2026-11-25T16-12-36-214Z-pass.json`). `checkFinalized` re-run read-only from the indexer after the ceremony: all four pass. Not yet live for settlement: the post-deploy setup (G16) is still to run. Look up on [Midnight Explorer (Preprod)](https://preprod.midnightexplorer.com/) by address.
 
 ## EBT (Energy-Backed Token)
 
