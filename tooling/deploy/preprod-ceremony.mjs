@@ -37,6 +37,7 @@ import { isDevnetCouncilPoint } from '../council/council-keys-guard.mjs';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { readSeedFile } from '../wallet/wallet-lib.mjs';
 import { defaultStateFile } from '../wallet/wallet-state.mjs';
+import { privateStatePassword } from '../wallet/private-state-password.mjs';
 
 const PASSES = path.join(ROOT, 'docs', 'devnet-passes');
 export const STEPS = ['council', 'tariff', 'ebt', 'ld'];
@@ -179,6 +180,8 @@ async function main() {
   const net = loadNetworkConfig();
   if (dry && net.networkId !== 'undeployed') throw new Error(`refusing: the dry run is local devnet only (undeployed), not ${net.networkId}`);
   if (!dry && net.networkId !== 'preprod') throw new Error(`refusing: network is ${net.networkId}, not preprod`);
+  // Checked before anything else opens (never printed).
+  const psPassword = privateStatePassword(process.env, dry ? { devnetDefault: 'Local-Devnet-Only-1' } : {});
   const q = qualifyingPass(suiteManifest());
   if (!q.ok) throw new Error(`refusing: no passing fresh devnet record matches these builds and this deploy code:\n  ${q.reasons.join('\n  ')}`);
   const inputs = parseInputs(JSON.parse(fs.readFileSync(String(arg('--inputs')), 'utf8')));
@@ -210,7 +213,7 @@ async function main() {
   // Keep the wallet state however the step ends (a failed step resumes from it).
   const keepState = async () => { if ('close' in wallet) { await wallet.close(); console.log(`${tag} wallet state saved`); } };
   const dn = await openNetwork({ net, ctx: wallet, storeName: dry ? 'pp-ceremony-dryrun' : 'pp-preprod-deploy',
-    password: process.env.MIDNIGHT_PRIVATE_STATE_PASSWORD ?? (dry ? 'Local-Devnet-Only-1' : '') });   // dry run: the devnet stack's local-only default
+    password: psPassword });   // Preprod: MIDNIGHT_PRIVATE_STATE_PASSWORD_FILE (owner-only); dry run: the devnet stack's local-only default
   if (rec.council) dn.bind(rec.council, 'multisig-v8');
   if (rec.tr) dn.bind(rec.tr, 'tariff-registry-v1');
   if (rec.ebt) dn.bind(rec.ebt, 'ebt-v8');

@@ -26,6 +26,7 @@ import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-p
 import { ROOT, loadModule, liveState } from '../deploy/network.mjs';
 import { checkRingResult, slotsFromLedger, assertSlotsMatchFile } from './council-approval-lib.mjs';
 import { hexToBytes } from '../tangem/ring-signature.mjs';
+import { privateStatePassword } from '../wallet/private-state-password.mjs';
 
 const hx = (/** @type {Uint8Array} */ b) => Buffer.from(b).toString('hex');
 const nowSec = () => BigInt(Math.floor(Date.now() / 1000));
@@ -134,6 +135,7 @@ async function main() {
     throw new Error(`REFUSED: ${v.count}/${v.threshold} approvals; execute needs the threshold`);
   }
 
+  const psPassword = privateStatePassword(process.env, dry ? { devnetDefault: 'Local-Devnet-Only-1' } : {});   // never printed
   // Transactions: the deploy wallet (persisted state, G3b) or the devnet genesis wallet.
   const { openPersistentWallet } = await import('../wallet/wallet-state.mjs');
   const { openNetwork, join } = await import('../deploy/network.mjs');
@@ -148,7 +150,7 @@ async function main() {
   }
   try {
     const dn = await openNetwork({ net, ctx: wallet, storeName: dry ? 'pp-approve-dryrun' : 'pp-preprod-approve',
-      password: process.env.MIDNIGHT_PRIVATE_STATE_PASSWORD ?? (dry ? 'Local-Devnet-Only-1' : '') });
+      password: psPassword });
     dn.bind(p.council, 'multisig-v8');
     dn.bind(p.ebt, 'ebt-v8');
     if (cmd === 'submit' && check) {
