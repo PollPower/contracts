@@ -289,7 +289,9 @@ after KYC; everything above undeployed.
   changes after the privacy check (fails closed without gitleaks), and CI
   (`.github/workflows/gitleaks.yml`) scans the full history with a pinned,
   checksum-verified gitleaks 8.30.1 binary. Full-history scans: 0 findings in
-  both repos. GitHub push protection on public repos: still to switch on.
+  both repos. ~~GitHub push protection~~ **done**: push protection and
+  Secret Protection are on for PollPower/contracts (confirmed 2026-11-26).
+  First CI runs: contracts passed (229 commits scanned, no leaks).
 - ~~Deploy wallet resyncs on every ceremony step~~ **done 2026-11-26 (G3b)**:
   `tooling/wallet/wallet-state.mjs` keeps the synced wallet state in one
   encrypted, owner-only file outside the repo (AES-256-GCM, key derived from
