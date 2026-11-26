@@ -569,6 +569,18 @@ Host and workstation notes are kept in the private ops repository
   and the new addresses after the redeploy, together with the C-1a signing
   change (secp256k1 approvals replace the `PollPowerMultiSig.v5` Ed25519
   action hashes in `services/actionHash.ts`).
+- **Admin app, next build (Garrett 2026-11-26):** the start screen still says
+  "3-of-5 governance" and "One of five trusted keys"; change both to 2-of-3
+  (the Preprod council is 2-of-3). The confirm step's "the other four admins
+  can rotate you out" needs the same fix ("the other two").
+- **Admin app bug: ring error 50003 needs an app restart.** 50003 is the Tangem
+  SDK's `Busy` (a new task while the previous one is still in progress). The
+  bridge (`modules/tangem-bridge`, `TangemBridgeModule.kt`) keeps one
+  `TangemSdk` per Activity and maps 50003 to `UNKNOWN_ERROR`, so the stuck
+  session survives until the app restarts. Fix: map `TangemSdkError.Busy` to
+  its own code, serialize bridge calls (one NFC task at a time, disable the
+  buttons while one runs), and on Busy rebuild the SDK instance instead of
+  needing a restart. Workaround in the ops ceremony checklist (section 4).
 
 ## Known gaps after C-1 council (tracked)
 
