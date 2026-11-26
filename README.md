@@ -1,6 +1,8 @@
 # PollPower Smart Contracts
 
 > **Current deployment:** the four ledger-9 contracts (Multisig v8, TariffRegistry v1, EBT v8, Living Dividend v3) are live on **Midnight Preprod** since 2026-11-26, governed by a **2-of-3 council of hardware rings** (Tangem, secp256k1). Addresses and explorer links: [On-chain addresses (Midnight Preprod)](#on-chain-addresses-midnight-preprod).
+>
+> 🎬 **Wave 3 demo video:** [youtu.be/3lS0bKYgUkE](https://youtu.be/3lS0bKYgUkE)
 
 **The rules of a working energy economy, written as code and enforced by a blockchain.** These are the smart contracts behind PollPower — a renewable-energy economy for rural Kenya — running on the [Midnight Network](https://midnight.network).
 
@@ -50,7 +52,7 @@ This repository is the **canonical, on-chain source** for every contract PollPow
 | [`multisig/multisig-v7-ed25519.compact`](./multisig/multisig-v7-ed25519.compact) | **Multisig v7 — Preview-era council multi-sig.** 3-of-5 Ed25519 with the contract address domain-bound into every signed action (nonce-bound `approve`/`execute`). Governs binding, meter approval, and authority rotation across the v7.4 stack. | 🗄️ **HISTORICAL (Preview)** — deployed 2026-07-05 (pilot-mock admins, see [STATUS](./producer-registry/STATUS.md)); removed by the Preview reset (2026-11-07) |
 | [`multisig/multisig-federated-v1.compact`](./multisig/multisig-federated-v1.compact) | **Federated council — research/next-gen governance.** A separate lineage from v7 (domain `pp:msfed:v1:*`). Implements the [Fractal Federation](#governance-the-fractal-federation) design: a fixed 5-seat council **re-drawn each epoch by sortition** (no add/remove admin → structurally kills H-3), a **constitutional floor** (rule changes need a member-referendum attestation on top of council quorum), **federation seats** (a seat can be a lower-tier council, entered via an attested-quorum witness), and **parent-convened dead-council recovery** (30-day liveness gate). See the [adversarial review](./multisig/FEDERATED-V1-REVIEW.md). | 📐 **DEV DRAFT** — full ZK build passes (19 circuits), 22/22 offline smoke; **not deployed**, not audited. |
 | [`multisig/multisig-v6-ed25519.compact`](./multisig/multisig-v6-ed25519.compact) | 3-of-5 Ed25519 council multi-sig. M-2 domain separation provided at the actionHash layer. | 🗄️ **HISTORICAL (Preview)** — superseded by v7; removed by the Preview reset (2026-11-07) |
-| [`multisig/multisig-v6.2-ed25519.compact`](./multisig/multisig-v6.2-ed25519.compact) | H-3 hardening of v6: hard-capped admin set (7), threshold coupled to set size (atomic, strict majority), majority floors on init + setThreshold. Built on the v6 production base (no Poseidon-in-app cost). | 🛠️ **STAGED** — compiles clean (compactc 0.30.0 `--skip-zk`), not yet deployed. See [UNBOUNDED-ADMIN-FINDING](./multisig/UNBOUNDED-ADMIN-FINDING.md). |
+| [`multisig/multisig-v6.2-ed25519.compact`](./multisig/multisig-v6.2-ed25519.compact) | H-3 hardening of v6: hard-capped admin set (7), threshold coupled to set size (atomic, strict majority), majority floors on init + setThreshold. Built on the v6 production base (no Poseidon-in-app cost). | 📐 **SUPERSEDED** — never deployed; Multisig v8 (on Preprod) closes H-3 (at most 7 slots, strict-majority threshold, duplicate keys rejected). See [UNBOUNDED-ADMIN-FINDING](./multisig/UNBOUNDED-ADMIN-FINDING.md). |
 | [`multisig/multisig-v6.1-ed25519.compact`](./multisig/multisig-v6.1-ed25519.compact) | In-circuit contractTag variant. Redundant with actionHash-layer separation; forces Poseidon into the mobile app. | 📐 **DESIGN ARTIFACT** — not deployed. See [M2-MITIGATION-NOTE](./multisig/M2-MITIGATION-NOTE.md). |
 | [`multisig/multisig-v5.compact`](./multisig/multisig-v5.compact) | Multisig v5. Single-admin self-governance. | ❌ **DEPRECATED** — H-2 finding: any single admin can mutate the admin set. See [migration plan](./multisig/H2-MIGRATION-PLAN.md). |
 | [`producer-registry/producer-registry-v2.compact`](./producer-registry/producer-registry-v2.compact) | **Producer Registry v2 — Preview-era registry.** Council-gated (3-of-5) list of approved meters with the contract address domain-bound into each `approve()` / `executeAddMeter()` action. Pre-flight check before any EBT mint. | 🗄️ **HISTORICAL (Preview)** — deployed 2026-07-05 (pilot-mock admins); removed by the Preview reset (2026-11-07) |
@@ -112,9 +114,9 @@ The full 18-circuit EBT v8 contract, deployed via the ceremony-fenced approach (
 
 Rehearsal manifests (deploy tx + 10 vk-insert tx receipts) at [`ebt/ceremony-artifacts/`](./ebt/ceremony-artifacts/).
 
-### Preview production — v7.4 contract generation (2026-07-05) {#the-v74-contract-generation-2026-07-05}
+### Preview (historical) — v7.4 contract generation (2026-07-05) {#the-v74-contract-generation-2026-07-05}
 
-The four-contract domain-bound stack, deployed and validated end-to-end on Preview. Council authority `e11cd3e8…ca0b`, threshold 3-of-5.
+The four-contract domain-bound stack that ran on Preview until the 2026-11-07 reset. Council authority `e11cd3e8…ca0b`, threshold 3-of-5 (pilot-mock keys). Superseded by the ledger-9 suite on Preprod.
 
 | Contract | Address | Deployed |
 |---|---|---|
@@ -126,7 +128,7 @@ The four-contract domain-bound stack, deployed and validated end-to-end on Previ
 
 > The **genesis demo** contract is a fresh zero-state Living Dividend deployed for the 2026-07-05 end-to-end validation (5 members register → settle → dividend mint → 5 claims → all 5 paid on-chain).
 
-### Prior Preview production (2026-06 generation)
+### Prior Preview generation (2026-06, historical)
 
 | Contract | Address | Deployed |
 |---|---|---|
@@ -186,35 +188,35 @@ A fresh two-wave audit reviewed the deployed v7.4.x stack, the Living Dividend, 
 
 | ID | Severity | Finding | Status |
 |---|---|---|---|
-| LD-C-1 | Critical | LD prune/bump time gates trusted a prover-controlled `witness_blockTimeGte` → an attacker could forge elapsed time and prune an *active* member | ✅ Fixed in **LD v2.2.2** (stdlib `blockTimeGte`); staged in [settlement-api](https://github.com/PollPower/settlement-api) |
-| LD-H-3 | High | LD `bumpOnMint` was unauthenticated → salt-squat DoS of dividend distribution | ✅ Fixed in **LD v2.2.2** (keeper-signature gate + `setKeeperAuthority`) |
+| LD-C-1 | Critical | LD prune/bump time gates trusted a prover-controlled `witness_blockTimeGte` → an attacker could forge elapsed time and prune an *active* member | ✅ Fixed in **LD v2.2.2** (stdlib `blockTimeGte`), never redeployed; **LD v3** (on Preprod) carries the fix structurally |
+| LD-H-3 | High | LD `bumpOnMint` was unauthenticated → salt-squat DoS of dividend distribution | ✅ Fixed in **LD v2.2.2** (keeper-signature gate); **LD v3** (on Preprod) has no keeper: members claim themselves |
 | EBT-H-1 | High | `producerAddr` (the mint target) not bound in the HAT signed payload → mint-redirection risk (revises the earlier "C-1 fully fixed" note) | ✅ **Fixed in EBT v8** — `settle` circuit now signs a 5-field HAT payload including `producerAddr` with domain separator `pollpower:ebt:v8:epoch1`. Verified present in the ceremony-deployed contract (2026-07-30). |
-| AUTH-H-1 | High | Pilot-mock council keys (same as H-1) | 📄 Open — Tangem ring ceremony |
+| AUTH-H-1 | High | Pilot-mock council keys (same as H-1) | ✅ **Resolved on Preprod (2026-11-26):** Multisig v8, a 2-of-3 council of hardware rings (Tangem, secp256k1, verified in-circuit); the mock keys were never used there |
 
-The LD fixes compile to a full ZK build and are mutation-tested; they await redeploy. **EBT-H-1 is fixed in the EBT v8 contract line** (deployed to Preview 2026-07-30). Remaining medium/low findings (active-attestation check on `settle`, generic `execute()` hardening, rotation-runbook drift) are tracked for the pre-mainnet pass. Backend/app findings from the same audit are remediated in the [pollpower-v2-api](https://github.com/PollPower/pollpower-v2-api), [settlement-api](https://github.com/PollPower/settlement-api), and the consumer/producer apps.
+The LD v2.2.2 fixes were never redeployed: Living Dividend v3 replaces that line on Preprod. **EBT-H-1 is fixed in the EBT v8 contract line** (first on Preview 2026-07-30; the ledger-9 revision is on Preprod). Remaining medium/low findings (active-attestation check on `settle`, generic `execute()` hardening, rotation-runbook drift) are tracked for the pre-mainnet pass. Backend/app findings from the same audit are remediated in the [pollpower-v2-api](https://github.com/PollPower/pollpower-v2-api), [settlement-api](https://github.com/PollPower/settlement-api), and the consumer/producer apps.
 
 ### Known limitations
 
-- **H-1 is operational, not code.** The 5 pilot admin keys are derived from `SHA-256("pollpower-pilot-mock-ring-i")`. They are publicly derivable. This is disclosed because it is demonstration architecture, not a security control. Real Tangem ring pubkeys replace these in the pre-mainnet ceremony. The Tangem hardware path is now validated end-to-end (a real council ring has been activated with an on-chip Ed25519 key); the remaining work is provisioning all five council rings and swapping them into the deployed multisig admin set, retiring the mock keys.
+- **H-1 is resolved on Preprod.** The Preview pilot ran on 5 publicly derivable pilot-mock admin keys (`SHA-256("pollpower-pilot-mock-ring-i")`), disclosed as demonstration architecture. The Preprod council (Multisig v8) is 2-of-3 hardware rings (Tangem, secp256k1); approvals are verified inside the circuit, and the council rotates in place with a 72 h delay.
 - **Community Poll v2 has per-transaction linkability.** Nullifier + tallyKey are public per vote transaction. An observer can link an anonymous commitment to its chosen option. Privacy holds across voters, not per transaction. Full ballot privacy (homomorphic tally) is v3 research.
-- **ProducerRegistry v1.1 and Multisig v6.1 are not deployed.** v1.1 exceeded the Preview block-size limit (18MB proving keys); both in-circuit `contractTag` variants are redundant with the actionHash-layer M-2 mitigation (the admin app binds the contract address into every signed preimage) and would force a Poseidon dependency into the mobile admin app. v1 and v6 continue as production. See [multisig/M2-MITIGATION-NOTE.md](./multisig/M2-MITIGATION-NOTE.md).
+- **ProducerRegistry v1.1 and Multisig v6.1 are not deployed.** v1.1 exceeded the Preview block-size limit (18MB proving keys); both in-circuit `contractTag` variants are redundant with the actionHash-layer M-2 mitigation (the admin app binds the contract address into every signed preimage) and would force a Poseidon dependency into the mobile admin app. (Preview-era; v1 and v6 were removed by the 2026-11-07 reset, and the ledger-9 suite does not use them.) See [multisig/M2-MITIGATION-NOTE.md](./multisig/M2-MITIGATION-NOTE.md).
 
 ---
 
 ## Governance: the Fractal Federation {#governance-the-fractal-federation}
 
-Every privileged operation — approving a producer, designating the Meter Authority, rotating keys, changing a threshold — goes through a **council multi-signature**. Today that council is the production **Multisig v7** (`multisig-v7-ed25519.compact`): a fixed **3-of-5 Ed25519** ring where every signed action is domain-bound to the exact contract it targets, so a signature for one contract can never be replayed against another. During the pilot one operator holds all five keys (the publicly-derivable *pilot-mock* keys, H-1); the pre-mainnet ceremony swaps in five hardware **Tangem** rings.
+Every privileged operation — approving a producer, designating the Meter Authority, rotating keys, changing a threshold — goes through a **council multi-signature**. Today that council is **Multisig v8** on Preprod (`multisig-v8-secp256k1.compact`): **2-of-3 hardware rings** (Tangem, secp256k1), with every approval verified inside the circuit and bound to one action hash, so an approval for one action or contract can never be replayed against another. The council rotates in place (2-of-3 approval, 72 h delay, cancelable). On Preview the pilot used a 3-of-5 Ed25519 council (Multisig v7) with publicly derivable pilot-mock keys (H-1).
 
-A flat 3-of-5 works for one pilot council. It does **not** scale to a network of village clusters, each of which needs local autonomy while still composing into a coherent whole. That scaling problem is what the **Fractal Federation** design addresses, and it is implemented (as a **DEV DRAFT, not yet deployed**) in [`multisig/multisig-federated-v1.compact`](./multisig/multisig-federated-v1.compact). Its four moving parts:
+A flat council works for one pilot. It does **not** scale to a network of village clusters, each of which needs local autonomy while still composing into a coherent whole. That scaling problem is what the **Fractal Federation** design addresses, and it is implemented (as a **DEV DRAFT, not yet deployed**) in [`multisig/multisig-federated-v1.compact`](./multisig/multisig-federated-v1.compact). Its four moving parts:
 
 1. **Sortition seats (no permanent admins).** The council is always exactly 5 seats, but `addAdmin`/`removeAdmin` are *removed*. Instead, each epoch the seats are **re-drawn by lottery** from the tier's membership via `executeRotateSeats`, which commits a `seedCommitment` so anyone can recompute the draw off-chain and verify it. Because the set size is fixed at 5, this *structurally eliminates* the H-3 "stack the admin set with puppets" attack that the flat v6/v7 lineage has to guard against with caps.
-2. **Constitutional floor.** Rule-changing operations (threshold, constitutional authority, parent authority) require **two independent approvals**: the council quorum **and** an Ed25519 attestation from a registered *constitutional authority* that a network-wide **member referendum** passed. In production that referendum instrument is **Community Poll v2** (already deployed) — the authority signs only if a designated poll shows the measure passed with the required turnout. So a captured council still cannot rewrite the rules; the members can veto from below.
+2. **Constitutional floor.** Rule-changing operations (threshold, constitutional authority, parent authority) require **two independent approvals**: the council quorum **and** an Ed25519 attestation from a registered *constitutional authority* that a network-wide **member referendum** passed. The intended referendum instrument is **Community Poll v2** (proven on Preview; not deployed on Preprod) — the authority signs only if a designated poll shows the measure passed with the required turnout. So a captured council still cannot rewrite the rules; the members can veto from below.
 3. **Federation seats.** A council seat may be a **lower-tier council's contract address** instead of a person's pubkey. That lower tier's quorum enters the parent as an **attested observation**: a registered attestor key co-signs `(seatId ‖ epoch ‖ actionHash)` after seeing the lower tier reach quorum on-chain (the same trust pattern as the Meter Authority). This is how clusters compose into regions without a central admin.
 4. **Parent-convened recovery.** A council that loses 3+ seats can never again reach quorum — including to rotate *itself*. If **no** council action lands for 30 days (block-time validated), a registered **parent authority** may trigger a single sortition rotation *without* council quorum. It **convenes, never appoints**: the parent's signature binds the incoming seats to a `seedCommitment`, so a parent that installs cronies produces an unverifiable draw — publicly visible misbehavior.
 
 Why this shape? Threshold quorums **compose multiplicatively** — controlling `(3/5)` of each tier down four levels is only ~13% of the leaves, so a naive tree of councils is *easier* to capture than a single council, not harder. The constitutional floor (members can always veto rule changes from below) and sortition (seats can't be permanently held) are the two load-bearing defenses that make a federation safe rather than merely convenient. The full rationale — including the capture math and its grounding in Ostrom's principle of nested enterprises — lives in the [PollPower White Paper v10.0](https://github.com/PollPower/whitepaper); the contract's own header documents each mechanism against the design, and [`multisig/FEDERATED-V1-REVIEW.md`](./multisig/FEDERATED-V1-REVIEW.md) is its adversarial review.
 
-**Status:** `multisig-federated-v1` is a design exploration. It compiles to a full ZK build (19 circuits) and passes 22/22 offline smoke tests, but it is **not deployed, not audited, and not on the pilot's critical path.** The pilot runs on the flat Multisig v7. Federation is how PollPower intends to grow *beyond* the pilot.
+**Status:** `multisig-federated-v1` is a design exploration. It compiles to a full ZK build (19 circuits) and passes 22/22 offline smoke tests, but it is **not deployed, not audited, and not on the pilot's critical path.** The pilot runs on the flat Multisig v8. Federation is how PollPower intends to grow *beyond* the pilot.
 
 ---
 
@@ -222,20 +224,20 @@ Why this shape? Threshold quorums **compose multiplicatively** — controlling `
 
 EBT cannot be minted unless every party with a role agrees, by signature. No single key — including any held by PollPower — can produce a mint by itself.
 
-**Current path (EBT v8, proven end-to-end on Preview 2026-08-05):**
+**Current path (EBT v8, ledger-9 revision, on Preprod since 2026-11-26; post-deploy setup G16 pending):**
 
-v8 moves the slice policy out of the contract and onto a **mirrored TariffRegistry root**, so tariff classes can be retuned by council governance without redeploying the settlement contract. Each mint proceeds:
+v8 moves the slice policy out of the contract and onto the **TariffRegistry**, so tariff classes can change under council governance without redeploying the settlement contract. Each mint proceeds:
 
 1. A consumer pays KES at a metered outlet.
-2. The **gateway hardware** signs the meter reading with its Ed25519 key. The signature covers session ID, hardware pubkey, amount, AND the producer's wallet address.
-3. The **Meter Authority (HAT)** (whose pubkey is set by the council) signs a **5-field HAT payload** that binds `producerAddr` — the mint target — with domain separator `pollpower:ebt:v8:epoch1` (the EBT-H-1 fix, closing the mint-redirection gap).
-4. Tariff policy is sourced from the **TariffRegistry**, not hardcoded in the contract. A class is retuned on the registry (`retuneClass`), and an off-chain **mirror daemon** advances that change into the EBT contract's registry surface (`mirrorActionLogRoot` / `mirrorClassStatutoryTotal` / `mirrorActionLogHead`), so `settle` reads a coherent mirrored class total.
-5. `settle()` verifies the gateway + HAT signatures, the attestation binding, and the mirrored class totals, then mints `_totalSupply` **as an unshielded ledger token directly to the producer's wallet** in exact policy slices — the recipient owns the minted UTXO on chain, not the submitter.
-6. `claimSplit()` distributes the operations / dividend / DAO slices per the mirrored policy; `redeem()` handles producer KES/kWh redemption; `revokeProducerOwnership()` closes the producer attestation.
+2. The producer's **HAT chip** (registered on chain by the council, bound to its meter, producer and payout address) meters the session and signs its own native attestation (Ed25519, on chip).
+3. The **Meter Authority** checks the chip's attestation and countersigns the settle record (Jubjub Schnorr, verified in-circuit). The record binds `producerAddr`, the mint target (the EBT-H-1 fix), and the chip's metered energy; the minted amount must equal that energy, and each chip nonce settles once.
+4. Tariff policy comes from the **TariffRegistry**: the council registers schedules and lanes, the schedule operator retunes the class split. Anyone can sync EBT with the registry's action-log root (`syncRegistryRoot`) and mirror each change into EBT with a Merkle proof, so `settle` reads a proven copy.
+5. `settle()` checks the chip registration, the Meter Authority signature, the producer attestation and the mirrored split and lanes, then mints **unshielded EBT directly to the producer's wallet** in exact policy slices.
+6. `claimSplit()` distributes the operations / DAO slices; the dividend slice accrues for **Living Dividend v3**, whose members claim themselves (LD calls EBT `mintDividend` in the same transaction). `redeem()` handles KES/kWh redemption.
 
-On **2026-08-05** the full `retune → mirror → settle → revoke` lifecycle ran on-chain end-to-end — `_totalSupply` **0 → 100,000** with a real Meter-Authority signature, six transactions all `SucceedEntirely`. See [EBT v8 on-chain flow](#ebt-v8--full-settle-flow-2026-08-05) for the tx ledger and [`ebt/SETTLE-FLOW-E2E.md`](./ebt/SETTLE-FLOW-E2E.md) for the runbook. Three independent signing roles (gateway, Meter Authority, council-governed registry); no single party completes the path alone.
+The settle flow below was first proven on Preview with the earlier v8 revision: **2026-08-05** the full `retune → mirror → settle → revoke` lifecycle ran on-chain end-to-end — `_totalSupply` **0 → 100,000** with a real Meter-Authority signature, six transactions all `SucceedEntirely`. See [EBT v8 on-chain flow](#ebt-v8--full-settle-flow-2026-08-05) for the tx ledger and [`ebt/SETTLE-FLOW-E2E.md`](./ebt/SETTLE-FLOW-E2E.md) for the runbook. Three independent signing roles (gateway, Meter Authority, council-governed registry); no single party completes the path alone.
 
-**The dividend loop (Living Dividend v2.2.1, validated live 2026-07-05):** on each sale, `claimSplit()` mints the dividend slice into the Living Dividend pool. A keeper bumps the pool's `accPerShare` accumulator across all living members, each member claims their accrued share on demand, and an off-chain batch payer settles the payouts. On 2026-07-05 this ran end-to-end from a zero-state pool — 5 members registered, 1 sale settled, and all 5 members claimed and were paid on-chain.
+**The Preview dividend loop (Living Dividend v2.2.1, historical, validated 2026-07-05):** on each sale, `claimSplit()` mints the dividend slice into the Living Dividend pool. A keeper bumps the pool's `accPerShare` accumulator across all living members, each member claims their accrued share on demand, and an off-chain batch payer settles the payouts. On 2026-07-05 this ran end-to-end from a zero-state pool — 5 members registered, 1 sale settled, and all 5 members claimed and were paid on-chain.
 
 **Predecessor path (EBT v7, active 2026-06-17 → superseded on Preview by v8):** before v8, the slice policy lived *inside* the contract. `settle()` verified the gateway + Meter-Authority signatures, the attestation binding (M-1), an in-contract BPS slice policy, and the session replay guard, then minted the producer's slice directly to their wallet; `claimSplit()` distributed the ops / dividend / DAO slices. v7 introduced the unshielded contract-mint model (a third party provably receives contract-minted value without trusting the submitter) and the C-1 producer-binding fix. It remains on chain for provenance. The key v7 → v8 change: **tariff policy moved from a hardcoded in-contract BPS split to a council-governed, daemon-mirrored TariffRegistry root, and the HAT signature grew to bind `producerAddr` (EBT-H-1).**
 
@@ -245,13 +247,18 @@ On **2026-08-05** the full `retune → mirror → settle → revoke` lifecycle r
 
 [Compact](https://docs.midnight.network/develop/tutorial/building) is the smart-contract language for Midnight, syntactically similar to TypeScript with ZK-aware semantics. The contracts are small enough to read in one sitting:
 
-- `ebt-v8.compact` — the next-generation settlement contract (18 circuits; TariffRegistry-mirrored `settle` + full governance/redemption/mirror surface). Deployed to Preview 2026-07-30 via ceremony-fenced approach; see [`ebt/V8-CEREMONY-FENCE.md`](./ebt/V8-CEREMONY-FENCE.md) for the deploy split rationale.
-- `ebt-v7.4.2.compact` — the current settlement contract (two signature verifications + BPS policy + unshielded mint + domain-bound dividend salt)
-- `living-dividend-v2.2.1.compact` — the current dividend pool (`accPerShare` accumulator + claim-on-demand + death filter)
-- `multisig-v7-ed25519.compact` — the current 3-of-5 council multi-sig
+Deployed on Preprod (ledger 9):
+
+- `ebt/ebt-v8.compact` — the settlement contract (TariffRegistry-mirrored `settle`, chip registry, redemption, council and owner operations); deployed staged from `ebt-v8-ceremony.compact`
+- `tariff-registry/tariff-registry-v1.compact` — schedules, class splits, statutory lanes, the action log EBT mirrors
+- `living-dividend/living-dividend-v3.compact` — members claim their own dividend; EBT mints it to their payout address
+- `multisig/multisig-v8-secp256k1.compact` — the 2-of-3 hardware-ring council (in-circuit secp256k1, in-place rotation)
+
+Design drafts and the Preview generation:
+
 - `multisig-federated-v1.compact` — the DEV-DRAFT [Fractal Federation](#governance-the-fractal-federation) council (sortition + constitutional floor)
-- `producer-registry-v2.compact` — the current council-gated meter registry
-- `community-poll-v2.compact` — KYC'd, Sybil-resistant community polls
+- `ebt-v7.4.2.compact`, `living-dividend-v2.2.1.compact`, `multisig-v7-ed25519.compact`, `producer-registry-v2.compact` — the Preview v7.4 generation (historical)
+- `community-poll-v2.compact` — KYC'd, Sybil-resistant community polls (Preview, historical)
 
 Earlier versions (v7, v7.1, v5.x; LD v1; Multisig v6.x; Registry v1.x) remain in-tree for provenance.
 
