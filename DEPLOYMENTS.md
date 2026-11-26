@@ -17,6 +17,8 @@ Addresses marked **unverified** cannot be cross-checked against this repo's own 
 
 Deployed by the Preprod ceremony (`tooling/deploy/preprod-ceremony.mjs`, branch `wi16-ledger9` at `a77ed9c`; builds and deploy code matched the fresh devnet pass `docs/devnet-passes/2026-11-25T16-12-36-214Z-pass.json`). `checkFinalized` re-run read-only from the indexer after the ceremony: all four pass. Not yet live for settlement: the post-deploy setup (G16) is still to run. Look up on [Midnight Explorer (Preprod)](https://preprod.midnightexplorer.com/) by address.
 
+**Explorer:** `https://preprod.midnightexplorer.com/`, then search by the contract address (there is no direct per-contract URL). Checked 2026-11-26 (Garrett): the explorer shows all four contracts; Living Dividend v3 was deployed at block #3,583,237 and its authority-lock (finalize) update landed at #3,583,241.
+
 ## EBT (Energy-Backed Token)
 
 | Contract | Address (full) | Deployed | Status | Used by | Source |
