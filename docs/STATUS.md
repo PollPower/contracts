@@ -27,6 +27,25 @@ approvals for it (epoch 0, threshold 2, slots still equal the council file);
 EBT and LD still `checkFinalized`; EBT supply 0. G16's LD-bind item is done;
 the rest of G16 (TR bootstrap, charter root, schedule, lanes, K5 swap) is next.
 
+## G16 preparation (branch `wi16-g16-prep`, 2026-11-26; nothing on Preprod)
+
+G16 runs after the Wave 3 submission, on Garrett's go. Prepared:
+- `tooling/g16/g16-lib.mjs`: pure plans for every step (charter tree, the
+  advanceEpoch action hash, params validation against K3, the retune nonce
+  and band witnesses, EBT mirror catch-up by action-log kind, K5 swap).
+  `tests/contract/g16-setup.test.mjs` runs them on the compiled contracts from
+  the Preprod starting state (zero root, 3200): G16-1..6, 4 negative.
+- `tooling/council/council-actions.mjs`: `council-approve.mjs` now takes
+  `--action ld-bind | tr-charter | tr-schedule | tr-lane`; execute re-plans
+  from the chain and refuses unless it yields the approved hash.
+- `tooling/g16/g16-step.mjs`: status, bootstrap, retune (operator key),
+  ebt-mirror, k5-swap (owner key K4). New keygen role `schedule-operator`.
+- `tooling/council/council-action-check.mjs`: general read-only checker
+  (approval count, consumed, the action's read-back, still finalized); checked
+  against the Preprod LD bind (all OK). Tests CK-1..3, DS-1.
+- Devnet dry run: ops `contracts/scripts/g16-dry-run.sh`; plan and times in
+  the ops checklist section 5a.
+
 ## Current state (2026-11-24, evening JST)
 
 **Done on `wi16-ledger9`:** H-1, C-2, C-1 council (Multisig v8, EBT, TR),

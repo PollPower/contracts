@@ -98,4 +98,14 @@ export function signOwnerAction({ mod, keyFile, passphrase, circuit, args, ebtAd
   return RT.jubjubSchnorrSign(MSG_TYPE, [msg], loadSecret(keyFile, passphrase, { checkMode }));
 }
 
+/**
+ * Signs one Field (a contract's signerMessage / hatMessage etc.) with a Jubjub
+ * key file in this format (validator, operator, meter authority). The secret
+ * never leaves this function.
+ */
+export function signFieldWithKeyFile({ keyFile, passphrase, msg, checkMode }) {
+  if (!passphrase) throw new Error(`a passphrase is required for ${keyFile}`);
+  return RT.jubjubSchnorrSign(MSG_TYPE, [msg], loadSecret(keyFile, passphrase, { checkMode }));
+}
+
 export const sigToJson = (s) => ({ announcement: { x: s.announcement.x.toString(), y: s.announcement.y.toString() }, response: s.response.toString() });

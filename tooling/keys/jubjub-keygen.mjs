@@ -1,9 +1,10 @@
 // @ts-check
 // Creates a Preprod constructor key (Jubjub) that Garrett holds: K1 tariff
-// validator, K4 EBT owner, K6 escrow attestor. GARRETT RUNS THIS HIMSELF.
+// validator, K4 EBT owner, K6 escrow attestor, and the G16 schedule operator
+// (retunes the class; its public key goes into the G16 params). GARRETT RUNS THIS HIMSELF.
 //
 //   $env:KEYGEN_PASSPHRASE = <from Read-Host -AsSecureString, never typed on the command line>
-//   node tooling/keys/jubjub-keygen.mjs --role <tariff-validator|ebt-owner|escrow-attestor> --key <file>
+//   node tooling/keys/jubjub-keygen.mjs --role <tariff-validator|ebt-owner|escrow-attestor|schedule-operator> --key <file>
 //
 // Writes the key encrypted (owner-key format: salt | iv | tag | AES-256-GCM of
 // the 32-byte scalar, key from PBKDF2-SHA256(passphrase, 200k); owner-sign.mjs
@@ -19,7 +20,7 @@ import { gitWorkTreeOf, ownerOnly } from '../wallet/wallet-lib.mjs';
 import { devnetJubjubKeys } from '../deploy/preprod-ceremony.mjs';
 
 /** Role -> the field of the ceremony inputs file the public key goes into. */
-export const ROLES = Object.freeze({ 'tariff-validator': 'tariff.validatorPk', 'ebt-owner': 'ebt.ownerPk', 'escrow-attestor': 'ebt.escrowAttestorPk' });
+export const ROLES = Object.freeze({ 'tariff-validator': 'tariff.validatorPk', 'ebt-owner': 'ebt.ownerPk', 'escrow-attestor': 'ebt.escrowAttestorPk', 'schedule-operator': 'g16 params: schedule.operatorPk' });
 
 /**
  * @param {{ role: string, file: string, passphrase: string | undefined }} o

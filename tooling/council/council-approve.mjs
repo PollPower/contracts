@@ -1,11 +1,12 @@
 // @ts-check
-// Council approval with the rings (Multisig v8), first used on Preprod for the
-// EBT -> Living Dividend binding (EBT council op 0, needed in G16 anyway).
+// Council approval with the rings (Multisig v8). Actions (council-actions.mjs):
+// ld-bind (EBT op 0, done on Preprod 2026-11-26), and for G16 tr-charter,
+// tr-schedule (the validator key K1 signs at execute) and tr-lane (--lane <i>).
 //
-//   prepare  --action ld-bind --out <pending.json>                      read-only: computes the hash to sign
+//   prepare  --action <name> --out <pending.json> [--g16 <params>] [--lane i]   read-only: computes the hash to sign
 //   status   --pending <pending.json>                                    read-only: approvals so far
 //   submit   --pending <pending.json> --result <ring-result.json> [--slot N]   one approval (a transaction)
-//   execute  --pending <pending.json>                                    runs the approved action (a transaction)
+//   execute  --pending <pending.json> [--g16 <params>] [--key <file> | --dry-keys <file>]   runs the approved action (a transaction)
 //
 // Common: --record <ceremony record> (default build/preprod/ceremony-record.json),
 // --inputs <inputs file> (the escrow-attestor key the op-0 hash binds), and
@@ -27,6 +28,8 @@ import { ROOT, loadModule, liveState } from '../deploy/network.mjs';
 import { checkRingResult, slotsFromLedger, assertSlotsMatchFile } from './council-approval-lib.mjs';
 import { hexToBytes } from '../tangem/ring-signature.mjs';
 import { privateStatePassword } from '../wallet/private-state-password.mjs';
+import { actionOf } from './council-actions.mjs';
+import { loadG16, trWitnesses, signer } from '../g16/g16-context.mjs';
 
 const hx = (/** @type {Uint8Array} */ b) => Buffer.from(b).toString('hex');
 const nowSec = () => BigInt(Math.floor(Date.now() / 1000));
@@ -36,8 +39,15 @@ function args(/** @type {string[]} */ argv) {
   return { cmd: argv[0], arg, has: (/** @type {string} */ k) => argv.includes(k) };
 }
 
+/** Action name of a pending file (files from before council-actions.mjs carry only the label). */
+export function actionKeyOf(/** @type {any} */ p) {
+  if (p.actionKey) return String(p.actionKey);
+  if (String(p.action).startsWith('ld-bind')) return 'ld-bind';
+  throw new Error('pending file has no actionKey');
+}
+
 /** Read-only view of the chain (indexer only, no wallet). */
-function reader(/** @type {any} */ net) {
+export function reader(/** @type {any} */ net) {
   const pdp = indexerPublicDataProvider({ queryURL: net.indexer, subscriptionURL: net.indexerWS });
   const dn = { providersFor: () => ({ publicDataProvider: pdp }) };
   return {
@@ -57,7 +67,7 @@ export function approvalKeyOf(/** @type {Uint8Array} */ h, /** @type {bigint} */
 }
 
 /** On-chain council slots (checked against the council file), epoch, and who approved this action. */
-async function councilView(/** @type {any} */ rd, /** @type {any} */ p, /** @type {string} */ councilKeysFile) {
+export async function councilView(/** @type {any} */ rd, /** @type {any} */ p, /** @type {string} */ councilKeysFile) {
   const L = await rd.ledger('multisig-v8', p.council);
   const slots = slotsFromLedger(L);
   assertSlotsMatchFile(slots, JSON.parse(fs.readFileSync(councilKeysFile, 'utf8')).council);
@@ -82,35 +92,34 @@ async function main() {
   const rd = reader(net);
   const tag = dry ? '[approve:dry-run]' : '[approve:preprod]';
 
+  const recFile = path.resolve(String(arg('--record') ?? path.join(ROOT, 'build', 'preprod', 'ceremony-record.json')));
+  const inputs = arg('--inputs') ? JSON.parse(fs.readFileSync(String(arg('--inputs')), 'utf8')) : null;
+  const g16 = arg('--g16') ? loadG16(String(arg('--g16')), inputs) : null;
+  const ctx = { rec: null, inputs, g16, ledger: rd.ledger, module: loadModule };
+
   if (cmd === 'prepare') {
-    if (arg('--action') !== 'ld-bind') throw new Error('--action must be ld-bind (EBT council op 0: bind Living Dividend v3, once)');
-    const recFile = path.resolve(String(arg('--record') ?? path.join(ROOT, 'build', 'preprod', 'ceremony-record.json')));
+    const name = String(arg('--action'));
+    const action = actionOf(name);
     const rec = JSON.parse(fs.readFileSync(recFile, 'utf8'));
-    for (const k of ['council', 'ebt', 'ld']) if (!rec[k] || !rec[`${k}Final`]) throw new Error(`record ${recFile}: ${k} is not deployed and finalized`);
-    const inputs = JSON.parse(fs.readFileSync(String(arg('--inputs')), 'utf8'));
-    const esc = inputs.ebt?.escrowAttestorPk;
-    if (!esc) throw new Error('--inputs: no ebt.escrowAttestorPk');
-    const escrow = { x: BigInt(esc.x), y: BigInt(esc.y) };
+    for (const k of action.needs) if (!rec[k] || !rec[`${k}Final`]) throw new Error(`record ${recFile}: ${k} is not deployed and finalized`);
     const out = path.resolve(String(arg('--out') ?? ''));
     if (!arg('--out') || fs.existsSync(out)) throw new Error('--out <new pending.json> is required and must not exist');
-    const ebtL = await rd.ledger('ebt-v8', rec.ebt);
-    if (ebtL._livingDividendAddress.is_some) throw new Error('REFUSED: Living Dividend is already bound in this EBT');
-    const ebtMod = await loadModule('ebt-v8');
     const ms = await loadModule('multisig-v8');
     const t = nowSec();
-    const actionHash = ebtMod.pureCircuits.councilActionHash(hexToBytes(rec.ebt), 0n, { bytes: hexToBytes(rec.ld) }, escrow, t);
+    const prep = await action.prepare({ ...ctx, rec }, t, { lane: arg('--lane') });
     const msL = await rd.ledger('multisig-v8', rec.council);
     assertSlotsMatchFile(slotsFromLedger(msL), JSON.parse(fs.readFileSync(councilKeys, 'utf8')).council);
     const epoch = BigInt(msL._epoch);
-    const digest = ms.pureCircuits.approvalDigest(hexToBytes(rec.council), actionHash, epoch);
+    const digest = ms.pureCircuits.approvalDigest(hexToBytes(rec.council), prep.actionHash, epoch);
     const p = {
-      network: net.networkId, action: 'ld-bind (EBT council op 0)', council: rec.council, ebt: rec.ebt, ld: rec.ld,
-      escrowAttestorPk: { x: String(escrow.x), y: String(escrow.y) }, time: String(t), epoch: String(epoch),
-      threshold: String(msL._threshold), actionHash: hx(actionHash), digest: hx(digest),
+      network: net.networkId, actionKey: name, action: action.label, council: rec.council,
+      ...Object.fromEntries(['tr', 'ebt', 'ld'].filter((k) => rec[k]).map((k) => [k, rec[k]])),
+      ...prep.fields, time: String(t), epoch: String(epoch),
+      threshold: String(msL._threshold), actionHash: hx(prep.actionHash), digest: hx(digest),
     };
     fs.writeFileSync(out, JSON.stringify(p, null, 2) + '\n', { flag: 'wx' });
     console.log(`${tag} ${describeNetwork(net)}`);
-    console.log(`${tag} action: bind Living Dividend ${rec.ld} in EBT ${rec.ebt} (op 0, once)`);
+    console.log(`${tag} action: ${prep.describe}`);
     console.log(`${tag} council ${rec.council}, epoch ${epoch}, threshold ${msL._threshold} of 3; slots match the council file`);
     console.log(`\nHASH TO SIGN (each member, on the ring-check screen):\n\n    ${hx(digest)}\n`);
     console.log(`${tag} pending approval written: ${out}`);
@@ -152,7 +161,8 @@ async function main() {
     const dn = await openNetwork({ net, ctx: wallet, storeName: dry ? 'pp-approve-dryrun' : 'pp-preprod-approve',
       password: psPassword });
     dn.bind(p.council, 'multisig-v8');
-    dn.bind(p.ebt, 'ebt-v8');
+    if (p.ebt) dn.bind(p.ebt, 'ebt-v8');
+    if (p.tr) dn.bind(p.tr, 'tariff-registry-v1');
     if (cmd === 'submit' && check) {
       const council = await join(dn, 'multisig-v8', p.council);
       const t0 = Date.now();
@@ -160,13 +170,16 @@ async function main() {
       const after = await councilView(rd, p, councilKeys);
       console.log(`${tag} approval by slot ${check.slot} landed in ${((Date.now() - t0) / 1000).toFixed(0)}s; approvals ${after.count}/${after.threshold} (slots ${after.bySlot.join(', ')})`);
     } else {
-      const ebt = await join(dn, 'ebt-v8', p.ebt);
+      const action = actionOf(actionKeyOf(p));
+      const sign = action.signer ? signer({ role: action.signer, dry, keyFile: arg('--key'), dryKeys: arg('--dry-keys') }).sign : undefined;
+      const call = await action.call(ctx, p, sign);
+      const c = await join(dn, call.build, call.address, call.build === 'tariff-registry-v1' ? trWitnesses(g16) : null);
       const t0 = Date.now();
-      await ebt.callTx.execMultisigOp(0n, { bytes: hexToBytes(p.ld) }, { x: BigInt(p.escrowAttestorPk.x), y: BigInt(p.escrowAttestorPk.y) }, BigInt(p.time));
-      const L = await rd.ledger('ebt-v8', p.ebt);
-      const bound = L._livingDividendAddress.is_some ? hx(L._livingDividendAddress.value.bytes) : '(none)';
-      if (bound !== String(p.ld).toLowerCase()) throw new Error(`EBT reports Living Dividend ${bound}, expected ${p.ld}`);
-      console.log(`${tag} executed in ${((Date.now() - t0) / 1000).toFixed(0)}s: EBT ${p.ebt} now binds Living Dividend ${bound}`);
+      await c.callTx[call.circuit](...call.args);
+      const checks = await action.verify(ctx, p);
+      for (const [ok, msg] of checks) console.log(`${tag} ${ok ? 'OK  ' : 'FAIL'} ${msg}`);
+      if (checks.some(([ok]) => !ok)) throw new Error('the executed action does not read back as approved');
+      console.log(`${tag} executed in ${((Date.now() - t0) / 1000).toFixed(0)}s: ${p.action}`);
     }
   } finally {
     if ('close' in wallet) { await wallet.close(); console.log(`${tag} wallet state saved`); }

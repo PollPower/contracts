@@ -37,13 +37,15 @@ test('KG-1: writes an encrypted owner-only key file and returns only the public 
 });
 
 test('KG-2: each role maps to its inputs field; two runs give different keys', () => {
-  assert.deepEqual(ROLES, { 'tariff-validator': 'tariff.validatorPk', 'ebt-owner': 'ebt.ownerPk', 'escrow-attestor': 'ebt.escrowAttestorPk' });
+  assert.deepEqual(ROLES, { 'tariff-validator': 'tariff.validatorPk', 'ebt-owner': 'ebt.ownerPk', 'escrow-attestor': 'ebt.escrowAttestorPk', 'schedule-operator': 'g16 params: schedule.operatorPk' });
   const d = tmp();
   const a = keygen({ role: 'escrow-attestor', file: path.join(d, 'a.enc'), passphrase: PASS });
   const b = keygen({ role: 'ebt-owner', file: path.join(d, 'b.enc'), passphrase: PASS });
   assert.equal(a.inputsField, 'ebt.escrowAttestorPk');
   assert.equal(b.inputsField, 'ebt.ownerPk');
   assert.notEqual(a.publicKey.x, b.publicKey.x);
+  const op = keygen({ role: 'schedule-operator', file: path.join(d, 'op.enc'), passphrase: PASS });
+  assert.equal(op.inputsField, 'g16 params: schedule.operatorPk');
 });
 
 test('KG-3: refuses an unknown role, a weak or missing passphrase, overwrite, a git checkout, a missing directory', () => {
