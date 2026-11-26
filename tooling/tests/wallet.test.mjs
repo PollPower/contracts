@@ -73,3 +73,18 @@ test('W-5: wallet-status arguments and number formats', () => {
   assert.equal(fmtNight(5_000_000_000n), '5000.000000');
   assert.equal(fmtDust(1_500_000_000_000_000n), '1.500000000000000');
 });
+
+test('W-6: address-bytes gives the keystore 32-byte user address; refuses other networks, shielded addresses and typos', async () => {
+  const { userAddressHex } = await import('../wallet/address-bytes.mjs');
+  const { createKeystore, WalletSeeds } = await import('@midnightntwrk/wallet-sdk');
+  const { randomBytes } = await import('node:crypto');
+  const ks = createKeystore({ kind: 'schnorr', secret: WalletSeeds.fromMasterSeed(randomBytes(32)).unshielded }, 'preprod');
+  const addr = String(ks.getBech32Address().asString());
+  assert.equal(userAddressHex(addr, 'preprod'), String(ks.getAddress()).toLowerCase());
+  assert.throws(() => userAddressHex(addr, 'mainnet'), /not an unshielded mainnet address/);
+  const typo = addr.slice(0, -1) + (addr.endsWith('q') ? 'p' : 'q');
+  assert.throws(() => userAddressHex(typo, 'preprod'), /not an unshielded/);
+  const { deriveAddresses } = await import('../wallet/wallet-lib.mjs');
+  const shielded = deriveAddresses(randomBytes(32), 'preprod').shielded;
+  assert.throws(() => userAddressHex(shielded, 'preprod'), /not an unshielded/);
+});
