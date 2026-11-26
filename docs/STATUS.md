@@ -18,6 +18,15 @@ and finalize transactions carry no contract proofs). Next: the first council
 approval (EBT op 0, bind Living Dividend; 21:00 JST, `tooling/council/council-approve.mjs`),
 then G16 (post-deploy setup, incl. the K5 swap) before any settle.
 
+**Living Dividend bound by council action, 2026-11-26** (first council
+approval on Preprod: EBT op 0 via `tooling/council/council-approve.mjs`; 2 of 3
+ring approvals, then execute, which landed in 37 s). Verified read-only from the
+indexer: EBT `_livingDividendAddress` = LD v3 `48b2c984...c7f1`; the action hash
+is in `_consumedCouncilActions` (runs once); the council records 2 of 3
+approvals for it (epoch 0, threshold 2, slots still equal the council file);
+EBT and LD still `checkFinalized`; EBT supply 0. G16's LD-bind item is done;
+the rest of G16 (TR bootstrap, charter root, schedule, lanes, K5 swap) is next.
+
 ## Current state (2026-11-24, evening JST)
 
 **Done on `wi16-ledger9`:** H-1, C-2, C-1 council (Multisig v8, EBT, TR),
