@@ -9,6 +9,8 @@ import { WebSocket as WS } from 'ws';
 
 /** @type {Record<string, { http: number, wsOpen: number, wsSent: number, wsReceived: number }>} */
 const counts = {};
+// Readable while running (wallet-status prints it with its progress lines).
+/** @type {any} */ (globalThis).__ppRequestCounts = counts;
 const at = (/** @type {any} */ u) => {
   let host = '?';
   try { host = new URL(String(u?.url ?? u)).host; } catch { /* not a URL */ }

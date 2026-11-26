@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { deriveAddresses, writeNewSeedFile, readSeedFile, fundingInstructions, gitWorkTreeOf } from '../wallet/wallet-lib.mjs';
-import { parseArgs, fmtNight, fmtDust } from '../wallet/wallet-status.mjs';
+import { parseArgs, fmtNight, fmtDust, progressLine } from '../wallet/wallet-status.mjs';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ppw-'));
 
@@ -60,8 +60,15 @@ test('W-4: the printed instructions carry the addresses and faucet/DUST steps, n
 });
 
 test('W-5: wallet-status arguments and number formats', () => {
-  assert.deepEqual(parseArgs(['--seed-file', 'x']), { seedFile: 'x', stateFile: path.resolve('x.wallet-state'), registerDust: false });
+  assert.deepEqual(parseArgs(['--seed-file', 'x']), { seedFile: 'x', stateFile: path.resolve('x.wallet-state'), registerDust: false, watchDust: false });
   assert.equal(parseArgs(['--seed-file', 'x', '--register-dust']).registerDust, true);
+  assert.equal(parseArgs(['--seed-file', 'x', '--register-dust', '--watch-dust']).watchDust, true);
+  const p = { appliedIndex: 5n, highestRelevantWalletIndex: 9n, highestIndex: 10n };
+  const st = { isSynced: false, shielded: { progress: p }, dust: { progress: p, balance: () => 2n * 10n ** 15n },
+    unshielded: { progress: { appliedId: 3n, highestTransactionId: 4n }, balances: { ['0'.repeat(64)]: 5_000_000_000n } } };
+  const line = progressLine(st, { 'h.example': { http: 7, wsOpen: 1, wsSent: 2, wsReceived: 3 } }, new Date(0));
+  assert.match(line, /syncing: shielded 5\/9 \(chain 10\), dust 5\/9 \(chain 10\), unshielded 3\/4; NIGHT 5000\.000000, DUST 2\.0+ requests h\.example http 7 ws 1\/2\/3/);
+  assert.ok(!progressLine(st, undefined).includes('requests'));
   assert.throws(() => parseArgs([]), /usage/);
   assert.equal(fmtNight(5_000_000_000n), '5000.000000');
   assert.equal(fmtDust(1_500_000_000_000_000n), '1.500000000000000');
