@@ -1,0 +1,30 @@
+# PollPower settle watcher (Joi deploys; runbook docs/runbooks/hat-settle-watcher.md).
+# Read-only: it reads EBT events and state from the indexer; it holds no wallet.
+# Secrets live in /etc/pollpower/secrets (0700, files 0600, owner ppwatch);
+# /etc/pollpower/settle-watcher.env holds only non-secret settings.
+[Unit]
+Description=PollPower settle watcher (council alerts: Telegram + email)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=ppwatch
+Group=ppwatch
+WorkingDirectory=/opt/pollpower/contracts
+EnvironmentFile=/etc/pollpower/settle-watcher.env
+ExecStart=/usr/bin/node tooling/watcher/settle-watcher-service.mjs
+Restart=always
+RestartSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pp-settle-watcher
+StateDirectory=pp-settle-watcher
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target
